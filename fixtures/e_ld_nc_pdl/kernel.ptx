@@ -51,7 +51,7 @@
     add.s64         %rd5, %rd1, %rd4;
     add.s64         %rd6, %rd2, %rd4;
     add.s64         %rd7, %rd3, %rd4;
-    ld.global.nc.u32 %r2, [%rd5];
+    ld.global.nc.u32 %r2, [%rd5];                   // @K1A
     ld.global.nc.u32 %r3, [%rd6];
     griddepcontrol.launch_dependents;
     add.u32         %r4, %r2, %r3;

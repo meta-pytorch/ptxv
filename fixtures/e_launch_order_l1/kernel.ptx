@@ -1,0 +1,51 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-LAUNCH-ORDER and E-L1-HAVOC: two kernels on one GPU, 1 CTA x 32 each.
+//   writer: data[t] = t + 100.
+//   reader: out[t] = ld.global data[t] (@LD), a weak load that can hit a stale L1 line.
+// good: the reader's predecessor is recorded: it launches after the writer completed, and the
+//   kernel boundary drops every L1 copy older than the writes (E-L1-CORES): clean.
+// UNKNOWN: the same list from an older capture: nothing says the reader started after the
+//   writer completed, so an outside fill on the reader's SM before the writes land may leave
+//   a stale copy: reported (stale-l1-havoc).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry writer(.param .u64 pdata)
+.reqntid 32
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pdata];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd2, %r1, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    add.u32         %r2, %r1, 100;
+    st.global.u32   [%rd3], %r2;
+    ret;
+}
+
+.visible .entry reader(.param .u64 pdata, .param .u64 pout)
+.reqntid 32
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pdata];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.u32   %r2, [%rd4];                    // @LD
+    st.global.u32   [%rd5], %r2;
+    ret;
+}

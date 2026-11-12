@@ -1,0 +1,64 @@
+name = "e_scope_mm_lane"
+description = """
+S-SCOPE, complete overlap of multimem accesses (PTX front): a packed multimem.st of f16x2 lanes
+and an unordered multimem.ld_reduce of the same f16x2 lanes are morally strong (a packed access
+is a pair of operations on its scalar type, PTX ISA 9.5 section 8.2.5): good is nondeterministic,
+no race (a race until 2026-11-11: the store counted as one 4-byte element against the
+reduction's 2-byte lanes). MIXED: a .b32 store of the word, a mixed-size race (and
+nondeterministic). The SASS front does not decide overlap: both nondeterministic there."""
+ptx = "kernel.ptx"
+entry = "mm_lane"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "buf0"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "buf1"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[multicast]]
+name = "mc"
+size = 128
+binds = [
+    { device = 0, offset = 0, buffer = "buf0", byte_offset = 0, size = 128 },
+    { device = 1, offset = 0, buffer = "buf1", byte_offset = 0, size = 128 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "f16x2 multimem.st and f16x2 multimem.ld_reduce, unordered: morally strong lanes, nondeterministic"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "MIXED"
+summary = "a .b32 multimem.st of the word: 4-byte against 2-byte lanes, a mixed-size race, and the reduction reads either word (SASS: overlap not decided, nondeterministic)"
+marker = "@ST"
+find = "multimem.st.relaxed.sys.global.f16x2"
+replace = "multimem.st.relaxed.sys.global.b32"
+expect = ["nondeterministic", "race"]
+expect_sass = ["nondeterministic"]

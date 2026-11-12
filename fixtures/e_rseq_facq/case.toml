@@ -1,0 +1,61 @@
+name = "e_rseq_facq"
+description = """
+S-SCOPE, release sequences (MISS 112), the acquire side: CTA 0's t0 stores data and releases
+flag f at .gpu; t32 of CTA 1 increments f with a relaxed atomic (continuing the release); t0 of
+CTA 1 polls f with relaxed loads until it reads the increment, then runs an acquire fence and
+reads the data. Synchronization needs the fence and the release, not the atomic, to be morally
+strong (PTX ISA 9.5 section 8.9.4). good: fence.acq_rel.gpu, clean. CTAFENCE: fence.acq_rel.cta,
+a race (clean until 2026-11-11 on the PTX front, where the fence was checked against the
+atomic's thread). DIRECT: the .cta fence and no atomic, a race. CTAACQ: t32 signals t0 at .cta
+after the atomic, and t0 then reads f with ld.acquire.cta and no fence, so it reads only the
+atomic's value: R and the atomic are morally strong, R and the release are not, a race (clean
+until 2026-11-11 on the PTX front)."""
+ptx = "kernel.ptx"
+entry = "rseq_facq"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "fence.acq_rel.gpu after the relaxed poll"
+expect = ["clean"]
+
+[[variants]]
+id = "CTAFENCE"
+summary = "fence.acq_rel.cta: not morally strong with the release in CTA 0"
+marker = "@FENCE"
+find = "fence.acq_rel.gpu;"
+replace = "fence.acq_rel.cta;"
+expect = ["race"]
+
+[[variants]]
+id = "DIRECT"
+summary = "control: the .cta fence, R reads the release itself"
+edits = [
+    { marker = "@FENCE", find = "fence.acq_rel.gpu;", replace = "fence.acq_rel.cta;" },
+    { marker = "@RCHK", find = "setp.ne.u32 %p4, %r5, 2;", replace = "setp.ne.u32 %p4, %r5, 1;" },
+    { marker = "@Z", find = "atom.relaxed.gpu.global.add.u32 %r8, [%rd1+4], 1;", replace = "<delete>" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "CTAACQ"
+summary = "R waits for t32's .cta signal after the atomic, then reads f with ld.acquire.cta, no fence"
+edits = [
+    { marker = "@RLOAD", find = "ld.relaxed.gpu.global.u32 %r5, [%rd1+4];", replace = "ld.acquire.cta.global.u32 %r10, [%rd1+8];\n    setp.eq.u32 %p7, %r10, 0;\n    @%p7 bra R;\n    ld.acquire.cta.global.u32 %r5, [%rd1+4];" },
+    { marker = "@RBRA", find = "@%p4 bra R;", replace = "<delete>" },
+    { marker = "@Z", find = "atom.relaxed.gpu.global.add.u32 %r8, [%rd1+4], 1;", replace = "atom.relaxed.gpu.global.add.u32 %r8, [%rd1+4], 1;\n    mov.u32 %r11, 1;\n    st.release.cta.global.u32 [%rd1+8], %r11;" },
+    { marker = "@FENCE", find = "fence.acq_rel.gpu;", replace = "<delete>" },
+]
+expect = ["race"]

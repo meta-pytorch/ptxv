@@ -58,20 +58,12 @@ pub const SMEM_RESERVED_PER_CTA: u32 = 1024;
 pub const MAX_PLACEMENTS: usize = 4096;
 
 /// Is grid `a` stream-ordered before grid `b` (every CTA of `b` starts after `a` completed)?
-/// Follows the `prev_grid` chain from `b`; a PDL edge does not order (its successor may
-/// overlap), so a chain through one counts as unordered (more sharing: never a miss).
+/// Follows the predecessor links from `b` (`Launch::hb_before`); a PDL edge does not order
+/// (its successor may overlap), so a chain through one counts as unordered (more sharing:
+/// never a miss). ASSUME(E-LAUNCH-ORDER): only with a recorded or declared launch order; an
+/// older capture's list may serialize grids that overlapped (unordered: more sharing).
 pub fn grids_ordered(l: &Launch, a: usize, b: usize) -> bool {
-    let mut g = b;
-    while let Some(p) = l.prev_grid(g) {
-        if l.grids[g].pdl {
-            return false;
-        }
-        if p == a {
-            return true;
-        }
-        g = p;
-    }
-    false
+    l.order_recorded && l.hb_before(a, b)
 }
 
 /// May grids `a` and `b` be resident at the same time?
@@ -357,18 +349,17 @@ impl Machine {
             if wg != rg && grids_ordered(&self.launch, wg, rg) {
                 continue; // the reader's launch dropped every copy older than W
             }
-            // W happens-before the reader's launch (it completed the grid the reader's grid
+            // W happens-before the reader's launch (it completed a grid the reader's grid
             // waits for): a fill that survives into the reader's grid came after W.
-            if let Some(p) = self
-                .launch
-                .prev_grid(rg)
-                .filter(|_| !self.launch.grids[rg].pdl)
+            // ASSUME(E-LAUNCH-ORDER): only with a recorded or declared launch order.
+            if self.launch.order_recorded
+                && self.launch.full_preds(rg).any(|p| {
+                    self.done_vcs[p]
+                        .as_ref()
+                        .is_some_and(|d| w.clock <= vc_get(d, w.actor))
+                })
             {
-                if let Some(d) = &self.done_vcs[p] {
-                    if w.clock <= vc_get(d, w.actor) {
-                        continue;
-                    }
-                }
+                continue;
             }
             let killed = invals.iter().any(|i| {
                 grids_overlap(&self.launch, i.grid as usize, me.grid as usize)

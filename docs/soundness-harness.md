@@ -166,7 +166,8 @@ before anything runs. `--check-anchors` builds and runs nothing: it prints every
 find text does not occur exactly once in its file (a run reports such a mutant as an `error`)
 and exits 1 if there is one; with `--root DIR` it checks the files under DIR instead (the
 anchors test, `crates/cli/tests/srcmut_anchors.rs`, plants a broken anchor in a scratch tree
-there as its positive control).
+there as its positive control; the path without `--root` is covered by `pytest tools/mutate`,
+which the same test binary runs).
 
 Open source-mutant gaps (no mutant in `srcmut.py` until a test catches it):
 - E-ELECT candidates (`elect_lanes::candidates`): the key of an active set's candidate lanes
@@ -210,8 +211,11 @@ verdict with the miss named in the doc comment, so a fix shows up as a test chan
 | E-DRF (TMEM) | e_drf_tmem | tmem-norace |
 | E-BAR-EXIT | (probes/bar_exit, bar_exit_warp) | barexit-phantom |
 | E-ALIGNED | (e_aligned_bar AB1 / AB3) | aligned-noviol |
+| S-NC | e_ld_nc, e_ld_nc_forms (per byte, .v4 / .v8, red, bulk copy, another CTA), e_ld_nc_pdl (stream order, PDL), e_ld_nc_xgpu (a peer GPU's write before the reader starts; signal and acquire scopes, fence patterns, an unordered reader; WAITS: a join), e_ld_nc_xgpu_unord (the launch order unknown or recorded), e_ld_nc_xgpu_frel (a .gpu fence heading the hand-off's release sequence, MISS 112), e_ld_nc_xgpu_bulk (bulk writes in flight after wait_group.read; MISS 32, MISS 102); probes/nc_hoist and nc_pdl (GB300 stale words 200/200 each) | nc-coherent, nc-after-skip, nc-before-skip, nc-sass-ldg, nc-sass-256, nc-ptx-drop, nc-ptx-vec-drop, nc-pdl-ordered, nc-start-readclock, nc-start-gate, nc-start-waits, nc-start-sass, nc-start-profile (MISS 21; nc-done-off, nc-start-off: precision) |
 | S-SAME-VALUE, per byte over a uniform shadow page | s_sv_page (a 512-byte bulk reload that keeps only the page's first byte: clean until 2026-11-11 with the read after it, PAGE, or concurrent with it, CONC; race now) | sv-page-onebyte (MISS 69) |
-| S-SCOPE, complete overlap (PTX front) | e_scope_mixed (a u8 / u64 acquire of a u32 release flag: clean until 2026-11-11, MIXED / WIDE; a race now; VEC clean), e_warp_order_mixed (a u8 load of a u32 store in a converged warp: nondeterministic until 2026-11-11, MIXED; a race now) | scope-overlap, scope-overlap-race, scope-overlap-sync, scope-elem-vector (precision) (MISS 80) |
+| S-SCOPE, complete overlap (PTX front) | e_scope_mixed (a u8 / u64 acquire of a u32 release flag: clean until 2026-11-11, MIXED / WIDE; a race now; VEC clean), e_warp_order_mixed (a u8 load of a u32 store in a converged warp: nondeterministic until 2026-11-11, MIXED; a race now), e_scope_mm_lane (a packed f16x2 multimem.st against an f16x2 multimem.ld_reduce: a race until 2026-11-11, good; nondeterministic now) | scope-overlap, scope-overlap-race, scope-overlap-sync, scope-elem-vector, scope-elem-mmst (precision) (MISS 80) |
+| S-SCOPE, release sequences through read-modify-writes | e_rseq_scope (a .cta release continued by an atomic of another CTA: clean until 2026-11-11, CTAREL; a race now) | rseq-scope (MISS 100) |
+| S-SCOPE, the first operation of a continued release pattern | e_rseq_head (a .cta fence heading the pattern, FREL), e_rseq_facq (a .cta acquire fence or acquire read after the atomic, CTAFENCE, CTAACQ): synchronized until 2026-11-11, races now; e_rseq_head TWOHEAD, OWN (one pattern fails, another passes; the patterns' join stands for them only when all pass), e_rseq_twopat CTAFENCE (a .cta acquire fence takes the pattern of its CTA only; the SASS front's one pending entry is SASS-only) | rseq-head-rel, rseq-head-acq, rseq-head-fence, rseq-head-join, rseq-head-cache, rseq-head-own, rseq-head-shortcut (MISS 112) |
 | E-ALIGNED, part of the warp exited | e_aligned_exit, e_aligned_exit2 (PTX contract violation; SASS clean, as GB300) | aligned-sass-guarded, aligned-ptx-exit |
 | S-ALIGN | (e_misaligned) | align-4 |
 | S-DSMEM | e_dsmem_rank (a foreign rank through shared::cta faults; GB300 traps) | dsmem-rank |

@@ -9,6 +9,9 @@ entry = "k0"
 grid = [1, 1, 1]
 block = [32, 1, 1]
 outputs = ["out2"]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states
+# (two grids on one stream, no PDL).
+launch_order = "declared"
 
 [[buffers]]
 name = "src"
@@ -58,3 +61,9 @@ marker = "@N"
 find = "fence.proxy.async.shared::cta;"
 replace = "fence.proxy.async.shared::cta; mov.u32 %r9, 0;"
 expect = ["clean"]
+
+[[variants]]
+id = "UNKNOWN"
+summary = "the same launches with their order unknown (E-LAUNCH-ORDER): S-NC's stream-order exemption does not apply, so k1's .nc read of k0's output is reported"
+launch_order = "unknown"
+expect = ["violation"]

@@ -1,0 +1,176 @@
+name = "e_ld_nc_xgpu"
+description = """
+S-NC across GPUs: GPU 1's writer stores data (peer stores into GPU 0 memory), then publishes a
+flag with st.release.sys; GPU 0's waiter acquires it; GPU 0's reader, stream-ordered after the
+waiter without PDL, reads data with ld.global.nc. The writes happen before the reader starts
+(its CTAs join the waiter's done clocks at launch): good is clean. The other variants change
+the signal (SIGGPU, SIGRELAXED, SIGFENCE), the acquire (ACQGPU, ACQFENCE, ACQFENCEGPU,
+ACQONLYGPU, ACQONLYSYS) or the launch order (UNORD: the reader ordered after nothing; WAITS: the
+reader on a stream of its own, joined to the waiter by an event wait, `waits`); weak: a
+plain-store signal; coherent: a coherent ld.global reader. expect is the PTX ISA verdict. The
+SASS front's strict level does not apply the launch-clock exemption (its CCTL.IVALL acquire
+has no scope: ptxas 13.0 compiles fence.acquire.gpu and fence.acquire.sys alike to a bare
+CCTL.IVALL), so every clean .nc variant is a violation there (expect_sass), and the races of
+ACQFENCEGPU and ACQONLYGPU are not seen there (their .gpu acquire fences end in CCTL.IVALL,
+which synchronizes with GPU 1's release)."""
+ptx = "kernel.ptx"
+entry = "waiter"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states.
+launch_order = "declared"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "iota"
+device = 0
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[launches]]
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "flag" },
+]
+
+[[launches]]
+entry = "reader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 0
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "release / acquire hand-off: the writes happen before the reader starts (SASS strict: no exemption, a violation)"
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "weak"
+summary = "the signal is a plain store: a race, and the writes may land while the reader runs"
+marker = "@SIG"
+find = "st.release.sys.global.u32"
+replace = "st.global.u32"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "coherent"
+summary = "the reader's load is a coherent ld.global"
+marker = "@LD"
+find = "ld.global.nc.u32"
+replace = "ld.global.u32"
+expect = ["clean"]
+
+[[variants]]
+id = "SIGGPU"
+summary = "GPU 1 signals with st.release.gpu: not morally strong with GPU 0's acquire (PTX ISA 9.5 section 8.9.4): race and violation"
+marker = "@SIG"
+find = "st.release.sys.global.u32"
+replace = "st.release.gpu.global.u32"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "ACQGPU"
+summary = "GPU 0 acquires with ld.acquire.gpu: race and violation"
+marker = "@ACQ"
+find = "ld.acquire.sys.global.u32"
+replace = "ld.acquire.gpu.global.u32"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "SIGRELAXED"
+summary = "st.relaxed.sys signal (no release): race and violation"
+marker = "@SIG"
+find = "st.release.sys.global.u32"
+replace = "st.relaxed.sys.global.u32"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "SIGFENCE"
+summary = "fence.acq_rel.sys, then a st.relaxed.sys signal (a fence release pattern): clean (SASS strict: a violation)"
+marker = "@SIG"
+find = "@!%p1 st.release.sys.global.u32 [%rd2], %r3;"
+replace = "fence.acq_rel.sys; @!%p1 st.relaxed.sys.global.u32 [%rd2], %r3;"
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "ACQFENCE"
+summary = "ld.relaxed.sys spin, then fence.acq_rel.sys (a fence acquire pattern): clean (SASS strict: a violation)"
+marker = "@ACQ"
+find = "ld.acquire.sys.global.u32"
+replace = "ld.relaxed.sys.global.u32"
+edits = [{ marker = "@DONE", find = "bar.sync 0;", replace = "fence.acq_rel.sys; bar.sync 0;" }]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "ACQFENCEGPU"
+summary = "ld.relaxed.sys spin, then fence.acq_rel.gpu: the fence is not morally strong with GPU 1's release: race and violation; SASS: MEMBAR.ALL.GPU is its release half and the acquire half, CCTL.IVALL, has no scope: the race is not seen there, the violation is"
+marker = "@ACQ"
+find = "ld.acquire.sys.global.u32"
+replace = "ld.relaxed.sys.global.u32"
+edits = [{ marker = "@DONE", find = "bar.sync 0;", replace = "fence.acq_rel.gpu; bar.sync 0;" }]
+expect = ["race", "violation"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "ACQONLYGPU"
+summary = "ld.relaxed.sys spin, then fence.acquire.gpu: race and violation; SASS: a bare CCTL.IVALL, which the SASS front cannot tell from fence.acquire.sys: the race is not seen there, the violation is (no exemption at the strict level)"
+marker = "@ACQ"
+find = "ld.acquire.sys.global.u32"
+replace = "ld.relaxed.sys.global.u32"
+edits = [{ marker = "@DONE", find = "bar.sync 0;", replace = "fence.acquire.gpu; bar.sync 0;" }]
+expect = ["race", "violation"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "ACQONLYSYS"
+summary = "control: ld.relaxed.sys spin, then fence.acquire.sys (the same SASS as ACQONLYGPU): clean (SASS strict: a violation)"
+marker = "@ACQ"
+find = "ld.acquire.sys.global.u32"
+replace = "ld.relaxed.sys.global.u32"
+edits = [{ marker = "@DONE", find = "bar.sync 0;", replace = "fence.acquire.sys; bar.sync 0;" }]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "UNORD"
+summary = "the reader ordered after nothing (a launch on another stream, or one that waits only for a programmatic or launch-completion event; captures serialize these, MISS 113): race and violation"
+after = [[2, -1]]
+expect = ["race", "violation"]
+
+[[variants]]
+id = "WAITS"
+summary = "the reader on a stream of its own, joined to the waiter (waits): the join orders the writes before the reader starts (SASS strict: a violation)"
+after = [[2, -1]]
+waits = [[2, 0]]
+expect = ["clean"]
+expect_sass = ["violation"]

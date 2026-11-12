@@ -27,7 +27,18 @@
 //   launching thread outside the driver lock, and the calls it makes are not ones the
 //   subscriber enabled, so they do not recurse. Launches into a stream under graph capture
 //   are recorded without snapshots ("capturing": 1); synchronizing would invalidate the capture.
-// - cuGraphLaunch is counted (graph_launches), not recorded: its kernels are not captured.
+// - Launch order (docs/capture.md "Launch order"): each launch also records its stream's id
+//   (cuStreamGetId), whether it went into a graph capture (and the capture's id), its
+//   ProgrammaticEvent / LaunchCompletionEvent events, its memory synchronization domain and
+//   "oseq", its place among the launches and stream order calls; event records, event waits,
+//   rewritten capture dependencies, event destructions, IPC event opens and exports, and graph
+//   launches go to <dir>/events.jsonl with an "oseq" from the same counter. Every one is
+//   written at API_EXIT, only when the call succeeded, with the calling thread ("tid") and the
+//   times at API_ENTER and API_EXIT ("t0", "t1"): the records of several threads are in the
+//   order the driver took the calls only when the calls did not overlap in time.
+//   python/ptxv/_order.py turns them into the case's predecessor relations.
+// - cuGraphLaunch is counted (graph_launches) and logged as a stream order call: a graph's
+//   kernels are captured only when the graph itself was captured inside the region.
 #define _GNU_SOURCE
 #include <cuda.h>
 #include <cupti.h>  // includes generated_cuda_meta.h (the launch parameter structs)
@@ -40,6 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -63,6 +75,10 @@ typedef CUresult (*getdev_t)(CUdevice *);
 typedef CUresult (*fmod_t)(CUmodule *, CUfunction);
 typedef CUresult (*klib_t)(CUlibrary *, CUkernel);
 typedef CUresult (*libmod_t)(CUmodule *, CUlibrary);
+typedef CUresult (*sid_t)(CUstream, unsigned long long *);
+typedef CUresult (*scap_t)(CUstream, CUstreamCaptureStatus *, cuuint64_t *);
+typedef CUresult (*sattr_t)(CUstream, CUlaunchAttributeID, CUlaunchAttributeValue *);
+typedef CUresult (*sdev_t)(CUstream, CUdevice *);
 static sync_t c_sync;
 static range_t c_range;
 static d2h_t c_d2h;
@@ -75,6 +91,12 @@ static getdev_t c_getdev;
 static fmod_t c_fmod;
 static klib_t c_klib;
 static libmod_t c_libmod;
+// Legacy ([0]) and per-thread default stream ([1]) flavours: a stream query takes the
+// flavour of the call it describes (stream 0 is a different stream in each).
+static sid_t c_sid[2];
+static scap_t c_scap[2];
+static sattr_t c_sattr[2];
+static sdev_t c_sdev[2];
 
 static CUpti_SubscriberHandle sub;
 static int inited;
@@ -89,6 +111,9 @@ static int snap_mode;  // 0 none, 1 every launch, 2 first launch of each (name, 
 static unsigned long long max_alloc;   // larger allocations are not snapshotted
 static unsigned long long snap_budget; // total snapshot bytes left
 static unsigned seq;                   // launches recorded since ptxvcap_start
+static unsigned long long oseq;        // launches and stream order calls recorded since then
+static int order_calls = 1;            // record stream order calls (injection: PTXV_CAPTURE_ORDER)
+static unsigned long long inj_unwritten;  // launches seen but not written since the last written one
 static unsigned long long graph_launches;
 static unsigned long long skipped_snaps;
 static char tag[512];
@@ -103,6 +128,21 @@ static __thread CUdeviceptr t_base[MAXALLOC];
 static __thread size_t t_size[MAXALLOC];
 static __thread unsigned t_n, t_seq;
 static __thread int t_snap;
+// Per-thread: the record of the launch in flight (built at API_ENTER, written at API_EXIT if
+// the launch succeeded), the launches left unwritten that it accounts for (injection mode),
+// and the time at the end of API_ENTER of the launch or stream order call in flight.
+static __thread char *t_rec;
+static __thread size_t t_rec_len;
+static __thread unsigned long long t_unrec;
+static __thread unsigned long long t_t0;
+
+// Host time (CLOCK_MONOTONIC, ns) and the calling thread (gettid).
+static unsigned long long now_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (unsigned long long)t.tv_sec * 1000000000ull + (unsigned long long)t.tv_nsec;
+}
+static long tid(void) { return (long)syscall(SYS_gettid); }
 
 // First-launch keys (snap_mode 2): FNV of name and shape.
 static unsigned long long *keys;
@@ -392,16 +432,26 @@ static unsigned long long fat_dump(void *h) {
     return 0;
 }
 
-// Record one launch (API_ENTER). Called with mu held.
+// Record one launch (API_ENTER; written by launch_exit). Called with mu held.
 static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz, unsigned bx,
                             unsigned by, unsigned bz, unsigned smem, CUstream s,
                             const CUlaunchConfig *cfg, void **params, void **extra,
                             const char *sym, int cbid) {
     t_snap = 0;
+    free(t_rec);
+    t_rec = 0;
+    t_unrec = 0;
     unsigned cx = 1, cy = 1, cz = 1;
     // Preferred cluster dimension (0s without the attribute): S-CGA-SHAPE, probes/cga_size.
     unsigned px = 0, py = 0, pz = 0;
     int pdl = 0;
+    // Launch order: ProgrammaticEvent / LaunchCompletionEvent events (0: none) and the memory
+    // synchronization domain attributes (-1: the stream's).
+    unsigned long long pev = 0, cev = 0;
+    int pev_start = 0, msd = -1, msdm0 = -1, msdm1 = -1;
+    int ptsz = cbid == CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel_ptsz ||
+               cbid == CUPTI_DRIVER_TRACE_CBID_cuLaunchKernelEx_ptsz ||
+               cbid == CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernel_ptsz;
     if (cfg) {
         for (unsigned i = 0; i < cfg->numAttrs; i++) {
             if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION) {
@@ -414,6 +464,16 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
                 pz = cfg->attrs[i].value.preferredClusterDim.z;
             } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION) {
                 pdl = cfg->attrs[i].value.programmaticStreamSerializationAllowed != 0;
+            } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_EVENT) {
+                pev = (unsigned long long)cfg->attrs[i].value.programmaticEvent.event;
+                pev_start = cfg->attrs[i].value.programmaticEvent.triggerAtBlockStart != 0;
+            } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_LAUNCH_COMPLETION_EVENT) {
+                cev = (unsigned long long)cfg->attrs[i].value.launchCompletionEvent.event;
+            } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_MEM_SYNC_DOMAIN) {
+                msd = (int)cfg->attrs[i].value.memSyncDomain;
+            } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_MEM_SYNC_DOMAIN_MAP) {
+                msdm0 = cfg->attrs[i].value.memSyncDomainMap.default_;
+                msdm1 = cfg->attrs[i].value.memSyncDomainMap.remote;
             }
         }
         if (!cx) cx = cy = cz = 1;  // no cluster attribute
@@ -434,29 +494,78 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
     long inv = -1;
     if (inj) {
         inj_seen++;
-        if (inj_has_re && regexec(&inj_re, nm, 0, 0, 0)) return;
-        if (inj_has_skip && !regexec(&inj_skip, nm, 0, 0, 0)) return;
+        if ((inj_has_re && regexec(&inj_re, nm, 0, 0, 0)) ||
+            (inj_has_skip && !regexec(&inj_skip, nm, 0, 0, 0))) {
+            inj_unwritten++;
+            return;
+        }
         inj_matched++;
         inv = inv_next(nm);
         inj_sel = inj_index_selected((unsigned)inv) && inj_snapped < inj_max;
-        if (!inj_sel && !inj_record_all) return;
+        if (!inj_sel && !inj_record_all) {
+            inj_unwritten++;
+            return;
+        }
     }
-    char path[4200];
-    snprintf(path, sizeof path, "%s/launches.jsonl", cap_dir);
-    FILE *fp = fopen(path, "a");
+    FILE *fp = open_memstream(&t_rec, &t_rec_len);
     if (!fp) return;
+    // Whether the launch goes into a graph capture (it runs when the graph is launched, not
+    // now), and the capture's id; an invalidated capture is still one. -1: unknown.
     CUstreamCaptureStatus cs = CU_STREAM_CAPTURE_STATUS_NONE;
-    if (c_iscap) c_iscap(s, &cs);
+    cuuint64_t cap_id = 0;
+    int capturing = -1;
+    if (c_scap[ptsz] && c_scap[ptsz](s, &cs, &cap_id) == CUDA_SUCCESS)
+        capturing = cs != CU_STREAM_CAPTURE_STATUS_NONE;
+    else if (c_iscap && c_iscap(s, &cs) == CUDA_SUCCESS)
+        capturing = cs != CU_STREAM_CAPTURE_STATUS_NONE ? -1 : 0;  // no id: unknown capture
     CUdevice dev = -1;
     if (c_getdev) c_getdev(&dev);
     t_seq = seq++;
-    fprintf(fp, "{\"seq\": %u, \"name\": ", t_seq);
+    fprintf(fp, "\"name\": ");
     json_str(fp, nm);
     fprintf(fp, ", \"grid\": [%u, %u, %u], \"block\": [%u, %u, %u], \"smem\": %u, "
                 "\"cluster\": [%u, %u, %u], \"pdl\": %d, \"stream\": %llu, \"dev\": %d, "
-                "\"cbid\": %d, \"capturing\": %d, \"tag\": ",
+                "\"cbid\": %d, \"capturing\": %d, \"capture_id\": %llu, \"ptsz\": %d, ",
             gx, gy, gz, bx, by, bz, smem, cx, cy, cz, pdl, (unsigned long long)s, (int)dev, cbid,
-            cs != CU_STREAM_CAPTURE_STATUS_NONE);
+            capturing, capturing == 1 ? (unsigned long long)cap_id : 0ull, ptsz);
+    {
+        // Not on a capturing stream: cuStreamGetId there fails and invalidates the capture.
+        unsigned long long sid;
+        if (capturing == 0 && c_sid[ptsz] && c_sid[ptsz](s, &sid) == CUDA_SUCCESS)
+            fprintf(fp, "\"stream_id\": %llu, ", sid);
+        // Memory synchronization domain: the logical one (launch, else stream) through the map
+        // (launch, else stream; default -> 0, remote -> 1 by default). S-SCOPE.
+        CUlaunchAttributeValue v;
+        if (msd < 0) {
+            msd = 0;
+            memset(&v, 0, sizeof v);
+            if (c_sattr[ptsz] && c_sattr[ptsz](s, CU_LAUNCH_ATTRIBUTE_MEM_SYNC_DOMAIN, &v) == CUDA_SUCCESS)
+                msd = (int)v.memSyncDomain;
+        }
+        if (msdm0 < 0) {
+            msdm0 = 0;
+            msdm1 = 1;
+            memset(&v, 0, sizeof v);
+            if (c_sattr[ptsz] &&
+                c_sattr[ptsz](s, CU_LAUNCH_ATTRIBUTE_MEM_SYNC_DOMAIN_MAP, &v) == CUDA_SUCCESS) {
+                msdm0 = v.memSyncDomainMap.default_;
+                msdm1 = v.memSyncDomainMap.remote;
+            }
+        }
+        fprintf(fp, "\"mem_sync_domain\": %d, ", msd == CU_LAUNCH_MEM_SYNC_DOMAIN_REMOTE ? msdm1 : msdm0);
+        if (pev)
+            fprintf(fp, "\"prog_event\": {\"event\": %llu, \"trigger_at_block_start\": %d}, ", pev,
+                    pev_start);
+        if (cev) fprintf(fp, "\"completion_event\": %llu, ", cev);
+        // Injection mode: launches seen but not written since the previous written one (their
+        // order is then not in the records).
+        if (inj) {
+            fprintf(fp, "\"unrecorded_before\": %llu, ", inj_unwritten);
+            t_unrec = inj_unwritten;
+            inj_unwritten = 0;
+        }
+    }
+    fprintf(fp, "\"tag\": ");
     json_str(fp, tag);
     {
         // The launched kernel's module image (0: unknown).
@@ -513,7 +622,7 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
     }
     fprintf(fp, "]");
     // Snapshot decision.
-    t_snap = snap_mode && cs == CU_STREAM_CAPTURE_STATUS_NONE;
+    t_snap = snap_mode && capturing == 0;
     if (inj) {
         t_snap = t_snap && inj_sel;
         if (t_snap) inj_snapped++;
@@ -595,11 +704,207 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
         }
     }
     if (t_snap) fprintf(fp, ", \"snap\": %u", t_seq);
-    fprintf(fp, "}\n");
     fclose(fp);
     if (t_snap) {
         c_sync();
         snap("pre");
+    }
+}
+
+// API_EXIT of a launch: its record goes to <dir>/launches.jsonl with the next "oseq" if the
+// launch succeeded; a failed launch leaves no record (the launches it accounted for as
+// unwritten carry over to the next record).
+static void launch_exit(int ok, unsigned long long t1) {
+    if (!t_rec) return;
+    pthread_mutex_lock(&mu);
+    if (active && ok) {
+        char path[4200];
+        snprintf(path, sizeof path, "%s/launches.jsonl", cap_dir);
+        FILE *fp = fopen(path, "a");
+        if (fp) {
+            fprintf(fp, "{\"seq\": %u, \"oseq\": %llu, \"tid\": %ld, \"t0\": %llu, \"t1\": %llu, %s}\n",
+                    t_seq, oseq++, tid(), t_t0, t1, t_rec);
+            fclose(fp);
+        }
+    } else if (!ok) {
+        inj_unwritten += t_unrec;
+    }
+    pthread_mutex_unlock(&mu);
+    free(t_rec);
+    t_rec = 0;
+}
+
+// A stream order call that succeeded (API_EXIT): event record, event wait, graph launch or a
+// capturing stream's rewritten dependencies (cuStreamUpdateCaptureDependencies), one line in
+// <dir>/events.jsonl with the stream fields of a launch record and the next "oseq";
+// event destruction (the handle no longer names the event recorded under it) or IPC event
+// open or export (another process can record the event), with no stream.
+static void on_order_call(CUpti_CallbackId id, const void *params, unsigned long long t0,
+                          unsigned long long t1) {
+    const char *kind = "record", *what = "event";
+    unsigned long long h = 0;
+    CUstream s = 0;
+    unsigned fl = 0;
+    int ptsz = 0, nostream = 0;
+    switch (id) {
+    case CUPTI_DRIVER_TRACE_CBID_cuEventRecord_ptsz:
+        ptsz = 1;
+        /* fallthrough */
+    case CUPTI_DRIVER_TRACE_CBID_cuEventRecord: {
+        const cuEventRecord_params *p = params;
+        h = (unsigned long long)p->hEvent;
+        s = p->hStream;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuEventRecordWithFlags_ptsz:
+        ptsz = 1;
+        /* fallthrough */
+    case CUPTI_DRIVER_TRACE_CBID_cuEventRecordWithFlags: {
+        const cuEventRecordWithFlags_params *p = params;
+        h = (unsigned long long)p->hEvent;
+        s = p->hStream;
+        fl = p->flags;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamWaitEvent_ptsz:
+        ptsz = 1;
+        /* fallthrough */
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamWaitEvent: {
+        const cuStreamWaitEvent_params *p = params;
+        kind = "wait";
+        h = (unsigned long long)p->hEvent;
+        s = p->hStream;
+        fl = p->Flags;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz:
+        ptsz = 1;
+        /* fallthrough */
+    case CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch: {
+        const cuGraphLaunch_params *p = params;
+        kind = "graph_launch";
+        what = "graph";
+        h = (unsigned long long)p->hGraph;
+        s = p->hStream;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_ptsz:
+        ptsz = 1;
+        /* fallthrough */
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies: {
+        const cuStreamUpdateCaptureDependencies_params *p = params;
+        kind = "capture_deps";
+        what = "nodes";
+        h = p->numDependencies;
+        s = p->hStream;
+        fl = p->flags;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_v2_ptsz:
+        ptsz = 1;
+        /* fallthrough */
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_v2: {
+        const cuStreamUpdateCaptureDependencies_v2_params *p = params;
+        kind = "capture_deps";
+        what = "nodes";
+        h = p->numDependencies;
+        s = p->hStream;
+        fl = p->flags;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuEventDestroy: {
+        const cuEventDestroy_params *p = params;
+        kind = "destroy";
+        h = (unsigned long long)p->hEvent;
+        nostream = 1;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuEventDestroy_v2: {
+        const cuEventDestroy_v2_params *p = params;
+        kind = "destroy";
+        h = (unsigned long long)p->hEvent;
+        nostream = 1;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuIpcOpenEventHandle: {
+        const cuIpcOpenEventHandle_params *p = params;
+        kind = "ipc_open";
+        h = p->phEvent ? (unsigned long long)*p->phEvent : 0;
+        nostream = 1;
+        break;
+    }
+    case CUPTI_DRIVER_TRACE_CBID_cuIpcGetEventHandle: {
+        const cuIpcGetEventHandle_params *p = params;
+        kind = "ipc_get";
+        h = (unsigned long long)p->event;
+        nostream = 1;
+        break;
+    }
+    default:
+        return;
+    }
+    pthread_mutex_lock(&mu);
+    if (!active || !order_calls) {
+        pthread_mutex_unlock(&mu);
+        return;
+    }
+    char path[4200];
+    snprintf(path, sizeof path, "%s/events.jsonl", cap_dir);
+    FILE *fp = fopen(path, "a");
+    if (fp && nostream) {
+        CUdevice dev = -1;
+        if (c_getdev) c_getdev(&dev);
+        fprintf(fp, "{\"oseq\": %llu, \"ev\": \"%s\", \"event\": %llu, \"dev\": %d, \"tid\": %ld, "
+                    "\"t0\": %llu, \"t1\": %llu}\n",
+                oseq++, kind, h, (int)dev, tid(), t0, t1);
+        fclose(fp);
+    } else if (fp) {
+        CUstreamCaptureStatus cs = CU_STREAM_CAPTURE_STATUS_NONE;
+        cuuint64_t cap_id = 0;
+        int capturing = -1;
+        if (c_scap[ptsz] && c_scap[ptsz](s, &cs, &cap_id) == CUDA_SUCCESS)
+            capturing = cs != CU_STREAM_CAPTURE_STATUS_NONE;
+        // cuStreamGetId / cuStreamGetDevice only on a stream not capturing (launchcap.c).
+        CUdevice dev = -1;
+        if (!(capturing == 0 && c_sdev[ptsz] && c_sdev[ptsz](s, &dev) == CUDA_SUCCESS) && c_getdev)
+            c_getdev(&dev);
+        fprintf(fp, "{\"oseq\": %llu, \"ev\": \"%s\", \"%s\": %llu, \"flags\": %u, \"stream\": %llu, "
+                    "\"ptsz\": %d, \"dev\": %d, \"capturing\": %d, \"capture_id\": %llu",
+                oseq++, kind, what, h, fl, (unsigned long long)s, ptsz, (int)dev, capturing,
+                capturing == 1 ? (unsigned long long)cap_id : 0ull);
+        unsigned long long sid;
+        if (capturing == 0 && c_sid[ptsz] && c_sid[ptsz](s, &sid) == CUDA_SUCCESS)
+            fprintf(fp, ", \"stream_id\": %llu", sid);
+        fprintf(fp, ", \"tid\": %ld, \"t0\": %llu, \"t1\": %llu}\n", tid(), t0, t1);
+        fclose(fp);
+    }
+    if (id == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch || id == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz)
+        graph_launches++;
+    pthread_mutex_unlock(&mu);
+}
+
+// Stream order calls and graph launches (cb: logged at API_EXIT if they succeeded).
+static int order_cbid(CUpti_CallbackId id) {
+    switch (id) {
+    case CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch:
+    case CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz:
+    case CUPTI_DRIVER_TRACE_CBID_cuEventRecord:
+    case CUPTI_DRIVER_TRACE_CBID_cuEventRecord_ptsz:
+    case CUPTI_DRIVER_TRACE_CBID_cuEventRecordWithFlags:
+    case CUPTI_DRIVER_TRACE_CBID_cuEventRecordWithFlags_ptsz:
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamWaitEvent:
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamWaitEvent_ptsz:
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies:
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_ptsz:
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_v2:
+    case CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_v2_ptsz:
+    case CUPTI_DRIVER_TRACE_CBID_cuEventDestroy:
+    case CUPTI_DRIVER_TRACE_CBID_cuEventDestroy_v2:
+    case CUPTI_DRIVER_TRACE_CBID_cuIpcOpenEventHandle:
+    case CUPTI_DRIVER_TRACE_CBID_cuIpcGetEventHandle:
+        return 1;
+    default:
+        return 0;
     }
 }
 
@@ -655,12 +960,22 @@ static void CUPTIAPI cb(void *u, CUpti_CallbackDomain d, CUpti_CallbackId id, co
         }
         return;
     }
-    if (id == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch || id == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz) {
+    // Stream order calls and graph launches: logged at API_EXIT if they succeeded.
+    if (order_cbid(id)) {
         if (c->callbackSite == CUPTI_API_ENTER) {
+            t_t0 = now_ns();
+            return;
+        }
+        unsigned long long t1 = now_ns();
+        if (!c->functionReturnValue || *(const CUresult *)c->functionReturnValue != CUDA_SUCCESS) return;
+        if (id == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch ||
+            id == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz) {
             pthread_mutex_lock(&mu);
-            if (active) graph_launches++;
+            if (active && !order_calls) graph_launches++;
             pthread_mutex_unlock(&mu);
         }
+        // (counts a graph launch when order calls are recorded)
+        on_order_call(id, c->functionParams, t_t0, t1);
         return;
     }
     if (c->callbackSite == CUPTI_API_ENTER) {
@@ -669,6 +984,8 @@ static void CUPTIAPI cb(void *u, CUpti_CallbackDomain d, CUpti_CallbackId id, co
         if (!active) {
             pthread_mutex_unlock(&mu);
             t_snap = 0;
+            free(t_rec);
+            t_rec = 0;
             return;
         }
         switch (id) {
@@ -703,11 +1020,17 @@ static void CUPTIAPI cb(void *u, CUpti_CallbackDomain d, CUpti_CallbackId id, co
         // mu stays held until API_EXIT when snapshotting, so launches from other threads
         // cannot interleave between the two snapshots.
         if (!t_snap) pthread_mutex_unlock(&mu);
-    } else if (t_snap) {
-        c_sync();
-        snap("post");
-        t_snap = 0;
-        pthread_mutex_unlock(&mu);
+        t_t0 = now_ns();
+    } else {
+        unsigned long long t1 = now_ns();
+        int ok = c->functionReturnValue && *(const CUresult *)c->functionReturnValue == CUDA_SUCCESS;
+        launch_exit(ok, t1);
+        if (t_snap) {
+            c_sync();
+            snap("post");
+            t_snap = 0;
+            pthread_mutex_unlock(&mu);
+        }
     }
 }
 
@@ -722,6 +1045,23 @@ static const CUpti_CallbackId launch_ids[] = {
     CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernel_ptsz,
     CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch,
     CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz,
+};
+// Stream order calls (with order_calls).
+static const CUpti_CallbackId order_ids[] = {
+    CUPTI_DRIVER_TRACE_CBID_cuEventRecord,
+    CUPTI_DRIVER_TRACE_CBID_cuEventRecord_ptsz,
+    CUPTI_DRIVER_TRACE_CBID_cuEventRecordWithFlags,
+    CUPTI_DRIVER_TRACE_CBID_cuEventRecordWithFlags_ptsz,
+    CUPTI_DRIVER_TRACE_CBID_cuStreamWaitEvent,
+    CUPTI_DRIVER_TRACE_CBID_cuStreamWaitEvent_ptsz,
+    CUPTI_DRIVER_TRACE_CBID_cuEventDestroy,
+    CUPTI_DRIVER_TRACE_CBID_cuEventDestroy_v2,
+    CUPTI_DRIVER_TRACE_CBID_cuIpcOpenEventHandle,
+    CUPTI_DRIVER_TRACE_CBID_cuIpcGetEventHandle,
+    CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies,
+    CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_ptsz,
+    CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_v2,
+    CUPTI_DRIVER_TRACE_CBID_cuStreamUpdateCaptureDependencies_v2_ptsz,
 };
 
 // Returns 0, or: -1 libcupti not loadable, -2 libcuda not loadable, or a CUptiResult from
@@ -753,6 +1093,15 @@ int ptxvcap_init(const char *cupti_path, const char *module_dir) {
     c_fmod = (fmod_t)dlsym(cu, "cuFuncGetModule");
     c_klib = (klib_t)dlsym(cu, "cuKernelGetLibrary");
     c_libmod = (libmod_t)dlsym(cu, "cuLibraryGetModule");
+    c_sid[0] = (sid_t)dlsym(cu, "cuStreamGetId");
+    c_sid[1] = (sid_t)dlsym(cu, "cuStreamGetId_ptsz");
+    // The first version (status and id), whatever cuda.h maps the name to now.
+    c_scap[0] = (scap_t)dlsym(cu, "cuStreamGetCaptureInfo");
+    c_scap[1] = (scap_t)dlsym(cu, "cuStreamGetCaptureInfo_ptsz");
+    c_sattr[0] = (sattr_t)dlsym(cu, "cuStreamGetAttribute");
+    c_sattr[1] = (sattr_t)dlsym(cu, "cuStreamGetAttribute_ptsz");
+    c_sdev[0] = (sdev_t)dlsym(cu, "cuStreamGetDevice");
+    c_sdev[1] = (sdev_t)dlsym(cu, "cuStreamGetDevice_ptsz");
     if (!p_subscribe || !p_enable || !c_sync || !c_range || !c_d2h) return -1;
     CUptiResult r = p_subscribe(&sub, (CUpti_CallbackFunc)cb, 0);
     if (r != CUPTI_SUCCESS) return (int)r;
@@ -784,12 +1133,17 @@ int ptxvcap_start(const char *dir, int snapshots, unsigned long long max_alloc_b
     max_alloc = max_alloc_bytes;
     snap_budget = budget_bytes;
     seq = 0;
+    oseq = 0;
+    inj_unwritten = 0;
     graph_launches = skipped_snaps = 0;
     nkeys = 0;
     tag[0] = 0;
     active = 1;
     for (size_t i = 0; i < sizeof launch_ids / sizeof *launch_ids; i++)
         p_enable(1, sub, CUPTI_CB_DOMAIN_DRIVER_API, launch_ids[i]);
+    if (order_calls)
+        for (size_t i = 0; i < sizeof order_ids / sizeof *order_ids; i++)
+            p_enable(1, sub, CUPTI_CB_DOMAIN_DRIVER_API, order_ids[i]);
     pthread_mutex_unlock(&mu);
     return 0;
 }
@@ -797,9 +1151,12 @@ int ptxvcap_start(const char *dir, int snapshots, unsigned long long max_alloc_b
 // Stops recording; returns the number of launches recorded.
 int ptxvcap_stop(unsigned long long *graph, unsigned long long *skipped) {
     pthread_mutex_lock(&mu);
-    if (active)
+    if (active) {
         for (size_t i = 0; i < sizeof launch_ids / sizeof *launch_ids; i++)
             p_enable(0, sub, CUPTI_CB_DOMAIN_DRIVER_API, launch_ids[i]);
+        for (size_t i = 0; i < sizeof order_ids / sizeof *order_ids; i++)
+            p_enable(0, sub, CUPTI_CB_DOMAIN_DRIVER_API, order_ids[i]);
+    }
     active = 0;
     if (graph) *graph = graph_launches;
     if (skipped) *skipped = skipped_snaps;
@@ -854,6 +1211,9 @@ size_t ptxvcap_modules(char *buf, size_t cap) {
 //   PTXV_CAPTURE_MAX_ALLOC, PTXV_CAPTURE_BUDGET   bytes (k/M/G suffix): largest allocation
 //                        copied (default 2G) and total snapshot bytes (default 32G).
 //   PTXV_CAPTURE_FATBIN  0: do not write fatbins (embedded PTX) of the used modules.
+//   PTXV_CAPTURE_ORDER   1: also record stream order calls (events.jsonl; launch order of a
+//                        multi-launch case, which then needs every launch written:
+//                        PTXV_CAPTURE_RECORD=matching and no filter).
 //   PTXV_CUPTI           libcupti to load (default libcupti.so.13, then the CUDA 13 toolkit).
 static char inj_dir[4096];
 
@@ -1023,6 +1383,9 @@ int InitializeInjection(void) {
     inj_record_all = rec && !strcmp(rec, "matching");
     const char *fb = getenv("PTXV_CAPTURE_FATBIN");
     inj_fatbin = !(fb && !strcmp(fb, "0"));
+    // Stream order calls for the whole process only when asked (one case per launch needs none).
+    const char *oc = getenv("PTXV_CAPTURE_ORDER");
+    order_calls = oc && !strcmp(oc, "1");
     const char *cp = getenv("PTXV_CUPTI");
     int rc = -1;
     const char *cands[] = {cp, "libcupti.so.13", "/usr/local/cuda-13.0/targets/sbsa-linux/lib/libcupti.so.13",

@@ -1,0 +1,37 @@
+name = "e_rseq_twopat"
+description = """
+S-SCOPE, continued release patterns (MISS 112): two patterns continue into the flag, one whose
+first operation is in the reader's CTA (W's st.release.gpu) and one in the other CTA (Z1's
+atom.release.gpu). After a relaxed poll the reader's acquire fence takes each pattern only when
+its scope includes the pattern's thread (PTX ISA 9.5 section 8.9.4). good: fence.acquire.gpu,
+clean. CTAFENCE: fence.acquire.cta takes W's pattern only, so the read of Z1's data races; the
+SASS front's single pending entry for all continued patterns applies to CCTL.IVALL only (on the
+PTX front it would let the .cta fence take both: clean)."""
+ptx = "kernel.ptx"
+entry = "rseq_twopat"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "fence.acquire.gpu after the relaxed poll: the reader synchronizes with both continued patterns: clean"
+expect = ["clean"]
+
+[[variants]]
+id = "CTAFENCE"
+summary = "fence.acquire.cta: the reader synchronizes with W's pattern (its CTA) only, not with Z1's (the other CTA): race on Z1's data; SASS: the .cta fence is no CCTL.IVALL, so W's data races too"
+marker = "@FENCE"
+find = "fence.acquire.gpu;"
+replace = "fence.acquire.cta;"
+expect = ["race"]

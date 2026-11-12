@@ -579,6 +579,9 @@ enum Cmd {
         /// Write the first run's output bytes here.
         #[arg(long)]
         dump: Option<PathBuf>,
+        /// The variant whose launch-order edits (`after`, `waits`, `launch_order`) apply.
+        #[arg(long)]
+        variant: Option<String>,
     },
 }
 
@@ -2249,9 +2252,10 @@ fn cmd_check(
             let make1 = || machine(case, k.clone()).expect("machine");
             // The plain certificate check is what errdist / equiv run as their precondition
             // (equiv.rs `prepare`): store it for them (vcache.rs).
-            // (errdist builds the machine from the case without the variant's `after` edits.)
+            // (errdist and equiv build the machine from the case without the variant's launch
+            // order edits: `after`, `waits`, `launch_order`.)
             let plain = certify
-                && case.variant(&v)?.after.is_empty()
+                && !case.variant(&v)?.edits_order()
                 && !slices
                 && groups.is_none()
                 && std::env::var("PTXV_EXPLORER").as_deref() != Ok("dpor");
@@ -3568,6 +3572,8 @@ pub(crate) fn hw_run_cubin(
             &runs.to_string(),
             "--expected",
             exp_path.to_str().unwrap(),
+            "--variant",
+            v,
         ])
         .args(if scrub { vec!["--scrub"] } else { vec![] })
         .env("CUDA_VISIBLE_DEVICES", gpu_env(case, gpu)?)
@@ -3794,6 +3800,8 @@ fn cmd_probe(case: &Case, variant: &str, timeout: f64, out: &Option<PathBuf>) ->
                 "1",
                 "--dump",
                 dump.to_str().unwrap(),
+                "--variant",
+                &v,
             ])
             .env("CUDA_VISIBLE_DEVICES", gpu_env(case, gpu)?)
             .stdout(std::process::Stdio::null())
@@ -4472,8 +4480,13 @@ fn run() -> Result<()> {
             scrub,
             input,
             dump,
+            variant,
         } => {
             let c = Case::load(&case)?;
+            let c = match variant {
+                Some(v) => c.for_variant(&v)?,
+                None => c,
+            };
             let img = std::fs::read(&image)?;
             let exp = match expected {
                 Some(p) => Some(std::fs::read(p)?),

@@ -1,0 +1,79 @@
+name = "e_launch_waits"
+description = """
+E-LAUNCH-ORDER (MISS 113), a join: ka on stream 0 and kb on stream 1 run side by side; kc on
+stream 0 follows ka and waits for an event recorded after kb (`waits`). kc reads ka's output
+with ld.global and kb's with ld.global.nc. Each predecessor orders kc like a stream
+predecessor (E-PDL); a dropped wait or an unknown launch order is reported."""
+ptx = "kernel.ptx"
+entry = "ka"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+launch_order = "recorded"
+stream = 0
+
+[[buffers]]
+name = "a"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "b"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[launches]]
+entry = "kb"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+stream = 1
+after = -1
+params = [{ kind = "ptr", buffer = "b" }]
+
+[[launches]]
+entry = "kc"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+stream = 0
+after = 0
+waits = [1]
+params = [
+    { kind = "ptr", buffer = "a" },
+    { kind = "ptr", buffer = "b" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "kc follows ka on stream 0 and waits for kb's event"
+expect = ["clean"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "stream 0 does not wait for kb's event: the .nc read of b races with kb's write"
+waits = [[2]]
+expect = ["race", "violation"]
+
+[[variants]]
+id = "UNKNOWN"
+summary = "the same launches with their order unknown: the join does not exclude the .nc read"
+launch_order = "unknown"
+expect = ["violation"]
+
+[[variants]]
+id = "UNORD"
+summary = "kc does not follow ka (after = -1): the read of a races with ka's write"
+after = [[2, -1]]
+expect = ["race"]

@@ -14,6 +14,10 @@ grid = [1, 1, 1]
 block = [4, 1, 1]
 dynamic_smem = 0
 outputs = ["out"]
+# E-LAUNCH-ORDER: fixtures/r3_grouped_mm's capture (one torch._grouped_mm call: one host thread
+# launches its two kernels on the current stream, the GEMM without PDL), so the list is their
+# stream order.
+launch_order = "declared"
 
 [[buffers]]
 name = "A"

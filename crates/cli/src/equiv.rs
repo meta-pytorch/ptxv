@@ -267,11 +267,10 @@ pub(crate) fn prepare_with(
             ptxv_sim::explore::explore_symmetric(mk, max_states, &mut |_, _| {})
         })
     } else if k.certify {
-        // `ptxv check --certify` may have run this check already (vcache.rs).
-        let key = case
-            .variant(&k.variant)?
-            .after
-            .is_empty()
+        // `ptxv check --certify` may have run this check already (vcache.rs), unless the
+        // variant edits the launch order, which this machine (the case as loaded) does not
+        // apply: that check was of another launch order.
+        let key = (!case.variant(&k.variant)?.edits_order())
             .then(|| crate::vcache::key(&case.dir, &k.variant, &k.front, "certify"))
             .flatten();
         match key

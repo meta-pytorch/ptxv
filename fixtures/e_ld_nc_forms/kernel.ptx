@@ -1,0 +1,117 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-NC: byte precision, vector widths, and writes by other CTAs, atomics and the async proxy.
+// 2 CTAs x 32 threads; c = %ctaid.x, t = %tid.x, i = 32 c + t.
+//   good: thread i stores byte 1 of w[i] (st.global.u8). Thread 0 of each CTA stores 16
+//     shared bytes to dst[4 c ..] with cp.async.bulk.global.shared::cta and waits for it;
+//     thread 0 of CTA 1 stores scratch[0] and releases flag (st.release.gpu), which thread 0
+//     of CTA 0 acquires (ld.acquire.gpu poll). bar.sync. Then thread i reads byte 0 of w[i]
+//     with ld.global.nc.u8 (another byte of a written word: exact), and src[32 c + 8 (t % 4)
+//     ..] (never written) with ld.global.nc.v4.u32 and ld.global.nc.v8.u32 (SASS
+//     LDG.E.128.CONSTANT, LDG.E.ENL2.256.CONSTANT); out[i] = the sum. bar.sync, then
+//     red.global.add.u32 of red[i].
+//   BYTE: the u8 load reads byte 1 of w[i], the byte the thread stored.
+//   V4 / V8: the vector load reads w[32 c + 8 (t % 4) ..] (bytes 1 of those words were stored
+//     before the barrier) instead of src.
+//   RED: the final red.global.add targets src[i], which other threads' vector loads read
+//     before the barrier: an atomic write after the .nc reads, ordered by bar.sync.
+//   BULK: the bulk copy writes src[32 c .. 32 c + 3], which the vector loads read after it.
+//   XCTA: CTA 1's store goes to src[0], which CTA 0's vector loads read after the acquire
+//     and the barrier: ordered by happens-before, still outside the memory model.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(.param .u64 psrc, .param .u64 pw, .param .u64 pout, .param .u64 pdst,
+                  .param .u64 pscratch, .param .u64 pflag, .param .u64 pred)
+.reqntid 32
+{
+    .reg .pred  %p<4>;
+    .reg .b16   %rs<4>;
+    .reg .b32   %r<48>;
+    .reg .b64   %rd<32>;
+    .shared .align 128 .b32 tile[4];
+
+    ld.param.u64    %rd1, [psrc];
+    ld.param.u64    %rd2, [pw];
+    ld.param.u64    %rd3, [pout];
+    ld.param.u64    %rd4, [pdst];
+    ld.param.u64    %rd5, [pscratch];
+    ld.param.u64    %rd6, [pflag];
+    ld.param.u64    %rd7, [pred];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    cvta.to.global.u64 %rd4, %rd4;
+    cvta.to.global.u64 %rd5, %rd5;
+    cvta.to.global.u64 %rd6, %rd6;
+    cvta.to.global.u64 %rd7, %rd7;
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    shl.b32         %r3, %r2, 5;
+    add.u32         %r4, %r3, %r1;                  // i
+    mul.wide.u32    %rd8, %r4, 4;
+    add.s64         %rd9, %rd2, %rd8;               // &w[i]
+    add.s64         %rd10, %rd3, %rd8;              // &out[i]
+    add.s64         %rd11, %rd1, %rd8;              // &src[i]
+    add.s64         %rd12, %rd7, %rd8;              // &red[i]
+    and.b32         %r5, %r1, 3;
+    shl.b32         %r6, %r5, 5;                    // 32 (t % 4) bytes
+    cvt.u64.u32     %rd13, %r6;
+    shl.b32         %r7, %r2, 7;                    // 128 c bytes
+    cvt.u64.u32     %rd14, %r7;
+    add.s64         %rd15, %rd1, %rd14;             // &src[32 c]
+    add.s64         %rd16, %rd15, %rd13;            // &src[32 c + 8 (t % 4)]
+    add.s64         %rd17, %rd2, %rd14;
+    add.s64         %rd18, %rd17, %rd13;            // &w[32 c + 8 (t % 4)]
+    shl.b32         %r8, %r2, 4;                    // 16 c bytes
+    cvt.u64.u32     %rd19, %r8;
+    add.s64         %rd20, %rd4, %rd19;             // &dst[4 c]
+    mov.u32         %r9, 1;
+    cvt.u16.u32     %rs1, %r9;
+    st.global.u8    [%rd9+1], %rs1;                 // byte 1 of w[i]
+    setp.ne.u32     %p1, %r1, 0;
+    setp.ne.u32     %p2, %r2, 0;
+    @%p1 bra        $L_bar;
+    mov.u32         %r10, tile;
+    mov.u32         %r11, 5;
+    st.shared.v4.u32 [%r10], {%r11, %r11, %r11, %r11};
+    fence.proxy.async.shared::cta;
+    mov.u64         %rd21, %rd20;                   // @BULK
+    cp.async.bulk.global.shared::cta.bulk_group [%rd21], [%r10], 16;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    @!%p2 bra       $L_poll;
+    st.global.u32   [%rd5], %r11;                   // @XCTA
+    st.release.gpu.global.u32 [%rd6], %r9;
+    bra.uni         $L_bar;
+$L_poll:
+    ld.acquire.gpu.global.u32 %r12, [%rd6];
+    setp.eq.u32     %p3, %r12, 0;
+    @%p3 bra        $L_poll;
+$L_bar:
+    bar.sync        0;
+    ld.global.nc.u8 %rs2, [%rd9];                   // @BYTE
+    ld.global.nc.v4.u32 {%r20, %r21, %r22, %r23}, [%rd16];   // @V4
+    ld.global.nc.v8.u32 {%r24, %r25, %r26, %r27, %r28, %r29, %r30, %r31}, [%rd16];   // @V8
+    cvt.u32.u16     %r32, %rs2;
+    add.u32         %r33, %r20, %r21;
+    add.u32         %r33, %r33, %r22;
+    add.u32         %r33, %r33, %r23;
+    add.u32         %r34, %r24, %r25;
+    add.u32         %r34, %r34, %r26;
+    add.u32         %r34, %r34, %r27;
+    add.u32         %r34, %r34, %r28;
+    add.u32         %r34, %r34, %r29;
+    add.u32         %r34, %r34, %r30;
+    add.u32         %r34, %r34, %r31;
+    add.u32         %r35, %r32, %r33;
+    add.u32         %r35, %r35, %r34;
+    st.global.u32   [%rd10], %r35;
+    bar.sync        0;
+    red.global.add.u32 [%rd12], 1;                  // @RED
+    ret;
+}

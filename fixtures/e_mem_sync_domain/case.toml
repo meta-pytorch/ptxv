@@ -1,0 +1,67 @@
+name = "e_mem_sync_domain"
+description = """
+S-SCOPE with memory synchronization domains (MISS 113, launch attributes): a producer in domain
+0 publishes data with st.release.gpu; a consumer that may run at the same time (its stream waits
+for nothing), launched in domain 1, acquires with ld.acquire.gpu. Kernels in different domains
+are system-scope distanced (CUDA 13.0 cuda.h, CUlaunchMemSyncDomain), so the .gpu pair does not
+synchronize: a race. At .sys scope the hand-off is clean."""
+ptx = "kernel.ptx"
+entry = "producer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+launch_order = "recorded"
+stream = 0
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[launches]]
+entry = "consumer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+stream = 1
+after = -1
+mem_sync_domain = 1
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "flag" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "a .gpu release / acquire between kernels in different memory synchronization domains: a race"
+expect = ["race"]
+
+[[variants]]
+id = "SYS"
+summary = "the release and acquire at .sys scope: clean"
+edits = [
+    { marker = "@REL", find = "st.release.gpu", replace = "st.release.sys" },
+    { marker = "@ACQ", find = "ld.acquire.gpu", replace = "ld.acquire.sys" },
+]
+expect = ["clean"]

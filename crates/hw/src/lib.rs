@@ -34,6 +34,8 @@ type CUcontext = *mut c_void;
 type CUmodule = *mut c_void;
 type CUfunction = *mut c_void;
 type CUdeviceptr = u64;
+type CUstream = *mut c_void;
+type CUevent = *mut c_void;
 
 #[repr(C)]
 struct CUlaunchAttribute {
@@ -57,6 +59,9 @@ const ATTR_PROGRAMMATIC_STREAM_SERIALIZATION: u32 = 6;
 const ATTR_CLUSTER_DIMENSION: u32 = 4;
 /// CU_LAUNCH_ATTRIBUTE_PREFERRED_CLUSTER_DIMENSION (cuda.h).
 const ATTR_PREFERRED_CLUSTER_DIMENSION: u32 = 11;
+/// CU_LAUNCH_ATTRIBUTE_MEM_SYNC_DOMAIN_MAP / _MEM_SYNC_DOMAIN (cuda.h).
+const ATTR_MEM_SYNC_DOMAIN_MAP: u32 = 9;
+const ATTR_MEM_SYNC_DOMAIN: u32 = 10;
 /// CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_WIDTH: nonzero when the cubin fixes the cluster shape.
 const FUNC_REQUIRED_CLUSTER_WIDTH: i32 = 11;
 
@@ -136,6 +141,12 @@ cuda_fns! {
         extra: *mut *mut c_void,
     ) -> CUresult;
     fn cuCtxSynchronize() -> CUresult;
+    fn cuStreamCreate(s: *mut CUstream, flags: u32) -> CUresult;
+    fn cuStreamDestroy_v2(s: CUstream) -> CUresult;
+    fn cuEventCreate(e: *mut CUevent, flags: u32) -> CUresult;
+    fn cuEventDestroy_v2(e: CUevent) -> CUresult;
+    fn cuEventRecord(e: CUevent, s: CUstream) -> CUresult;
+    fn cuStreamWaitEvent(s: CUstream, e: CUevent, flags: u32) -> CUresult;
     fn cuCtxEnablePeerAccess(peer: CUcontext, flags: u32) -> CUresult;
     fn cuDeviceGetAttribute(v: *mut i32, attr: i32, dev: CUdevice) -> CUresult;
     fn cuFuncSetAttribute(f: CUfunction, attr: i32, v: i32) -> CUresult;
@@ -580,6 +591,68 @@ pub fn run_with(
             all_args.push(args);
         }
 
+        // E-LAUNCH-ORDER: each launch runs on its case stream (a non-blocking stream per GPU and
+        // `stream`; a case without streams has one per GPU) with the case's edges: the stream
+        // order; `after` (or, without it, the previous launch on the GPU) and each `waits`
+        // entry on another stream, through an event recorded after that launch. A launch with
+        // `after = -1` whose stream already ran a launch gets a stream of its own (no stream
+        // predecessor). A programmatic edge is the launch's programmatic stream serialization
+        // when its predecessor is the stream's previous launch; across streams it runs as a
+        // full edge (on GB300 a ProgrammaticEvent's dependent did not start before the primary
+        // ended). `mem_sync_domain`: the launch's domain map sends both logical domains there.
+        let n = launches.len();
+        let mut hw_stream: Vec<CUstream> = Vec::with_capacity(n);
+        let mut streams: Vec<(u32, CUstream)> = Vec::new();
+        let mut cur: BTreeMap<(u32, u32), CUstream> = BTreeMap::new();
+        let mut last_on: BTreeMap<usize, usize> = BTreeMap::new(); // stream -> its last launch
+        let mut prev_on_dev: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut prog = vec![false; n];
+        let mut waits_on: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, l) in launches.iter().enumerate() {
+            let key = (l.device, l.stream.unwrap_or(0));
+            let s = match cur.get(&key) {
+                Some(&s) if l.after != Some(-1) => s,
+                _ => {
+                    set(l.device)?;
+                    let mut s = std::ptr::null_mut();
+                    // CU_STREAM_NON_BLOCKING: no implicit order with the NULL stream.
+                    ck(cuStreamCreate(&mut s, 1), "cuStreamCreate")?;
+                    streams.push((l.device, s));
+                    cur.insert(key, s);
+                    s
+                }
+            };
+            hw_stream.push(s);
+            let last = last_on.get(&(s as usize)).copied();
+            let pred = match l.after {
+                Some(a) if a >= 0 => Some(a as usize),
+                Some(_) => None,
+                None => prev_on_dev.get(&l.device).copied(),
+            };
+            let mut preds: Vec<usize> = pred.into_iter().collect();
+            preds.extend(l.waits.iter().filter(|&&w| w >= 0).map(|&w| w as usize));
+            for p in preds {
+                if p >= i {
+                    bail!("launch {i}: predecessor {p} is not an earlier launch");
+                }
+                if hw_stream[p] != s {
+                    waits_on[i].push(p);
+                } else if Some(p) == pred && Some(p) == last {
+                    prog[i] = l.pdl;
+                }
+                // Else an earlier launch on the same stream: the stream order covers it.
+            }
+            last_on.insert(s as usize, i);
+            prev_on_dev.insert(l.device, i);
+        }
+        let mut events: Vec<CUevent> = vec![std::ptr::null_mut(); n];
+        for p in waits_on.iter().flatten() {
+            if events[*p].is_null() {
+                set(launches[*p].device)?;
+                // CU_EVENT_DISABLE_TIMING
+                ck(cuEventCreate(&mut events[*p], 2), "cuEventCreate")?;
+            }
+        }
         let mut res = HwResult {
             gpu_visible: std::env::var("CUDA_VISIBLE_DEVICES").unwrap_or_default(),
             runs: 0,
@@ -640,16 +713,41 @@ pub fn run_with(
                     "scrub",
                 )?;
             }
-            // Every kernel of the case, in order on the default stream; a PDL launch carries
-            // the programmatic-stream-serialization attribute (E-PDL).
+            // The resets and the scrubber (NULL stream) complete before the case's streams start.
+            for d in 0..ctxs.len() as u32 {
+                set(d)?;
+                ck(cuCtxSynchronize(), "cuCtxSynchronize")?;
+            }
+            // Every kernel of the case on its stream (above); a programmatic edge carries the
+            // programmatic-stream-serialization attribute (E-PDL).
             for (i, l) in launches.iter().enumerate() {
                 set(l.device)?;
+                for &p in &waits_on[i] {
+                    ck(
+                        cuStreamWaitEvent(hw_stream[i], events[p], 0),
+                        "cuStreamWaitEvent",
+                    )?;
+                }
                 let mut attrs = Vec::new();
-                if l.pdl {
+                if prog[i] {
                     attrs.push(CUlaunchAttribute {
                         id: ATTR_PROGRAMMATIC_STREAM_SERIALIZATION,
                         pad: [0; 4],
                         value: [1, 0, 0, 0, 0, 0, 0, 0],
+                    });
+                }
+                if let Some(d) = l.mem_sync_domain.filter(|&d| d != 0) {
+                    // Both logical domains map to physical domain d; the launch's is the
+                    // default one (CU_LAUNCH_MEM_SYNC_DOMAIN_DEFAULT).
+                    attrs.push(CUlaunchAttribute {
+                        id: ATTR_MEM_SYNC_DOMAIN_MAP,
+                        pad: [0; 4],
+                        value: [(d as u64) | (d as u64) << 8, 0, 0, 0, 0, 0, 0, 0],
+                    });
+                    attrs.push(CUlaunchAttribute {
+                        id: ATTR_MEM_SYNC_DOMAIN,
+                        pad: [0; 4],
+                        value: [0; 8],
                     });
                 }
                 if cluster_attr[i] {
@@ -672,7 +770,7 @@ pub fn run_with(
                     grid: l.grid,
                     block: l.block,
                     smem: l.dynamic_smem,
-                    stream: std::ptr::null_mut(),
+                    stream: hw_stream[i],
                     attrs: attrs.as_mut_ptr(),
                     nattrs: attrs.len() as u32,
                 };
@@ -680,6 +778,9 @@ pub fn run_with(
                     cuLaunchKernelEx(&cfg, fs[i], all_args[i].as_mut_ptr(), std::ptr::null_mut()),
                     "cuLaunchKernelEx",
                 )?;
+                if !events[i].is_null() {
+                    ck(cuEventRecord(events[i], hw_stream[i]), "cuEventRecord")?;
+                }
             }
             for d in (0..ctxs.len() as u32).rev() {
                 set(d)?;
@@ -729,6 +830,16 @@ pub fn run_with(
             res.distinct.push((c, diff));
         }
         res.distinct.sort_by_key(|d| std::cmp::Reverse(d.0));
+        for (i, e) in events.into_iter().enumerate() {
+            if !e.is_null() {
+                set(launches[i].device)?;
+                ck(cuEventDestroy_v2(e), "cuEventDestroy")?;
+            }
+        }
+        for (d, st) in streams {
+            set(d)?;
+            ck(cuStreamDestroy_v2(st), "cuStreamDestroy")?;
+        }
         drop(storage);
         Ok(res)
     }

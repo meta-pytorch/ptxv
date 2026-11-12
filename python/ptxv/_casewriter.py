@@ -800,6 +800,28 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                         )
         return s
 
+    # Launch order (E-LAUNCH-ORDER): what the recorded streams and stream order calls enforce
+    # between the case's launches (python/ptxv/_order.py).
+    from ._order import launch_order, summary, toml_launch, toml_top
+
+    orecs = (
+        cap.order_records()
+        if hasattr(cap, "order_records")
+        else [la.record for la in getattr(cap, "launches", [])]
+    )
+    opos = {id(r): i for i, r in enumerate(orecs)}
+    if all(id(la.record) in opos for la, _ in plaunches):
+        lorder = launch_order(orecs, [opos[id(la.record)] for la, _ in plaunches])
+    else:
+        lorder = launch_order([la.record for la, _ in plaunches])
+        lorder.recorded, lorder.why = False, "launches outside the capture's records"
+    multi = len(plaunches) > 1
+    if multi and not lorder.recorded:
+        warnings.append(
+            f"launch order not recorded ({lorder.why}): launch-order exclusions do not apply "
+            "to this case (E-LAUNCH-ORDER)"
+        )
+
     l0 = plaunches[0][0]
     kern_lines = "\n".join(
         f"  {i}: {la.name[:110]} grid {list(la.grid)} block {list(la.block)}"
@@ -841,6 +863,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             else ""
         )
         + f"dynamic_smem = {l0.smem}\noutputs = {json.dumps(out_names)}\n"
+        + (toml_top(lorder) if multi else "")
     ]
     (out / "data").mkdir()
     (out / "expected").mkdir()
@@ -881,8 +904,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         if la.record.get("preferred_cluster"):
             s += f"preferred_cluster = {la.record['preferred_cluster']}\n"
         s += f"dynamic_smem = {la.smem}\n"
-        if la.pdl:
-            s += "pdl = true\n"
+        s += toml_launch(lorder, i, la.pdl)
         if not use_ptx and cubin_files[i] != cubin_files[0]:
             s += f'cubin = "{cubin_files[i]}"\n'
         toml.append(s)
@@ -923,6 +945,8 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         "unresolved": unresolved,
         "warnings": warnings + list(cap.warnings),
     }
+    if multi:
+        meta["launch_order"] = summary(lorder)
     if scratch:
         meta["scratch"] = sorted(scratch)
     if suggest_scratch and os.environ.get("PTXV_SUGGEST_SCRATCH", "1") != "0":

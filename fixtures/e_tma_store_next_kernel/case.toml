@@ -10,6 +10,9 @@ entry = "store"
 grid = [1, 1, 1]
 block = [128, 1, 1]
 outputs = ["D", "out"]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states
+# (one stream: the dependent kernel launches with PDL after the store grid).
+launch_order = "declared"
 
 [[buffers]]
 name = "D"

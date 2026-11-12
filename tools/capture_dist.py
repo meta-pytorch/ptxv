@@ -42,13 +42,15 @@
 # * Buffers. A rank's caching-allocator blocks become buffers on that device (`_r<rank>`
 #   suffix). A symmetric allocation is split at the layout its handle reports (data buffer,
 #   signal pad) into `<name>_r<owner>` and `sig_r<owner>`; other VMM allocations are kept whole.
-# * Launch order: each rank's launches in stream order, as `[[launches]]` with `device = rank`
-#   (only same-device launches are ordered, E-PDL). Cross-rank host submission times are kept
-#   in capture.json. A rank using several streams, or events, is warned about (not modeled).
+# * Launch order: each rank's launches as `[[launches]]` with `device = rank` (only
+#   same-device launches are ordered, E-PDL), interleaved by host submission time (kept in
+#   capture.json). Within a rank only the order its streams and stream order calls (event
+#   records / waits, graph launches) enforce is kept (`after`, `waits`, `pdl`,
+#   launch_order = "recorded"; python/ptxv/_order.py, docs/capture.md "Launch order").
 # * Replicas: the outputs the module lists in REPLICAS (an all-reduce result) form a replica
 #   group per name across the ranks; their bytes must be identical (N4, `divergent`).
-# * Several streams per rank (DeepEP's communication stream) are serialized in submission
-#   order; each stream switch must be ordered by an event record/wait (checked, else warned).
+# * Several streams per rank (DeepEP's communication stream): a stream switch that an event
+#   orders becomes an edge; one that nothing orders leaves the two launches concurrent (noted).
 # * cudaMalloc buffers, legacy IPC (cudaIpcGetMemHandle / OpenMemHandle) and mapped host
 #   memory are tracked like VMM allocations; host-to-device uploads between kernels (a
 #   host-computed routing table) are folded into the destination's initial bytes (noted).
@@ -1390,43 +1392,25 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     # ------------------------------------------------ launches and parameters
     launches = []  # (rank, rec, params)
     streams = {}
+    rank_order = {}  # rank -> its launches' order (_order.LaunchOrder)
+    import importlib.util as _ilu  # (merge() imports importlib itself further down)
+
+    _spec = _ilu.spec_from_file_location("ptxv_order", os.path.join(ROOT, "python/ptxv/_order.py"))
+    _order = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_order)
     for r, m in enumerate(ranks):
         recs = [x for x in m["records"] if "name" in x]
         if kfilter:
             recs = [x for x in recs if kfilter.search(x["name"])]
         streams[r] = sorted({x["stream"] for x in recs})
-        # Several streams (DeepEP's communication stream): the case orders a GPU's grids as
-        # one stream, in submission order. That is exact when every switch of stream between
-        # consecutive launches goes through an event: recorded on the first one's stream
-        # after it, waited on by the second one's stream before it. Checked here.
-        if len(streams[r]) > 1:
-            seq = [x for x in m["records"] if ("name" in x and x in recs) or "ev" in x]
-            last = None  # (index in seq, stream) of the previous launch
-            for i, x in enumerate(seq):
-                if "name" not in x:
-                    continue
-                if last and last[1] != x["stream"]:
-                    between = seq[last[0] + 1 : i]
-                    evs = {
-                        e["event"]
-                        for e in between
-                        if e["ev"] == "record" and e["stream"] == last[1]
-                    }
-                    ok = any(
-                        e["ev"] == "wait"
-                        and e["stream"] == x["stream"]
-                        and e["event"] in evs
-                        for e in between
-                    )
-                    if not ok:
-                        warnings.append(
-                            f"rank {r}: {x['name'][:50]} on stream {x['stream']:#x} may overlap the previous launch on {last[1]:#x} (no event between them): the case serializes them"
-                        )
-                    else:
-                        notes.append(
-                            f"rank {r}: stream {last[1]:#x} -> {x['stream']:#x} ordered by an event before {x['name'][:50]}"
-                        )
-                last = (i, x["stream"])
+        # Launch order (E-LAUNCH-ORDER, python/ptxv/_order.py): the order the rank's streams and
+        # stream order calls (event records / waits, graph launches) enforce between its kept
+        # launches; launches on streams no event orders (DeepEP's communication stream) stay
+        # concurrent. Mapped into the case's interleaving below.
+        rpos = {id(x): i for i, x in enumerate(m["records"])}
+        rank_order[r] = _order.launch_order(
+            m["records"], [rpos[id(x)] for x in recs], single_device=True
+        )
         for x in recs:
             split_packed(r, x)
             params = []
@@ -1972,6 +1956,20 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     order.remove(first)
     order = [first] + order
     L = [launches[j] for j in order]
+    # Each rank's launch order, placed into this interleaving (a rank is one GPU of the case,
+    # and its launches keep their own order in it).
+    gpos = {j: g for g, j in enumerate(order)}
+    parts = []
+    for r in sorted(rank_order):
+        idx = [gpos[j] for j in range(len(launches)) if launches[j][0] == r]
+        parts.append((rank_order[r], idx))
+        notes += [f"rank {r}: {n}" for n in rank_order[r].notes]
+    lorder = _order.place(parts, len(L))
+    if len(L) > 1 and not lorder.recorded:
+        warnings.append(
+            f"launch order not recorded ({lorder.why}): launch-order exclusions do not apply "
+            "to this case (E-LAUNCH-ORDER)"
+        )
     # Replicas: the outputs the target module names in REPLICAS (an all-reduce result), when
     # every rank has them with the same size. A MoE layer's outputs are per-rank tokens: none.
     rep_names = set(ranks[0].get("replicas", []))
@@ -2020,6 +2018,7 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
             else ""
         )
         + (f'exit_fence = "{A.exit_fence}"\n' if A.exit_fence else "")
+        + (_order.toml_top(lorder) if len(L) > 1 else "")
     ]
     kept_phys = {
         pid
@@ -2131,15 +2130,14 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
             )
         toml.append(s)
     toml += toml_params(L[0][2], "params")
-    for r, x, params in L[1:]:
+    for gi, (r, x, params) in enumerate(L[1:], 1):
         s = f"[[launches]]\nentry = {q(x['name'])}\ngrid = {x['grid']}\nblock = {x['block']}\n"
         if x["cluster"] != [1, 1, 1] or x.get("preferred_cluster"):
             s += f"cluster = {x['cluster']}\n"
         if x.get("preferred_cluster"):
             s += f"preferred_cluster = {x['preferred_cluster']}\n"
         s += f"dynamic_smem = {x['smem']}\ndevice = {r}\n"
-        if x.get("pdl"):
-            s += "pdl = true\n"
+        s += _order.toml_launch(lorder, gi, bool(x.get("pdl")))
         if ck(r, x) != ck(L[0][0], r0):
             s += f'cubin = "{ck(r, x)}"\n'
         toml.append(s)
@@ -2239,13 +2237,14 @@ Regenerate: CUDA_VISIBLE_DEVICES=0,1,3 $PTXV_PYTHON tools/capture_dist.py {cmdli
         "unresolved": unresolved,
         "warnings": warnings,
         "notes": notes,
+        **({"launch_order": _order.summary(lorder)} if len(L) > 1 else {}),
         "events": [
             dict(
                 rank=m["rank"],
                 **{
                     k: (hex(v) if k in ("event", "stream") else v)
                     for k, v in x.items()
-                    if k != "t"
+                    if k not in ("t", "t0", "t1")
                 },
             )
             for m in ranks

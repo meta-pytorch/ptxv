@@ -46,6 +46,11 @@ replicas = []
 # model (E-HW-L1, crates/sim/src/twolevel.rs) as latent. The old verdicts reproduce with
 # `PTXV_POLL_ACQUIRE=1 ptxv check --assume-refuted E-POLL-ACQ ...` (named in the verdict).
 smem_cumulative = true
+# E-LAUNCH-ORDER: captured before launch orders were recorded, but tools/capture_dist.py saw two
+# streams per rank and ordered every switch between them by an event (capture.json notes: an
+# event recorded after the previous launch and waited for before the next; no kernel filter,
+# no graph capture), so each GPU's list is an order CUDA enforced.
+launch_order = "declared"
 
 [[buffers]]
 name = "x_r0"

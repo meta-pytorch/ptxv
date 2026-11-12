@@ -387,9 +387,120 @@ without `import ptxv` (cuDNN SDPA and a cuBLASLt nvjet GEMM with cluster 8x1x1 a
 bitwise equal), and an embedding-bag workload in a bundled Python executable (CUDA and Triton
 table-batched-embedding forward and backward kernels).
 
+## Launch order (2026-11-11)
+
+A case's `[[launches]]` list is one ordered list per GPU, and launch-order exclusions (S-NC's
+stream order, E-L1-CORES's kernel boundary) trust it only when the case says
+`launch_order = "recorded"` (ASSUMPTIONS.md E-LAUNCH-ORDER). The three capture paths record
+what that needs and write only the order CUDA enforces (`python/ptxv/_order.py`):
+
+- Every launch record carries its stream handle, `stream_id` (cuStreamGetId: unique for the
+  process; stream 0 resolved through the entry point's flavour, `_ptsz` or legacy), whether
+  it was issued into a graph capture (`capturing`, `capture_id`), its ProgrammaticEvent /
+  LaunchCompletionEvent events and its memory synchronization domain (the launch's or
+  stream's domain through its domain map). On a capturing stream cuStreamGetId and
+  cuStreamGetDevice fail (CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED) and invalidate the capture
+  (GB300, CUDA 13 driver), so they are left out there; the stream is then named by its
+  handle within the capture.
+- Stream order calls are recorded in order with the launches: cuEventRecord(WithFlags),
+  cuStreamWaitEvent, cuGraphLaunch and cuStreamUpdateCaptureDependencies (both versions), both
+  flavours, and cuEventDestroy (both versions), cuIpcOpenEventHandle and cuIpcGetEventHandle. probes/launchcap logs them with
+  `LAUNCHCAP_ORDER=1` (tools/capture.py sets it; `LAUNCHCAP_VMM=1`, which tools/capture_dist.py
+  sets, implies it); ptxvcap (ptxv.capture) writes them to `events.jsonl` with an `oseq` shared
+  with `launches.jsonl` (injection mode: `PTXV_CAPTURE_ORDER=1`). A launch or stream order call
+  is written once it returned, and only when it succeeded (a failed wait orders nothing), with
+  its host thread (`tid`) and the host times just before the call and after it returned (`t0`,
+  `t1`, CLOCK_MONOTONIC ns). probes/launchcap keeps the launch being recorded per thread.
+- Edges: the previous launch on the same stream (programmatic when the launch carries
+  programmatic stream serialization); an event recorded on one stream and waited for on
+  another (the waiting stream's next launch after every launch the recording stream had been
+  given); a ProgrammaticEvent (a programmatic edge; none with triggerAtBlockStart); none for
+  a LaunchCompletionEvent or an event with the external flag; inside a graph capture the same
+  rules among the capture's launches (a stream that waits for an event recorded in a capture
+  joins it; after cuStreamUpdateCaptureDependencies the stream's next launch has no edge from
+  what the stream was given before; a per-thread default stream is each thread's own). A launch issued into a capture has no edge to launches outside it: the graph
+  runs when launched, maybe several times, so its kernels are unordered with the program's
+  other kernels in the case. An event's record ends at cuEventDestroy (the driver hands the
+  handle to the next new event, and a wait on an event never recorded orders nothing) and at
+  any graph launch (a graph's event record nodes record events when it runs); an event shared
+  with another process (IPC open or export) orders nothing until destroyed, since the other
+  process can record it. Launches filtered out (`--kernels`, `select`) still order the kept
+  ones through them (full edges, or full edges then a final programmatic one).
+- Encoding: `stream` (per GPU, numbered by first use), `after` (the predecessor; omitted when
+  it is the previous launch on the GPU on the same stream; -1: none), `pdl` (that edge is
+  programmatic), `waits` (further predecessors it starts after they completed),
+  `mem_sync_domain`; capture.json `launch_order` lists every launch's predecessors and notes
+  each stream switch ("ordered by an event" or "they may overlap"). A single-launch case gets
+  none of these lines.
+- `launch_order = "unknown"` (with the reason in a comment) when a launch record has no stream
+  id or no thread (an older capture library), when launches between the kept ones were not
+  written (injection mode with a filter), when the case's launches are not in issue order,
+  when the kept launches of one process are on several GPUs (the case has no per-launch
+  device), or when calls of several host threads overlap in time: a record whose `t0` is not
+  after the `t1` of every earlier record of another thread (the driver may have taken the two
+  calls in the other order). Threads that take turns (a backward thread launching while the
+  calling thread waits) keep a recorded order.
+- Not recorded, so no edge: host synchronization, the legacy default stream's implicit
+  synchronization with blocking streams, stream memory operations (cuStreamWaitValue,
+  memcpy), host functions, events recorded before the window, cooperative launches in
+  probes/launchcap (cuLaunchCooperativeKernel and cudaLaunchCooperativeKernel are not hooked
+  there). A missing edge only adds behaviours, with one exception at the strict level: after a
+  wait for a ProgrammaticEvent, an unrecorded operation on the waiting stream (a memset, a
+  copy, a host function) does not stop the programmatic edge from reaching the stream's next
+  launch, which CUDA orders only after that operation (itself started at the primary's
+  trigger), not after the primary's later writes. On GB300 the waiting stream's next kernel
+  never started before the primary ended (0 of 100 runs directly after the wait, 0 of 100
+  with a memset between; 100 of 100 overlapped without the wait), so there the programmatic
+  edge is weaker than the hardware.
+
+The hardware runner (`ptxv hw`, crates/hw) runs each launch on its case stream (a non-blocking
+stream per GPU and `stream`), with `after` and `waits` across streams through events, a
+programmatic edge on the same stream as programmatic stream serialization (across streams as a
+full edge), and `mem_sync_domain` through the launch's domain map; `ptxv hw` applies the
+variant's launch-order edits. Before 2026-11-11 it ran every kernel in list order on the NULL
+stream, so no GPU run could show an overlap the case allows. GB300, a 2 ms delay before the
+writer's store: e_launch_order UNORD (the reader after nothing) differs from the ordered output
+in 200 of 200 runs, good (an event edge) in 0 of 200; e_launch_waits NOWAIT 200 of 200, good
+0 of 200; the previous runner 0 of 200 for all four.
+
+Older captures (before 2026-11-11) carry no `launch_order`, so the exclusions do not apply to
+their multi-launch cases, and E-PDL still orders their grids as listed: a plain race between
+launches that such a capture serialized is not reported (re-capture, or declare the order where
+the capture.json below shows it: fixtures/r4b_moe). An older probes/launchcap capture of a
+process that launched from several threads at once can also give a launch another thread's
+PDL attribute, stream, packed parameter buffer or preferred cluster (the library kept the
+launch being recorded in process-wide state): with two threads launching through
+cudaLaunchKernelEx at once (GB300, 2000 launches each, 3 runs per runtime linkage), 1091 to
+1944 of the 2000 PDL launches were written without PDL, and 877 to 1828 of the 2000 others with
+it; with the threads one after the other, none. What an older capture.json can tell:
+tools/capture.py's (keys `argv`, `filtered_out`) records nothing about streams; ptxv.capture's
+warns "launches on several streams" when the region used more than one stream handle (absent:
+one handle, which does not show one stream: a destroyed stream's handle is reused, and 0x0 is a
+different stream per thread and entry point); tools/capture_dist.py's has each launch's stream,
+each rank's streams and the event records / waits, and its work directory the rank's records
+(ASSUMPTIONS.md E-LAUNCH-ORDER states when those suffice to declare the order).
+
+Validation (2026-11-11, GB300, torch 2.12): two streams with an event (k0 on s1 and k1 on s2
+unordered, k2 on s2 waiting for k0, k3 on the current stream waiting for both) gives
+`after = -1` for k1, `waits = [0]` for k2 and `after = 2` for k3 through tools/capture.py and
+ptxv.capture alike (check: clean). The same without the event, where k1 reads what k0 writes,
+gives k1 `after = -1` and `check` reports the race; captured with the previous tools, it lists
+the launches in API order and is clean with either binary. A graph captured with a fork and a join gives
+k1 after k0 and k2 after k1 inside the capture; the eager kernel after the replay is unordered
+with the graph's kernels (a race reported between them: the conservative reading above).
+tools/capture_dist.py with two ranks of that program gives each rank the same relations,
+mapped into the case's interleaving. An event recorded after k0 on s1 and destroyed, then a
+new event (given the destroyed one's handle) waited for on s2 before k1 without being recorded:
+k1 `after = -1` through both paths and `check` reports the race (before cuEventDestroy was
+recorded the wait ordered k1 after k0, clean). One process with a kernel on each of two GPUs:
+`launch_order = "unknown"`. Two threads launching through cudaLaunchKernelEx (one with PDL,
+one without) at once: every launch keeps its own PDL attribute and stream, and the order is
+`unknown` (the calls overlap); the threads one after the other: `recorded`.
+
 ## Limits
 
-- One stream. Work on other streams, and events, are not recorded.
+- Launch order: see "Launch order"; a graph's kernels are unordered with the kernels outside
+  their capture.
 - Memory operations between kernels are not modeled (warned).
 - Memory outside the caching allocator is not known. That includes `cudaMalloc` by a library
   itself, module globals, and host-pinned memory. Pointers to it stay raw bytes, listed as

@@ -1,0 +1,57 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-SCOPE: a release sequence continued by a read-modify-write (MISS 100).
+// CTA 0 thread 0 (t0): data store; st.release.gpu [f] = 1 (W); st.release.gpu [g] = 1.
+// CTA 1 thread 0 (t1): ld.acquire.gpu [g] until 1 (so W happens before Z); then
+//   atom.relaxed.gpu.add [f], 1 (Z: reads W's 1, writes 2). No release fence in t1.
+// CTA 0 thread 32 (t2): ld.acquire.gpu [f] until 2; then reads the data.
+// PTX ISA 9.5 8.9.2: W precedes t2's read in observation order through Z only if W and Z are
+// morally strong. good: W at .gpu, so they are, and t2 synchronizes with W (clean).
+// CTAREL: W at .cta does not include t1 (CTA 1); Z is relaxed with no release fence before it,
+// so no release pattern reaches t2: its data read races with t0's data store.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry rseq_scope(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    setp.ne.u32 %p1, %r2, 0;
+    @%p1 bra CTA1;
+    setp.eq.u32 %p2, %r1, 32;
+    @%p2 bra T2;
+    setp.ne.u32 %p3, %r1, 0;
+    @%p3 bra DONE;
+    mov.u32 %r3, 7;
+    st.global.u32 [%rd1], %r3;
+    mov.u32 %r4, 1;
+    st.release.gpu.global.u32 [%rd1+4], %r4;      // @W
+    st.release.gpu.global.u32 [%rd1+8], %r4;
+    bra DONE;
+T2:
+    ld.acquire.gpu.global.u32 %r5, [%rd1+4];
+    setp.ne.u32 %p4, %r5, 2;
+    @%p4 bra T2;
+    ld.global.u32 %r6, [%rd1];
+    st.global.u32 [%rd1+12], %r6;
+    bra DONE;
+CTA1:
+    setp.ne.u32 %p5, %r1, 0;
+    @%p5 bra DONE;
+G:
+    ld.acquire.gpu.global.u32 %r7, [%rd1+8];
+    setp.eq.u32 %p6, %r7, 0;
+    @%p6 bra G;
+    atom.relaxed.gpu.global.add.u32 %r8, [%rd1+4], 1;
+DONE:
+    ret;
+}

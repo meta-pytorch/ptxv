@@ -1,0 +1,69 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-SCOPE across memory synchronization domains: two kernels on one GPU that may run at the
+// same time (the consumer's stream waits for nothing), 1 CTA x 32 each.
+//   producer (domain 0): data[t] = t + 5; bar.sync; thread 0: st.release.gpu flag = 1 (@REL).
+//   consumer (domain 1, cudaLaunchAttributeMemSyncDomain remote): thread 0 spins
+//     ld.acquire.gpu flag until 1 (@ACQ); bar.sync; out[t] = ld.global data[t].
+// good: kernels in different domains are system-scope distanced (CUDA 13.0 cuda.h,
+//   CUlaunchMemSyncDomain): a .gpu release and acquire between them do not synchronize: a race.
+// SYS: release and acquire at .sys scope: clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry producer(.param .u64 pdata, .param .u64 pflag)
+.reqntid 32
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pdata];
+    ld.param.u64    %rd2, [pflag];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.u32         %r2, %r1, 5;
+    st.global.u32   [%rd4], %r2;
+    bar.sync        0;
+    setp.ne.u32     %p1, %r1, 0;
+    mov.u32         %r3, 1;
+    @!%p1 st.release.gpu.global.u32 [%rd2], %r3;   // @REL
+    ret;
+}
+
+.visible .entry consumer(.param .u64 pdata, .param .u64 pflag, .param .u64 pout)
+.reqntid 32
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<12>;
+
+    ld.param.u64    %rd1, [pdata];
+    ld.param.u64    %rd2, [pflag];
+    ld.param.u64    %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        $L_done;
+$L_spin:
+    ld.acquire.gpu.global.u32 %r2, [%rd2];          // @ACQ
+    setp.eq.u32     %p2, %r2, 0;
+    @%p2 bra        $L_spin;
+$L_done:
+    bar.sync        0;
+    mul.wide.u32    %rd4, %r1, 4;
+    add.s64         %rd5, %rd1, %rd4;
+    add.s64         %rd6, %rd3, %rd4;
+    ld.global.u32   %r3, [%rd5];
+    st.global.u32   [%rd6], %r3;
+    ret;
+}

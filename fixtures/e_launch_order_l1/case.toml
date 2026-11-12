@@ -1,0 +1,50 @@
+name = "e_launch_order_l1"
+description = """
+E-LAUNCH-ORDER with E-L1-HAVOC (MISS 113): a writer and a reader of its output with a weak
+ld.global. With the reader's predecessor recorded, its launch drops every L1 copy older than
+the writes (E-L1-CORES' kernel boundary): clean. With the launch order unknown (an older
+capture), that boundary is not assumed and an outside fill may leave a stale line."""
+ptx = "kernel.ptx"
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+hw_l1 = true
+l1_havoc = true
+launch_order = "recorded"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[launches]]
+entry = "reader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "the reader follows the writer on one stream (recorded): its launch drops older L1 copies"
+expect = ["clean"]
+
+[[variants]]
+id = "UNKNOWN"
+summary = "the same list with its order unknown: no kernel boundary between the writes and the read is assumed"
+launch_order = "unknown"
+expect = ["stale"]

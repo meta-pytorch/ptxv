@@ -388,16 +388,29 @@ impl Machine {
                 }
                 St::Unlaunched => {
                     let gi = self.launch.grid_index(t.cta as u32);
-                    format!(
-                        "{} never launches: kernel {gi} waits for kernel {} to {}",
-                        self.cta_name(t.cta),
-                        self.launch.prev_grid(gi).unwrap_or(0),
-                        if self.launch.grids[gi].pdl {
-                            "trigger (griddepcontrol.launch_dependents) or exit in every CTA"
-                        } else {
-                            "complete"
-                        }
-                    )
+                    let open: Vec<usize> = self.launch.grids[gi]
+                        .waits
+                        .iter()
+                        .copied()
+                        .filter(|&w| !self.grid_complete(w))
+                        .collect();
+                    if !open.is_empty() {
+                        format!(
+                            "{} never launches: kernel {gi} waits for kernel(s) {open:?} to complete",
+                            self.cta_name(t.cta),
+                        )
+                    } else {
+                        format!(
+                            "{} never launches: kernel {gi} waits for kernel {} to {}",
+                            self.cta_name(t.cta),
+                            self.launch.prev_grid(gi).unwrap_or(0),
+                            if self.launch.grids[gi].pdl {
+                                "trigger (griddepcontrol.launch_dependents) or exit in every CTA"
+                            } else {
+                                "complete"
+                            }
+                        )
+                    }
                 }
                 _ => format!("blocked at {}", self.k.describe(t.pc as usize)),
             };
@@ -6003,21 +6016,10 @@ pub fn explore_sliced(
         }
         foots.push((c, f));
     }
-    // Grid `j` starts after grid `i` completed: stream order on one GPU, no PDL in between.
+    // Grid `j` starts after grid `i` completed: stream order on one GPU (or `waits`), no PDL
+    // in between (`Launch::hb_before`).
     let launch = make().launch.clone();
-    let ordered = |gi: usize, gj: usize| {
-        let mut g = gj;
-        while g > gi {
-            if launch.grids[g].pdl {
-                return false;
-            }
-            match launch.prev_grid(g) {
-                Some(p) => g = p,
-                None => return false,
-            }
-        }
-        g == gi
-    };
+    let ordered = |gi: usize, gj: usize| launch.hb_before(gi, gj);
     // ASSUME(N-ATOMIC): fp32 atomic adds (no returned value) of two clusters into one byte
     // do not conflict; that byte's final value then depends on their order.
     let mut red_shared: Option<(usize, u64)> = None;

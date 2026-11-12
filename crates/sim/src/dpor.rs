@@ -376,7 +376,13 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
             continue;
         }
         let mut f = Footprint::default();
-        if let Some(p) = m.launch.prev_grid(m.launch.grid_index(c as u32)) {
+        let gi = m.launch.grid_index(c as u32);
+        for p in m
+            .launch
+            .prev_grid(gi)
+            .into_iter()
+            .chain(m.launch.grids[gi].waits.iter().copied())
+        {
             let g = &m.launch.grids[p];
             for q in g.cta0..g.cta0 + g.ctas() {
                 f.add(9, q, 0, u64::MAX, false);

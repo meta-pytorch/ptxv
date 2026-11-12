@@ -1,0 +1,134 @@
+name = "e_ld_nc_forms"
+description = """
+S-NC on every form ptxas uses: byte precision (another byte of a word the kernel stores is
+exact; the stored byte is reported), ld.global.nc.v4 / .v8 (SASS LDG.E.128.CONSTANT and the
+32-byte LDG.E.ENL2.256.CONSTANT), and writes by an atomic (red.global.add), the async proxy
+(cp.async.bulk.global.shared::cta) and another CTA after a release / acquire pair. Each
+variant adds one write of bytes an .nc load reads (kernel.ptx); good has none."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "dst", "red"]
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [64]
+init = "iota"
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "dst"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "scratch"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "red"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "scratch"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "red"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "BYTE"
+summary = "the u8 .nc load reads byte 1 of w[i], which the thread stored before the barrier"
+marker = "@BYTE"
+find = "[%rd9]"
+replace = "[%rd9+1]"
+expect = ["violation"]
+
+[[variants]]
+id = "V4"
+summary = "ld.global.nc.v4.u32 (LDG.E.128.CONSTANT) of words whose byte 1 was stored"
+marker = "@V4"
+find = "[%rd16]"
+replace = "[%rd18]"
+expect = ["violation"]
+
+[[variants]]
+id = "V8"
+summary = "ld.global.nc.v8.u32 (LDG.E.ENL2.256.CONSTANT) of words whose byte 1 was stored"
+marker = "@V8"
+find = "[%rd16]"
+replace = "[%rd18]"
+expect = ["violation"]
+
+[[variants]]
+id = "RED"
+summary = "red.global.add.u32 of src[i] after the barrier that follows the .nc reads of it"
+marker = "@RED"
+find = "[%rd12]"
+replace = "[%rd11]"
+expect = ["violation"]
+
+[[variants]]
+id = "BULK"
+summary = "the bulk copy (async proxy) writes src[32 c ..], read by .nc after the barrier"
+marker = "@BULK"
+find = "%rd20"
+replace = "%rd15"
+expect = ["violation"]
+
+[[variants]]
+id = "XCTA"
+summary = "CTA 1 stores src[0] before its release; CTA 0 reads it with .nc after the acquire"
+marker = "@XCTA"
+find = "[%rd5]"
+replace = "[%rd1]"
+expect = ["violation"]

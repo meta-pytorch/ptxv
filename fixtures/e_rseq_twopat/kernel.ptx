@@ -1,0 +1,76 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-SCOPE, continued release patterns (MISS 112): two continued patterns, the first one (lowest
+// writer id) of a thread inside a .cta acquire fence's scope and the second one outside. One
+// pending entry keyed by the first pattern's writer, as the SASS front keeps for CCTL.IVALL,
+// would let the .cta fence acquire both on the PTX front (continued patterns are sorted by
+// writer, add_cont). data_a = [o]; f = [o+4]; data_b = [o+8]; out = [o+12], [o+16]. The labels
+// CTA1 / TW / R name the path that CTA 0 runs.
+// CTA 0 t32 (TW): data_a = 7; st.release.gpu f = 1 (W, pattern P_W, writer id 32).
+// CTA 1 t32 (TZ1): spins ld.relaxed.gpu f >= 1; data_b = 9; atom.release.gpu.add f, 1 (Z1:
+//   continues P_W and heads its own pattern P_Z1, writer id 96).
+// CTA 1 t0 (TZ2): spins ld.relaxed.gpu f >= 2; atom.relaxed.gpu.add f, 1 (Z2: continues both).
+// CTA 0 t0 (R): spins ld.relaxed.gpu f == 3; fence.acquire (@FENCE); reads data_a and data_b.
+//   good:     fence.acquire.gpu: clean.
+//   CTAFENCE: fence.acquire.cta: R synchronizes with P_W (CTA 0) only, not with P_Z1 (CTA 1)
+//             (PTX ISA 9.5 section 8.9.4): race on data_b. SASS: the .cta fence is no
+//             CCTL.IVALL, so data_a races too.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry rseq_twopat(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<10>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    setp.eq.u32 %p1, %r2, 0;                           // CTA 0 runs the R / W path
+    @%p1 bra CTA1;
+    setp.eq.u32 %p2, %r1, 32;
+    @%p2 bra TZ1;
+    setp.ne.u32 %p3, %r1, 0;
+    @%p3 bra DONE;
+TZ2:
+    ld.relaxed.gpu.global.u32 %r10, [%rd1+4];
+    setp.lt.u32 %p8, %r10, 2;
+    @%p8 bra TZ2;
+    atom.relaxed.gpu.global.add.u32 %r11, [%rd1+4], 1;
+    bra DONE;
+TZ1:
+    ld.relaxed.gpu.global.u32 %r9, [%rd1+4];
+    setp.lt.u32 %p6, %r9, 1;
+    @%p6 bra TZ1;
+    mov.u32 %r12, 9;
+    st.global.u32 [%rd1+8], %r12;
+    atom.release.gpu.global.add.u32 %r8, [%rd1+4], 1;
+    bra DONE;
+CTA1:
+    setp.eq.u32 %p7, %r1, 32;
+    @%p7 bra TW;
+    setp.ne.u32 %p5, %r1, 0;
+    @%p5 bra DONE;
+R:
+    ld.relaxed.gpu.global.u32 %r5, [%rd1+4];
+    setp.ne.u32 %p4, %r5, 3;
+    @%p4 bra R;
+    fence.acquire.gpu;                                 // @FENCE
+    ld.global.u32 %r6, [%rd1];
+    ld.global.u32 %r7, [%rd1+8];
+    st.global.u32 [%rd1+12], %r6;
+    st.global.u32 [%rd1+16], %r7;
+    bra DONE;
+TW:
+    mov.u32 %r3, 7;
+    st.global.u32 [%rd1], %r3;
+    mov.u32 %r4, 1;
+    st.release.gpu.global.u32 [%rd1+4], %r4;
+DONE:
+    ret;
+}

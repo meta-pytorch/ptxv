@@ -1,0 +1,82 @@
+name = "e_rseq_head"
+description = """
+S-SCOPE, release sequences (MISS 112): CTA 0's t0 stores data, then a release pattern (a fence,
+then a relaxed store of flag f); t32 in CTA 0 waits for it and increments f with a relaxed
+atomic; t0 of CTA 1 acquires f until it reads the increment, then reads the data. The atomic
+continues the pattern (PTX ISA 9.5 section 8.9.2), but synchronization also needs the pattern's
+first operation, the fence, and the acquire to be morally strong (8.9.4). good: a .gpu fence,
+clean. FREL: a .cta fence, a race (clean until 2026-11-11: the continued sequence took the
+atomic's thread and scope). FREL_DIRECT: the .cta fence and no atomic, a race. REL_CTA: a .cta
+release store as the head, a race (on the flag too). TWOHEAD: the .cta fence; t32 adds with a .gpu
+release, then a relaxed atomic: R synchronizes with t32's release only, a race. OWN: the .cta
+fence; R's thread itself continues the pattern with a relaxed atomic, then acquires its own write,
+a race."""
+ptx = "kernel.ptx"
+entry = "rseq_head"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "head fence.acq_rel.gpu; the atomic continues the pattern; R synchronizes"
+expect = ["clean"]
+
+[[variants]]
+id = "FREL"
+summary = "head fence.acq_rel.cta: not morally strong with R in CTA 1"
+marker = "@HEAD"
+find = "fence.acq_rel.gpu;"
+replace = "fence.acq_rel.cta;"
+expect = ["race"]
+
+[[variants]]
+id = "FREL_DIRECT"
+summary = "control: head fence.acq_rel.cta, R reads W itself"
+edits = [
+    { marker = "@HEAD", find = "fence.acq_rel.gpu;", replace = "fence.acq_rel.cta;" },
+    { marker = "@RCHK", find = "setp.ne.u32 %p4, %r5, 2;", replace = "setp.ne.u32 %p4, %r5, 1;" },
+    { marker = "@Z", find = "atom.relaxed.gpu.global.add.u32 %r8, [%rd1+4], 1;", replace = "<delete>" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "REL_CTA"
+summary = "head st.release.cta"
+edits = [
+    { marker = "@HEAD", find = "fence.acq_rel.gpu;", replace = "<delete>" },
+    { marker = "@W", find = "st.relaxed.gpu.global.u32", replace = "st.release.cta.global.u32" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "TWOHEAD"
+summary = "head fence.acq_rel.cta; t32: atom.release.gpu, then atom.relaxed.gpu: two continued patterns, one passes"
+edits = [
+    { marker = "@HEAD", find = "fence.acq_rel.gpu;", replace = "fence.acq_rel.cta;" },
+    { marker = "@Z", find = "atom.relaxed.gpu.global.add.u32 %r8, [%rd1+4], 1;", replace = "atom.release.gpu.global.add.u32 %r8, [%rd1+4], 1;\n    atom.relaxed.gpu.global.add.u32 %r10, [%rd1+4], 1;" },
+    { marker = "@RCHK", find = "setp.ne.u32 %p4, %r5, 2;", replace = "setp.ne.u32 %p4, %r5, 3;" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "OWN"
+summary = "head fence.acq_rel.cta; R's thread continues the pattern itself, then acquires its own write"
+edits = [
+    { marker = "@HEAD", find = "fence.acq_rel.gpu;", replace = "fence.acq_rel.cta;" },
+    { marker = "@Z", find = "atom.relaxed.gpu.global.add.u32 %r8, [%rd1+4], 1;", replace = "<delete>" },
+    { marker = "@RLOAD", find = "ld.acquire.gpu.global.u32 %r5, [%rd1+4];", replace = "ld.relaxed.gpu.global.u32 %r5, [%rd1+4];" },
+    { marker = "@RCHK", find = "setp.ne.u32 %p4, %r5, 2;", replace = "setp.eq.u32 %p4, %r5, 0;" },
+    { marker = "@DATA", find = "ld.global.u32 %r6, [%rd1];", replace = "atom.relaxed.gpu.global.add.u32 %r7, [%rd1+4], 1;\n    ld.acquire.gpu.global.u32 %r11, [%rd1+4];\n    ld.global.u32 %r6, [%rd1];" },
+]
+expect = ["race"]

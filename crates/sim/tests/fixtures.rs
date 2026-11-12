@@ -116,7 +116,8 @@ fn spec_match(case: &str, variant: &str, front: &str) -> bool {
 fn check_dir(dir: &str, case: &str, variant: &str, front: &str) {
     let case = Case::load(root().join(dir).join(case)).unwrap();
     let k = kernel(&case, variant, front);
-    let launch = build_launch(&case, &k).unwrap();
+    // The variant's launch-order edits (`after`, `waits`, `launch_order`), as `ptxv check`.
+    let launch = build_launch(&case.for_variant(variant).unwrap(), &k).unwrap();
     let m0 = Machine::new(Arc::new(k), Arc::new(launch));
     let mut v = explore(m0.clone(), 2_000_000);
     assert!(v.complete, "{variant}/{front}: exploration incomplete");
@@ -846,6 +847,69 @@ fn scope_complete_overlap() {
         v.findings
     );
 }
+/// S-SCOPE, complete overlap of multimem accesses: a packed multimem.st is one location per
+/// lane (PTX ISA 9.5 section 8.2.5), as multimem.ld_reduce is, so an f16x2 store and an
+/// unordered f16x2 reduction of the word are morally strong (good: nondeterministic); a .b32
+/// store of the word against the reduction's lanes is a mixed-size race (MIXED). The SASS
+/// front does not decide overlap. Until 2026-11-11 the packed store was one 4-byte element on
+/// the PTX front, and good was a race.
+#[test]
+fn scope_multimem_lane() {
+    for v in ["good", "MIXED"] {
+        both("e_scope_mm_lane", v);
+    }
+}
+/// S-SCOPE, release sequences (MISS 100): a relaxed atomic in another CTA continues a .gpu
+/// release's sequence, and the acquirer of its value synchronizes with the release (good);
+/// a .cta release is not morally strong with that atomic, so the atomic does not continue it
+/// and the acquirer's data read races (CTAREL; PTX ISA 9.5 section 8.9.2), on both fronts.
+/// Until 2026-11-11 the atomic continued any release.
+#[test]
+fn rseq_rmw_morally_strong() {
+    for v in ["good", "CTAREL"] {
+        both("e_rseq_scope", v);
+    }
+}
+/// S-SCOPE, release sequences (MISS 112): a reader synchronizes with a release pattern that a
+/// read-modify-write continued only when the pattern's first operation and the reader's acquire
+/// are morally strong (PTX ISA 9.5 section 8.9.4). A .cta fence heading the pattern
+/// (e_rseq_head FREL), a .cta acquire fence after the poll (e_rseq_facq CTAFENCE) and a .cta
+/// acquire read of the atomic's value (CTAACQ: its data read races; the flag read races in
+/// any case) do not synchronize; .gpu ones do (good). A read synchronizes with the passing
+/// patterns only when another fails (TWOHEAD: two continued patterns; OWN: the reader's own
+/// atomic continued it). Until 2026-11-11 the continued sequence took the read-modify-write's
+/// thread and scopes: FREL was clean on both fronts, CTAFENCE clean and CTAACQ's data read
+/// ordered on the PTX front. e_rseq_twopat CTAFENCE: a .cta acquire fence after a relaxed poll
+/// takes only the continued pattern whose thread is in its CTA; the SASS front's single
+/// pending entry for all patterns (taken by CCTL.IVALL) does not apply on the PTX front.
+#[test]
+fn rseq_head_morally_strong() {
+    for v in ["good", "FREL", "FREL_DIRECT", "REL_CTA", "TWOHEAD", "OWN"] {
+        both("e_rseq_head", v);
+    }
+    for v in ["good", "CTAFENCE"] {
+        both("e_rseq_twopat", v);
+    }
+    for v in ["good", "CTAFENCE", "DIRECT", "CTAACQ"] {
+        both("e_rseq_facq", v);
+    }
+    let case = Case::load(root().join("fixtures/e_rseq_facq")).unwrap();
+    let k = kernel(&case, "CTAACQ", "ptx");
+    let data_st = k
+        .code
+        .iter()
+        .position(|i| i.text.contains("st.global.u32 [%rd1], %r3"))
+        .unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), 2_000_000);
+    assert!(v.complete);
+    let sig = format!("race:gmem:{data_st}:write-read");
+    assert!(
+        v.findings.iter().any(|f| f.sig == sig),
+        "no {sig}: {:#?}",
+        v.findings
+    );
+}
 /// E-ELECT: a kernel correct for the end-lane leaders only is a race on the PTX front (every
 /// leader function explored, also by the certificate), clean on SASS (GB300: the lowest lane).
 #[test]
@@ -863,6 +927,16 @@ fn e_ld_nc_written_during_kernel() {
         both("e_ld_nc", v);
     }
 }
+/// S-NC per byte and per form: another byte of a word the kernel stores is exact, the stored
+/// byte is reported (BYTE); ld.global.nc.v4 / .v8 (LDG.E.128.CONSTANT, the 32-byte
+/// LDG.E.ENL2.256.CONSTANT) of stored words (V4, V8); an atomic (RED), a bulk async-proxy copy
+/// (BULK) and another CTA after a release / acquire pair (XCTA) writing bytes an .nc load reads.
+#[test]
+fn e_ld_nc_every_form() {
+    for v in ["good", "BYTE", "V4", "V8", "RED", "BULK", "XCTA"] {
+        both("e_ld_nc_forms", v);
+    }
+}
 /// S-NC across launches: an .nc read of a stream-ordered earlier grid's output is exact, and so
 /// is a PDL dependent's write, after griddepcontrol.wait, of bytes its primary read with .nc
 /// (good); a PDL dependent's .nc read of its primary's output after the wait is reported
@@ -872,6 +946,175 @@ fn e_ld_nc_written_during_kernel() {
 fn e_ld_nc_pdl_overlapping_launches() {
     for v in ["good", "PDLNC", "EARLY"] {
         both("e_ld_nc_pdl", v);
+    }
+}
+/// E-LAUNCH-ORDER (MISS 113): the same three launches with their order unknown (an older
+/// capture) get neither S-NC's stream-order exclusion (k1's .nc read of k0's output) nor its
+/// done-clock exemption (k2's write, after its wait, of bytes k1 read with .nc): violation.
+#[test]
+fn e_ld_nc_pdl_unknown_order() {
+    for v in ["UNKNOWN", "UNKNOWN_DONE"] {
+        both("e_ld_nc_pdl", v);
+    }
+}
+/// S-SCOPE across memory synchronization domains (cudaLaunchAttributeMemSyncDomain): a .gpu
+/// release / acquire between concurrent kernels in different domains does not synchronize
+/// (good: race); at .sys scope it does (SYS).
+#[test]
+fn e_mem_sync_domain_scope() {
+    for v in ["good", "SYS"] {
+        both("e_mem_sync_domain", v);
+    }
+}
+/// E-LAUNCH-ORDER (MISS 113): a writer on one stream and an .nc reader of its output on
+/// another. An event edge in a recorded launch order excludes the conflict (good); the same
+/// list with its order unknown does not (UNKNOWN: violation); without the edge the read races
+/// (UNORD). A coherent read is clean either way: E-PDL still orders an unknown-order list.
+#[test]
+fn e_launch_order_two_streams() {
+    for v in ["good", "UNKNOWN", "UNORD", "PLAIN", "PLAIN_UNKNOWN"] {
+        both("e_launch_order", v);
+    }
+}
+/// E-LAUNCH-ORDER (MISS 113), a join (`waits`): kc follows ka on stream 0 and waits for kb's
+/// event; each predecessor orders it (good). A dropped wait (NOWAIT) or stream predecessor
+/// (UNORD) is a race; an unknown order loses only the .nc exclusion (UNKNOWN).
+#[test]
+fn e_launch_waits_join() {
+    for v in ["good", "NOWAIT", "UNKNOWN", "UNORD"] {
+        both("e_launch_waits", v);
+    }
+}
+/// E-LAUNCH-ORDER, MISS 113's repro (xgpu_unord): GPU 1's peer writes, published with
+/// st.release.sys and acquired by GPU 0's waiter, then GPU 0's .nc reader after the waiter.
+/// The launch-clock exemption needs a recorded or declared order: with the order unknown the
+/// cross-GPU write is a violation (good); recorded, the reader's launch clock covers it (REC:
+/// clean; a violation at the SASS front's strict level, which has no exemption); UNORD (a
+/// reader ordered after nothing) is a race and a violation.
+#[test]
+fn e_ld_nc_xgpu_unord_launch_order() {
+    for v in ["good", "REC", "UNORD"] {
+        both("e_ld_nc_xgpu_unord", v);
+    }
+}
+/// E-LAUNCH-ORDER with E-L1-HAVOC (MISS 113): a reader whose predecessor is recorded launches
+/// after the writer completed, and its kernel boundary drops older L1 copies (clean); with the
+/// launch order unknown that boundary is not assumed (UNKNOWN: stale).
+#[test]
+fn e_launch_order_l1_boundary() {
+    for var in ["PTXV_HW_L1", "PTXV_L1_CORES", "PTXV_L1_HAVOC"] {
+        if std::env::var(var).is_ok() {
+            return;
+        }
+    }
+    for v in ["good", "UNKNOWN"] {
+        both("e_launch_order_l1", v);
+    }
+}
+/// E-LAUNCH-ORDER, `waits` as a launch gate, beyond the join of done clocks: kc waits for kb,
+/// which spins until kc sets a flag (good: deadlock); without the event wait kc sets the flag
+/// after ka and kb completes (NOWAIT: clean).
+#[test]
+fn e_launch_waits_gate() {
+    for v in ["good", "NOWAIT"] {
+        both("e_launch_waits_gate", v);
+    }
+}
+/// The verdict cache fixture (crates/cli/tests/launch_order.rs): the case's launch order is
+/// unknown (good: S-NC violation); DECL declares it (clean).
+#[test]
+fn e_vcache_order_variants() {
+    for v in ["good", "DECL"] {
+        both("e_vcache_order", v);
+    }
+}
+/// E-LAUNCH-ORDER: in a recorded or declared launch order, a launch on another stream than the
+/// previous launch on its GPU must name its predecessor (`after`): a list that leaves it out is
+/// refused, not read as a stream edge. An unknown order has nothing to check.
+#[test]
+fn e_launch_order_stream_switch_needs_after() {
+    let mut case = Case::load(root().join("fixtures/e_launch_order")).unwrap();
+    let k = kernel(&case, "good", "ptx");
+    assert!(build_launch(&case, &k).is_ok());
+    case.m.launches[0].after = None;
+    for order in ["recorded", "declared"] {
+        case.m.launch_order = Some(order.into());
+        let e = match build_launch(&case, &k) {
+            Ok(_) => panic!("{order}: a stream switch without `after` was accepted"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(e.contains("must name it"), "{order}: {e}");
+    }
+    case.m.launch_order = Some("unknown".into());
+    assert!(build_launch(&case, &k).is_ok());
+}
+/// S-NC across GPUs: a peer GPU's writes that a release / acquire hand-off orders before the
+/// waiter, which completes before the stream-ordered `.nc` reader starts, are exact (good: the
+/// reader's launch clock covers them; WAITS: the reader joins the waiter through `waits`);
+/// with a plain-store signal they are a race and reported (weak); a coherent reader is clean.
+/// A signal or an acquire whose scope leaves out the other GPU (SIGGPU, ACQGPU, ACQFENCEGPU,
+/// ACQONLYGPU), a relaxed signal (SIGRELAXED) and a reader ordered after nothing (UNORD) are
+/// races and violations; fence patterns at .sys scope (SIGFENCE, ACQFENCE, ACQONLYSYS) are
+/// clean. The SASS front's strict level does not apply the launch-clock exemption (its
+/// CCTL.IVALL acquire has no scope), so its clean `.nc` variants are violations, and the races
+/// of ACQFENCEGPU and ACQONLYGPU are not seen there (`expect_sass`).
+#[test]
+fn e_ld_nc_xgpu_write_before_start() {
+    for v in [
+        "good",
+        "weak",
+        "coherent",
+        "WAITS",
+        "SIGGPU",
+        "ACQGPU",
+        "SIGRELAXED",
+        "SIGFENCE",
+        "ACQFENCE",
+        "ACQFENCEGPU",
+        "ACQONLYGPU",
+        "ACQONLYSYS",
+        "UNORD",
+    ] {
+        both("e_ld_nc_xgpu", v);
+    }
+}
+/// S-NC across GPUs over a release sequence continued on the reader's GPU: the pattern's first
+/// operation is a .gpu fence on GPU 1, so GPU 0's acquire of the atomic's value does not
+/// synchronize with it (PTX ISA 9.5 section 8.9.4; MISS 112) and the writes are not before the
+/// reader's start (good: race and violation; SYSF, a .sys fence: clean, a violation at the SASS
+/// front's strict level; NOZ: no atomic; coherent: a race).
+#[test]
+fn e_ld_nc_xgpu_release_sequence_head() {
+    for v in ["good", "SYSF", "NOZ", "coherent"] {
+        both("e_ld_nc_xgpu_frel", v);
+    }
+}
+/// S-NC across GPUs vs a bulk store still in flight: cp.async.bulk.wait_group.read waits for
+/// the source reads only, so the release after it does not order the global writes (good:
+/// race and violation; coherent: a race); a full wait_group does (FULL: clean, a violation at
+/// the SASS front's strict level). `expect` is the ISA verdict, which both fronts give: until
+/// MISS 32's fix the PTX front called good and coherent clean (and the launch-clock exemption
+/// then cleared good's `.nc` reads too), and until MISS 102's the SASS front's bulk DEPBAR
+/// ordered the store's global writes before the release (good only a violation, coherent
+/// clean).
+#[test]
+fn e_ld_nc_xgpu_bulk_in_flight() {
+    for v in ["good", "FULL", "coherent"] {
+        both("e_ld_nc_xgpu_bulk", v);
+    }
+}
+/// The launch-clock exemption stays off the SASS front's GB300 profile re-run too, which runs
+/// without the hardware ordering: the `.nc` variants the exemption cleans on the PTX front stay
+/// violations at sass_gb300 (a conservative choice: the SASS code of a `.gpu` acquire fence and
+/// of a `.sys` one is the same CCTL.IVALL).
+#[test]
+fn e_ld_nc_xgpu_no_exemption_at_sass_gb300() {
+    for v in ["good", "SIGFENCE", "ACQFENCE", "ACQONLYSYS"] {
+        let r = sass_gb300("e_ld_nc_xgpu", v);
+        assert!(
+            r.split(',').any(|c| c == "violation"),
+            "{v}: sass_gb300 {r}"
+        );
     }
 }
 /// `.uni` / `.aligned`: a guarded bra.uni with a divergent guard is a contract finding; an
@@ -3699,14 +3942,24 @@ fn probe_bitwise_queue(dir: &str, variant: &str, front: &str) {
     let mut v = ptxv_sim::wellsync::certify(m.clone())
         .verdict
         .unwrap_or_else(|| panic!("{dir} {variant} {front} certifies"));
-    assert_eq!(v.classes(), ["contract"], "{dir} {front}: {:#?}", v.findings);
+    assert_eq!(
+        v.classes(),
+        ["contract"],
+        "{dir} {front}: {:#?}",
+        v.findings
+    );
     assert!(
         v.findings.iter().all(|f| f.sig.starts_with("tmem-queue:")),
         "{dir} {front}: {:#?}",
         v.findings
     );
     ptxv_sim::hwprofile::discharge(&mut v, &m, ptxv_sim::hwprofile::GB300);
-    assert_eq!(v.classes(), ["contract"], "{dir} {front} under GB300: {:#?}", v.findings);
+    assert_eq!(
+        v.classes(),
+        ["contract"],
+        "{dir} {front} under GB300: {:#?}",
+        v.findings
+    );
     let report = case.expect_report(&v.outputs[0]).unwrap();
     assert!(
         !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
@@ -4406,7 +4659,7 @@ fn multimem_acc_unmodeled_forms_refused() {
 }
 
 /// S-NC on GB300 (probes/nc_hoist): ptxas 13.0 / 13.3 hoist an ld.global.nc above a store and
-/// a bar.sync, so GB300 returns the word's old value (expected/: zeros, 20/20 scrubbed runs)
+/// a bar.sync, so GB300 returns the word's old value (expected/: zeros, 200/200 scrubbed runs)
 /// where a coherent load after the barrier reads t ^ 1. Both fronts report the load.
 #[test]
 fn probe_nc_hoist_reported() {
@@ -7501,9 +7754,10 @@ fn r4c_dispatch_splits_into_flows() {
 }
 
 /// E-SLICE in launch-group mode: notify_dispatch on 2 GPUs splits into the barrier CTA pair
-/// and 4 single CTAs; explored slice by slice it is exhaustive and clean, with the same 99
-/// terminal states as explored whole (rung 4b). Without E-READ-DONE, as in rung 4b: its read
-/// entries tell more terminal states apart (207).
+/// and 4 single CTAs; explored slice by slice it is exhaustive and clean, with the same 183
+/// terminal states as explored whole (rung 4b). Without E-READ-DONE, as in rung 4b (with it,
+/// 183 as well). Until MISS 112 kept the release patterns a read-modify-write continues apart
+/// in its sync cell, 99 (207 with E-READ-DONE).
 #[test]
 fn r4c_notify_group_by_slices() {
     if vendor_missing(&["r4c_nowrap"]) {
@@ -7529,7 +7783,7 @@ fn r4c_notify_group_by_slices() {
     let v = &each[1];
     assert!(v.complete, "{:?}", v.notes);
     assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
-    assert_eq!(v.terminal_states, 99);
+    assert_eq!(v.terminal_states, 183);
     assert!(v.assumptions.iter().any(|a| a == "E-SLICE"));
 }
 
@@ -9778,6 +10032,33 @@ fn async_ids_past_4096_decode_to_their_issuer() {
     for front in ["ptx", "sass"] {
         check_stateful("e_async_ids_stream", "good", front, 100_000);
         check_stateful("e_async_ids_last", "good", front, 100_000);
+    }
+}
+
+/// E-LAUNCH-ORDER: e_async_ids_stream with its launch order unknown (UNKNOWN). Its clean rests
+/// on S-NC's stream-order exemption (k0 completed before k1 started), which an unknown order
+/// does not give: k1's .nc read of k0's output is a violation whose message names the gate.
+#[test]
+fn async_ids_stream_unknown_order() {
+    let case = Case::load(root().join("fixtures/e_async_ids_stream")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "UNKNOWN", front);
+        let launch = build_launch(&case.for_variant("UNKNOWN").unwrap(), &k).unwrap();
+        let r = explore(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+        assert!(
+            r.complete && r.classes() == ["violation"],
+            "{front}: {:?} (complete: {}) {:#?}",
+            r.classes(),
+            r.complete,
+            r.findings
+        );
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.msg.contains("launch order is unknown")),
+            "{front}: {:#?}",
+            r.findings
+        );
     }
 }
 

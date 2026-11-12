@@ -3417,6 +3417,7 @@ fn cell_eq(a: &Option<SyncCell>, b: &Option<SyncCell>) -> bool {
                 && a.pc == b.pc
                 && a.rel_scope == b.rel_scope
                 && a.rel == b.rel
+                && a.cont == b.cont
         }
         _ => false,
     }
@@ -5644,19 +5645,7 @@ fn check_sliced_one(
         _ => {}
     }
     // Cross-cluster conflicts, as in `explore_sliced`.
-    let ordered = |gi: usize, gj: usize| {
-        let mut g = gj;
-        while g > gi {
-            if launch.grids[g].pdl {
-                return false;
-            }
-            match launch.prev_grid(g) {
-                Some(p) => g = p,
-                None => return false,
-            }
-        }
-        g == gi
-    };
+    let ordered = |gi: usize, gj: usize| launch.hb_before(gi, gj);
     // Indexed by word: only words some slice writes can conflict, and only slices that touch
     // such a word are compared (the pairwise scan of dense bitsets was quadratic in launch
     // size: hours at 384 slices of 160 MB).

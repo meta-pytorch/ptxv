@@ -797,9 +797,13 @@ impl Machine {
     fn nic_publish(&mut self, alloc: usize, off: u64, actor: u32, vc: &VC, rmw: bool) {
         let key = (1u8, alloc as u32, off);
         let mut rel = vc.clone();
+        let mut cont = Vec::new();
+        let mut cont_join = VC::new();
         if rmw {
             if let Some(old) = self.syncs.get(&key) {
                 vc_join(&mut rel, &old.rel);
+                cont = old.cont.clone();
+                cont_join = old.cont_join.clone();
             }
         }
         self.syncs.insert(
@@ -810,6 +814,8 @@ impl Machine {
                 pc: u32::MAX,
                 rel,
                 rel_scope: Scope::Sys,
+                cont,
+                cont_join,
                 rr: VC::new(),
             },
         );

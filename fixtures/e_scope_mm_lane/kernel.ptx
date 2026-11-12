@@ -1,0 +1,46 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+//
+// S-SCOPE, complete overlap of multimem accesses: one CTA on GPU 0, `m` a multicast address
+// bound to a word of GPU 0's and of GPU 1's buffer.
+//   t0:  multimem.st.relaxed.sys.global.f16x2 [m], 0x3c003c00 (two f16 1.0 lanes);
+//   t32: multimem.ld_reduce.relaxed.sys.global.add.f16x2 of [m], stored to out[0].
+// Both are strong .sys accesses of the same f16 lanes (a packed access is a pair of operations
+// on its scalar type, PTX ISA 9.5 section 8.2.5), so they are morally strong: no race, and the
+// reduction reads the old or the new lanes (nondeterministic). MIXED: the store is a .b32 of
+// the same word, a 4-byte location against the reduction's 2-byte lanes: a mixed-size data
+// race (8.7.2).
+//
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry mm_lane(
+    .param .u64 m,
+    .param .u64 out
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<4>;
+
+    ld.param.u64 %rd1, [m];
+    ld.param.u64 %rd2, [out];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra $L_r;
+    mov.b32 %r2, 0x3c003c00;
+    multimem.st.relaxed.sys.global.f16x2 [%rd1], %r2;   // @ST
+    bra $L_done;
+$L_r:
+    setp.ne.u32 %p1, %r1, 32;
+    @%p1 bra $L_done;
+    multimem.ld_reduce.relaxed.sys.global.add.f16x2 %r3, [%rd1];
+    st.global.u32 [%rd2], %r3;
+$L_done:
+    ret;
+}

@@ -1,0 +1,74 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-LAUNCH-ORDER, a join: three kernels on two streams of one GPU, 1 CTA x 32 each.
+//   ka (stream 0): a[t] = t + 1.
+//   kb (stream 1, waits for nothing: may run alongside ka): b[t] = t + 2.
+//   kc (stream 0, after ka; stream 0 waited for an event recorded after kb: waits = [1]):
+//     out[t] = ld.global a[t] (@LDA) + ld.global.nc b[t] (@LDB).
+// good: both reads are ordered after their writes, and kb completes before kc starts: clean.
+// NOWAIT: the event wait is dropped (waits = []): the .nc read of b races with kb's write.
+// UNKNOWN: the order is unknown (an older capture): the join does not exclude the .nc read
+//   (S-NC violation); E-PDL still orders the grids, so no race.
+// UNORD: kc does not follow ka (after = -1): the read of a races.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry ka(.param .u64 pa)
+.reqntid 32
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pa];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd2, %r1, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    add.u32         %r2, %r1, 1;
+    st.global.u32   [%rd3], %r2;
+    ret;
+}
+
+.visible .entry kb(.param .u64 pb)
+.reqntid 32
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pb];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd2, %r1, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    add.u32         %r2, %r1, 2;
+    st.global.u32   [%rd3], %r2;
+    ret;
+}
+
+.visible .entry kc(.param .u64 pa, .param .u64 pb, .param .u64 pout)
+.reqntid 32
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<12>;
+
+    ld.param.u64    %rd1, [pa];
+    ld.param.u64    %rd2, [pb];
+    ld.param.u64    %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd4, %r1, 4;
+    add.s64         %rd5, %rd1, %rd4;
+    add.s64         %rd6, %rd2, %rd4;
+    add.s64         %rd7, %rd3, %rd4;
+    ld.global.u32   %r2, [%rd5];                    // @LDA
+    ld.global.nc.u32 %r3, [%rd6];                   // @LDB
+    add.u32         %r4, %r2, %r3;
+    st.global.u32   [%rd7], %r4;
+    ret;
+}

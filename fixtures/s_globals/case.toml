@@ -10,6 +10,8 @@ entry = "bump"
 grid = [1, 1, 1]
 block = [64, 1, 1]
 outputs = ["out"]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states.
+launch_order = "declared"
 
 [[buffers]]
 name = "out"

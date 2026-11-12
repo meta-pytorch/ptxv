@@ -1,0 +1,76 @@
+name = "e_launch_order"
+description = """
+E-LAUNCH-ORDER (MISS 113): a writer on stream 0 and a reader of its output with ld.global.nc
+on stream 1. With the order recorded and an event edge (after = 0), the .nc read is exact;
+the same launch list with its order unknown (an older capture, which lists the launches of
+every stream one after the other) gets no stream-order exclusion: S-NC reports it; without the
+event (after = -1) the read races with the write. A coherent read stays clean in an
+unknown-order list: E-PDL still orders the list's grids."""
+ptx = "kernel.ptx"
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+launch_order = "recorded"
+stream = 0
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[launches]]
+entry = "reader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+stream = 1
+after = 0
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "stream 1 waits for an event recorded after the writer: the writer completes before the reader starts"
+expect = ["clean"]
+
+[[variants]]
+id = "UNKNOWN"
+summary = "the same launch list from an older capture: its order is unknown, so it does not exclude the .nc conflict"
+launch_order = "unknown"
+expect = ["violation"]
+
+[[variants]]
+id = "UNORD"
+summary = "stream 1 does not wait for the writer (after = -1): the read races with the write"
+after = [[1, -1]]
+expect = ["race", "violation"]
+
+[[variants]]
+id = "PLAIN"
+summary = "a coherent ld.global read, order recorded"
+marker = "@LD"
+find = "ld.global.nc.u32"
+replace = "ld.global.u32"
+expect = ["clean"]
+
+[[variants]]
+id = "PLAIN_UNKNOWN"
+summary = "a coherent ld.global read in an unknown-order list: E-PDL still orders the grids (only the launch-order exclusions are gated)"
+marker = "@LD"
+find = "ld.global.nc.u32"
+replace = "ld.global.u32"
+launch_order = "unknown"
+expect = ["clean"]

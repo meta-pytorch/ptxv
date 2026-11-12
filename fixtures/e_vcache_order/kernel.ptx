@@ -1,0 +1,53 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// A variant's launch_order edit and the verdict cache (vcache.rs). writer: data[t] = src[t] * 2;
+// reader (the next launch on the GPU): out[t] = ld.global.nc data[t] + 1. With the order unknown
+// (the case) S-NC reports the .nc read of data; variant DECL declares the order: clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry writer(.param .u64 psrc, .param .u64 pdata)
+.reqntid 32
+{
+    .reg .b32   %r<4>;
+    .reg .f32   %f<4>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [psrc];
+    ld.param.u64    %rd2, [pdata];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.f32   %f1, [%rd4];
+    mul.f32         %f2, %f1, 0f40000000;
+    st.global.f32   [%rd5], %f2;
+    ret;
+}
+
+.visible .entry reader(.param .u64 pdata, .param .u64 pout)
+.reqntid 32
+{
+    .reg .b32   %r<4>;
+    .reg .f32   %f<4>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pdata];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.nc.f32 %f1, [%rd4];
+    add.f32         %f2, %f1, 0f3F800000;
+    st.global.f32   [%rd5], %f2;
+    ret;
+}

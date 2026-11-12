@@ -84,7 +84,15 @@ jobs:
           echo "$PTXV_CUDA_HOME/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The mutation tools' own tests run inside the cargo suite and need pytest.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pytest for the mutation tools' tests
+        run: python -m pip install pytest
       - name: Test
+        env:
+          PTXV_PYTHON: python
         run: cargo test --release --locked --no-fail-fast
 
   lean:

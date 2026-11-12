@@ -63,6 +63,15 @@ pub fn validate(m: &Machine, groups: &[Vec<usize>]) -> Result<(), String> {
                 ));
             }
         }
+        for &w in &m.launch.grids[x].waits {
+            if of[w] > of[x] {
+                return Err(format!(
+                    "launch {x} is in group {} but launch {w}, which it waits for, in the later group {}",
+                    of[x] + 1,
+                    of[w] + 1
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -336,12 +345,17 @@ impl Meet {
                     if (c.writer, c.scope, c.pc, c.rel_scope)
                         == (d.writer, d.scope, d.pc, d.rel_scope) =>
                 {
-                    Some(vc_meet(&c.rel, &d.rel))
+                    c.cont_meet(d).map(|cont| (vc_meet(&c.rel, &d.rel), cont))
                 }
                 _ => None,
             };
             match keep {
-                Some(r) => base.syncs.get_mut(&k).unwrap().rel = r,
+                Some((r, (cont, join))) => {
+                    let cell = base.syncs.get_mut(&k).unwrap();
+                    cell.rel = r;
+                    cell.cont = cont;
+                    cell.cont_join = join;
+                }
                 None => {
                     base.syncs.remove(&k);
                 }
@@ -432,6 +446,7 @@ impl Meet {
             (Some(a), Some(b)) => {
                 (a.writer, a.scope, a.pc, a.rel_scope) == (b.writer, b.scope, b.pc, b.rel_scope)
                     && a.rel == b.rel
+                    && a.cont == b.cont
             }
             (None, None) => true,
             _ => false,
@@ -449,10 +464,15 @@ impl Meet {
                 [b] => match (b.syncs.get(&k), base.syncs.get(&k)) {
                     (Some(c), Some(d))
                         if (c.writer, c.scope, c.pc, c.rel_scope)
-                            == (d.writer, d.scope, d.pc, d.rel_scope) =>
+                            == (d.writer, d.scope, d.pc, d.rel_scope)
+                            && c.cont_meet(d).is_some() =>
                     {
                         let r = vc_meet(&c.rel, &d.rel);
-                        base.syncs.get_mut(&k).unwrap().rel = r;
+                        let (cont, join) = c.cont_meet(d).unwrap();
+                        let cell = base.syncs.get_mut(&k).unwrap();
+                        cell.rel = r;
+                        cell.cont = cont;
+                        cell.cont_join = join;
                     }
                     _ => {
                         base.syncs.remove(&k);
@@ -1049,16 +1069,19 @@ fn named_launches(m: &Machine, reasons: &[String]) -> BTreeSet<usize> {
     bad
 }
 
-/// Close a set of launches under stream successors.
+/// Close a set of launches under stream successors (and launches that wait for one).
 fn close(m: &Machine, set: &mut BTreeSet<usize>) {
     let n = m.launch.grids.len();
     loop {
         let before = set.len();
         for x in 0..n {
-            if let Some(p) = m.launch.prev_grid(x) {
-                if set.contains(&p) {
-                    set.insert(x);
-                }
+            let preds = m
+                .launch
+                .prev_grid(x)
+                .into_iter()
+                .chain(m.launch.grids[x].waits.iter().copied());
+            if preds.into_iter().any(|p| set.contains(&p)) {
+                set.insert(x);
             }
         }
         if set.len() == before {

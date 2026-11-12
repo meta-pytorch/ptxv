@@ -48,13 +48,17 @@
 #   the image of its own module handle (cubincap's handles.jsonl) and the case is binary. When every launch is
 #   one Triton / CuTeDSL kernel with dumped PTX, the case is a PTX case (both front-ends) and
 #   the JIT's cubin is kept as jit.cubin for reference.
-# Not captured: cudaMemcpy / cudaMemset inside the op (not kernel launches), work on other
-# streams, pointers to memory outside the caching allocator (listed under `unresolved` in
-# capture.json).
+# * Launch order: every launch's stream and the event records / waits and graph launches
+#   between them are recorded; the case keeps only the order they enforce (`after`, `waits`,
+#   `pdl`, launch_order = "recorded"; docs/capture.md "Launch order"), so launches on streams
+#   no event orders stay concurrent.
+# Not captured: cudaMemcpy / cudaMemset inside the op (not kernel launches), pointers to
+# memory outside the caching allocator (listed under `unresolved` in capture.json).
 import argparse
 import ctypes
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -151,6 +155,9 @@ if os.environ.get("PTXV_CAPTURE_CHILD") != "1":  # re-exec under the recorders
         LAUNCHCAP_OUT=CAP,
         LAUNCHCAP_IMAGES=IMG,
         LAUNCHCAP_MEMOPS="1",
+        # Event records / waits and graph launches between the launches: the case keeps only
+        # the order they and the streams enforce (docs/capture.md "Launch order").
+        LAUNCHCAP_ORDER="1",
         CUBINCAP_DIR=CUB,
         # Every module loads with its library (handles.jsonl names its image); lazily
         # loaded modules would arrive inside the first launch, with no load call to map.
@@ -448,6 +455,8 @@ for n, t in outs:
 named = {n: t for n, t in named.items() if isinstance(t, torch.Tensor) and t.is_cuda}
 
 recs = [json.loads(ln) for ln in open(CAP)][first:]
+# Every record of the captured call, stream order calls included (launch order, below).
+window = list(recs)
 # cudaLaunchKernelEx without a cluster attribute reports cluster dims 0: no cluster.
 for r in recs:
     if r.get("cluster") == [0, 0, 0]:
@@ -459,7 +468,7 @@ early_memops = []
 for r in recs:
     if "op" in r:
         early_memops.append(r)
-    elif not kfilter or kfilter.search(r["name"]):
+    elif "name" in r and (not kfilter or kfilter.search(r["name"])):
         break
 late_memops = [r for r in recs if "op" in r][len(early_memops) :]
 # Host <-> device copies (an .item(), a pinned staging buffer) touch no case buffer.
@@ -1138,6 +1147,22 @@ Captured by tools/capture.py (torch {torch.__version__}): {what}. {len(launches)
 Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py {cmdline}"""
 # A TOML basic string: backslashes (the shell quoting of --op) and quotes escaped.
 desc = desc.replace("\\", "\\\\").replace('"', '\\"')
+# Launch order (E-LAUNCH-ORDER): what the recorded streams and stream order calls enforce
+# between the kept launches (python/ptxv/_order.py; launches filtered out still order the
+# kept ones through them).
+_spec = importlib.util.spec_from_file_location(
+    "ptxv_order", os.path.join(ROOT, "python/ptxv/_order.py")
+)
+_order = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_order)
+_wpos = {id(r): i for i, r in enumerate(window)}
+lorder = _order.launch_order(window, [_wpos[id(r)] for r, _ in launches])
+multi = len(launches) > 1
+if multi and not lorder.recorded:
+    warnings.append(
+        f"launch order not recorded ({lorder.why}): launch-order exclusions do not apply "
+        "to this case (E-LAUNCH-ORDER)"
+    )
 toml = [
     f'''name = {q(name)}
 description = """{desc}"""
@@ -1169,6 +1194,7 @@ block = {r0["block"]}
     + f"""dynamic_smem = {r0["smem"]}
 outputs = {json.dumps([b["name"] for b in buffers if b.get("is_out")])}
 """
+    + (_order.toml_top(lorder) if multi else "")
 ]
 os.makedirs(f"{out}/data", exist_ok=True)
 os.makedirs(f"{out}/expected", exist_ok=True)
@@ -1186,15 +1212,14 @@ for b in buffers:
             s += f"expect_offset = {b['expect_offset']}\n"
     toml.append(s)
 toml += toml_params(launches[0][1], "params")
-for r, params in launches[1:]:
+for li, (r, params) in enumerate(launches[1:], 1):
     s = f"[[launches]]\nentry = {q(r['name'])}\ngrid = {r['grid']}\nblock = {r['block']}\n"
     if r["cluster"] != [1, 1, 1] or r.get("preferred_cluster"):
         s += f"cluster = {r['cluster']}\n"
     if r.get("preferred_cluster"):
         s += f"preferred_cluster = {r['preferred_cluster']}\n"
     s += f"dynamic_smem = {r['smem']}\n"
-    if r.get("pdl"):
-        s += "pdl = true\n"
+    s += _order.toml_launch(lorder, li, bool(r.get("pdl")))
     if not use_ptx and r["_cubin_file"] != r0["_cubin_file"]:
         s += f'cubin = "{r["_cubin_file"]}"\n'
     toml.append(s)
@@ -1235,6 +1260,8 @@ meta = {
     "unresolved": unresolved,
     "warnings": warnings,
 }
+if multi:
+    meta["launch_order"] = _order.summary(lorder)
 json.dump(meta, open(f"{out}/capture.json", "w"), indent=1)
 print(
     f"capture: wrote {out} ({len(buffers)} buffers, outputs {[b['name'] for b in buffers if b.get('is_out')]})"

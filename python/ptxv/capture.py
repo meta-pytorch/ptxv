@@ -403,6 +403,9 @@ class Capture:
         self.warnings: list[str] = []
         self.graph_launches = 0
         self.skipped_snapshots = 0
+        # Stream order calls (event records / waits, graph launches; events.jsonl), in issue
+        # order with the launches by "oseq" (python/ptxv/_order.py).
+        self.events: list[dict] = []
         self._mode = None
         self._graph_patch = None
         self._torch = None
@@ -498,6 +501,8 @@ class Capture:
         self.modules = _cupti.modules()
         p = self.dir / "launches.jsonl"
         recs = [json.loads(la) for la in open(p)] if p.exists() else []
+        pe = self.dir / "events.jsonl"
+        self.events = [json.loads(x) for x in open(pe)] if pe.exists() else []
         for i, r in enumerate(recs):
             self.launches.append(
                 Launch(
@@ -529,14 +534,22 @@ class Capture:
             self.warnings.append(
                 f"{self.skipped_snapshots} allocations or launches not snapshotted (max_alloc / budget)"
             )
-        if len({la.stream for la in self.launches}) > 1:
+        if len({la.record.get("stream_id", la.stream) for la in self.launches}) > 1:
             self.warnings.append(
-                "launches on several streams: a case orders them as recorded"
+                "launches on several streams: a case keeps only the order their streams and "
+                "events enforce (capture.json launch_order)"
             )
         if any(la.capturing for la in self.launches):
             self.warnings.append(
                 "launches under CUDA graph capture: recorded without snapshots"
             )
+
+    def order_records(self) -> list[dict]:
+        """Every launch record of the region and the stream order calls between them, in issue
+        order: what python/ptxv/_order.py derives a case's launch order from."""
+        from ._order import merge_by_oseq
+
+        return merge_by_oseq([la.record for la in self.launches], self.events)
 
     # -- views ----------------------------------------------------------------------
     @property

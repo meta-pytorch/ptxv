@@ -1,0 +1,66 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-SCOPE, release sequences (MISS 112): the first operation of a release pattern and the
+// acquire must be morally strong (PTX ISA 9.5 section 8.9.4: "the first operation in X and the
+// last operation in Y are morally strong"), also when a read-modify-write continued the pattern.
+// CTA 0 t0: data = 7; fence.acq_rel.gpu; st.relaxed.gpu [f] = 1 (W; the pattern's first
+//   operation is the fence).
+// CTA 0 t32: spins ld.relaxed.gpu [f] until 1; atom.relaxed.gpu.add [f], 1 (Z: reads W's 1,
+//   writes 2; W and Z are morally strong). No fence in t32.
+// CTA 1 t0: spins ld.acquire.gpu [f] until 2 (R; Z and R are morally strong); reads data.
+//   good: the .gpu fence and R are morally strong: R synchronizes with the pattern (clean).
+//   FREL: the head is fence.acq_rel.cta, whose scope does not include CTA 1: no
+//         synchronization, R's data read races with t0's data store.
+//   FREL_DIRECT: control, the .cta head and no Z (R polls until 1): race.
+//   REL_CTA: the head is st.release.cta (a race on the flag too).
+//   TWOHEAD: the .cta head; t32's Z is atom.release.gpu (writes 2), then a relaxed atomic
+//         writes 3; R polls until 3: the patterns continued are the fence's (its release
+//         excludes CTA 1) and Z's (t32 knows nothing of the data store): race.
+//   OWN: the .cta head and no Z; R's thread polls W relaxed, adds 1 itself, then acquires its
+//         own write: the continued pattern still excludes CTA 1: race.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry rseq_head(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    setp.ne.u32 %p1, %r2, 0;
+    @%p1 bra CTA1;
+    setp.eq.u32 %p2, %r1, 32;
+    @%p2 bra TZ;
+    setp.ne.u32 %p3, %r1, 0;
+    @%p3 bra DONE;
+    mov.u32 %r3, 7;
+    st.global.u32 [%rd1], %r3;
+    mov.u32 %r4, 1;
+    fence.acq_rel.gpu;                            // @HEAD
+    st.relaxed.gpu.global.u32 [%rd1+4], %r4;      // @W
+    bra DONE;
+TZ:
+    ld.relaxed.gpu.global.u32 %r9, [%rd1+4];
+    setp.eq.u32 %p6, %r9, 0;
+    @%p6 bra TZ;
+    atom.relaxed.gpu.global.add.u32 %r8, [%rd1+4], 1;   // @Z
+    bra DONE;
+CTA1:
+    setp.ne.u32 %p5, %r1, 0;
+    @%p5 bra DONE;
+R:
+    ld.acquire.gpu.global.u32 %r5, [%rd1+4];      // @RLOAD
+    setp.ne.u32 %p4, %r5, 2;                       // @RCHK
+    @%p4 bra R;
+    ld.global.u32 %r6, [%rd1];                    // @DATA
+    st.global.u32 [%rd1+12], %r6;
+DONE:
+    ret;
+}

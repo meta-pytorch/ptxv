@@ -196,6 +196,28 @@ pub struct Manifest {
     #[serde(default)]
     pub alias_xspace: Option<String>,
     pub params: Vec<ParamSpec>,
+    /// Where the order of the launch list comes from (E-LAUNCH-ORDER):
+    /// - "recorded": written by a capture that records every launch's stream and the event
+    ///   and graph edges between streams. Every predecessor the case names (the previous
+    ///   launch on the GPU, `after`, `waits`, with `pdl`) is an order the GPU enforces; a
+    ///   launch with no recorded predecessor has `after = -1`.
+    /// - "declared": the author states that the list is the order: a hand-written case, or an
+    ///   older capture whose capture.json shows it (one stream per GPU, or an event at every
+    ///   stream switch, no kernel filter).
+    /// - "unknown" (the default): an older capture, which may list grids of different streams
+    ///   one after the other although they could run at the same time.
+    ///
+    /// The model orders launches the same way in all three cases (E-PDL). Launch-order
+    /// exclusions apply only when the order is recorded or declared: S-NC's stream-order
+    /// exclusion and done-clock exemption, and E-L1-CORES's kernel-boundary exclusions.
+    #[serde(default)]
+    pub launch_order: Option<String>,
+    /// Stream of the first launch, numbered per GPU by the capture (see `NextLaunch::stream`).
+    #[serde(default)]
+    pub stream: Option<u32>,
+    /// Memory synchronization domain of the first launch (see `NextLaunch::mem_sync_domain`).
+    #[serde(default)]
+    pub mem_sync_domain: Option<u32>,
     /// Further kernels launched after the first one on the same stream, in order (same PTX
     /// file, same buffers). Rung 1e: programmatic dependent launch.
     #[serde(default)]
@@ -381,9 +403,27 @@ pub struct NextLaunch {
     pub executed_entry: Option<String>,
     /// Stream order override (rung 4b): the index (in `all_launches` order) of the launch
     /// this one waits for instead of the previous launch on its GPU; -1: none (a dropped
-    /// event wait between streams). Set by a variant's `after`.
+    /// event wait between streams). Set by a variant's `after`, or by a capture that records
+    /// streams (E-LAUNCH-ORDER): the previous launch on the same stream, or the launch an
+    /// event wait names.
     #[serde(default)]
     pub after: Option<i64>,
+    /// Stream of this launch, numbered per GPU in the order of first use (a capture that
+    /// records streams). With `launch_order = "recorded"`, a launch without `after` must be on
+    /// the stream of the previous launch on its GPU (checked).
+    #[serde(default)]
+    pub stream: Option<u32>,
+    /// Further launches (indices in `all_launches` order: earlier ones on the same GPU) that
+    /// must complete before this one starts, besides its predecessor (`after`, or the
+    /// previous launch on the GPU): event waits on other streams, the inputs of a graph join.
+    /// Each orders like a predecessor without PDL (E-PDL).
+    #[serde(default)]
+    pub waits: Vec<i64>,
+    /// Memory synchronization domain (cudaLaunchAttributeMemSyncDomain and its domain map, or
+    /// the stream's): kernels in different domains are system-scope distanced, so `.gpu`
+    /// scope does not include the other's threads (S-SCOPE). Default 0.
+    #[serde(default)]
+    pub mem_sync_domain: Option<u32>,
 }
 
 /// One kernel launch of a case (the first is the manifest's top level).
@@ -402,12 +442,31 @@ pub struct LaunchSpec<'a> {
     pub cubin: Option<&'a str>,
     /// `NextLaunch::after`.
     pub after: Option<i64>,
+    /// `NextLaunch::stream`.
+    pub stream: Option<u32>,
+    /// `NextLaunch::waits`.
+    pub waits: &'a [i64],
+    /// `NextLaunch::mem_sync_domain`.
+    pub mem_sync_domain: Option<u32>,
 }
 
 impl Manifest {
     /// Number of GPUs the case's kernels run on.
     pub fn ndevices(&self) -> u32 {
         1 + self.launches.iter().map(|l| l.device).max().unwrap_or(0)
+    }
+
+    /// E-LAUNCH-ORDER: is the launch list's order one the GPU enforced (`launch_order` is
+    /// "recorded" or "declared"), so that launch-order exclusions may rely on it? "unknown" or
+    /// no value: false.
+    pub fn launch_order_recorded(&self) -> Result<bool> {
+        match self.launch_order.as_deref() {
+            None | Some("unknown") => Ok(false),
+            Some("recorded") | Some("declared") => Ok(true),
+            Some(x) => {
+                bail!("launch_order = {x:?}: expected \"recorded\", \"declared\" or \"unknown\"")
+            }
+        }
     }
 
     /// Every kernel launch of the case, in stream order.
@@ -424,6 +483,9 @@ impl Manifest {
             dynamic_smem: self.dynamic_smem,
             cubin: None,
             after: None,
+            stream: self.stream,
+            waits: &[],
+            mem_sync_domain: self.mem_sync_domain,
         }];
         for l in &self.launches {
             v.push(LaunchSpec {
@@ -438,6 +500,9 @@ impl Manifest {
                 dynamic_smem: l.dynamic_smem,
                 cubin: l.cubin.as_deref(),
                 after: l.after,
+                stream: l.stream,
+                waits: &l.waits,
+                mem_sync_domain: l.mem_sync_domain,
             });
         }
         v
@@ -711,6 +776,16 @@ pub struct Variant {
     /// `Case::for_variant`.
     #[serde(default)]
     pub after: Vec<[i64; 2]>,
+    /// Replaces the case's `launch_order` (E-LAUNCH-ORDER): the same launches as an older
+    /// capture would give them ("unknown"), or as a capture that records streams ("recorded").
+    /// Applied by `Case::for_variant`.
+    #[serde(default)]
+    pub launch_order: Option<String>,
+    /// `[launch, w...]` lists replacing `NextLaunch::waits` of that launch (indices in
+    /// `all_launches` order; `[launch]` alone: no waits), e.g. a dropped event wait at a join.
+    /// Applied by `Case::for_variant`.
+    #[serde(default)]
+    pub waits: Vec<Vec<i64>>,
     /// E-RESIDENCY: the expected minimum number of co-resident CTAs per GPU for which every
     /// residency at or above it is deadlock-free (`residency::analyze`); 0: deadlocks even
     /// with every CTA resident.
@@ -934,6 +1009,13 @@ impl Variant {
             _ => self.expect.clone(),
         }
     }
+
+    /// Whether the variant edits the launch order (`after`, `waits`, `launch_order`), which
+    /// `Case::for_variant` applies: a check of the case as loaded is then not this variant's
+    /// (the verdict cache of the certificate check, vcache.rs, keeps only the others).
+    pub fn edits_order(&self) -> bool {
+        !self.after.is_empty() || !self.waits.is_empty() || self.launch_order.is_some()
+    }
 }
 
 /// Dims (innermost first) and byte strides (dims 1..) of a tensor map over a buffer.
@@ -985,14 +1067,30 @@ impl Case {
         Ok(Case { dir, m })
     }
 
-    /// The case as variant `id` runs it: its launch-order edits (`Variant::after`) applied.
+    /// The case as variant `id` runs it: its launch-order edits (`Variant::after`,
+    /// `Variant::waits`, `Variant::launch_order`) applied.
     pub fn for_variant(&self, id: &str) -> Result<Case> {
         let mut c = self.clone();
-        for &[l, a] in &self.variant(id)?.after {
+        let v = self.variant(id)?;
+        for &[l, a] in &v.after {
             if l < 1 || l as usize > c.m.launches.len() || a >= l || a < -1 {
                 bail!("variant {id}: bad after = [{l}, {a}]");
             }
             c.m.launches[l as usize - 1].after = Some(a);
+        }
+        for w in &v.waits {
+            let Some((&l, ws)) = w.split_first() else {
+                bail!("variant {id}: empty waits entry");
+            };
+            if l < 1 || l as usize > c.m.launches.len() || ws.iter().any(|&x| x < 0 || x >= l) {
+                bail!("variant {id}: bad waits = {w:?}");
+            }
+            c.m.launches[l as usize - 1].waits = ws.to_vec();
+        }
+        if let Some(o) = &v.launch_order {
+            c.m.launch_order = Some(o.clone());
+            c.m.launch_order_recorded()
+                .with_context(|| format!("variant {id}"))?;
         }
         Ok(c)
     }

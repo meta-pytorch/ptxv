@@ -29,6 +29,8 @@ poll_acquire = true
 assume_refuted = ["E-POLL-ACQ"]
 smem_cumulative = true
 hw_l1 = true
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states.
+launch_order = "declared"
 
 [[buffers]]
 name = "cr_r0"

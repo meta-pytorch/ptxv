@@ -13,6 +13,9 @@ entry = "primary"
 grid = [1, 1, 1]
 block = [32, 1, 1]
 outputs = ["out"]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states
+# (pdl.cu: one stream, the secondary launched with PDL after the primary).
+launch_order = "declared"
 
 [[buffers]]
 name = "d"

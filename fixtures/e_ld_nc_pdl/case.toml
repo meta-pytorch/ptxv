@@ -10,6 +10,8 @@ entry = "k0"
 grid = [1, 1, 1]
 block = [32, 1, 1]
 outputs = ["b", "out", "src"]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states.
+launch_order = "declared"
 
 [[buffers]]
 name = "a"
@@ -80,3 +82,18 @@ edits = [
     { marker = "@LATE", find = "st.global.u32   [%rd6], %r5;", replace = "<delete>" },
 ]
 expect = ["race", "violation"]
+
+[[variants]]
+id = "UNKNOWN"
+summary = "the same three launches with their order unknown (an older capture, E-LAUNCH-ORDER): neither k1's stream order after k0 nor k2's write after the wait excludes the .nc conflicts"
+launch_order = "unknown"
+expect = ["violation"]
+
+[[variants]]
+id = "UNKNOWN_DONE"
+summary = "k1 reads k0's output coherently and the order is unknown: k2's write after its wait of bytes k1 read with .nc is no longer excluded by k1's done clocks (E-LAUNCH-ORDER)"
+marker = "@K1A"
+find = "ld.global.nc.u32"
+replace = "ld.global.u32"
+launch_order = "unknown"
+expect = ["violation"]

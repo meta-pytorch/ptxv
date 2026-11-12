@@ -1433,8 +1433,9 @@ impl Machine {
         // the memory consistency model (PTX ISA 9.5 section 8.1): it is exact only for bytes
         // nothing writes during its kernel. A write and an `.nc` read of one global byte
         // conflict, in either order and whether or not happens-before orders them, unless
-        // their grids are stream-ordered (one completes before the other starts), or the write
-        // comes after the completion of the reading grid.
+        // their grids are stream-ordered (one completes before the other starts), the write
+        // happens before the reading grid starts, or the write comes after the completion of
+        // the reading grid.
         let nc_read = write.is_none()
             && strong == 0
             && actor < nth
@@ -1446,22 +1447,14 @@ impl Machine {
         let grid_of = |a: u32| launch.grid_index(cta_of(a) as u32);
         let my_grid = grid_of(actor);
         let nc_bit = |g: usize| 1u64 << g.min(63);
-        // Grid j completes before grid i starts: j is on i's stream-order chain and the grid
-        // that follows j there was launched without PDL. A PDL grid may start while the grid
-        // before it still runs (E-PDL), and its griddepcontrol.wait does not order an `.nc`
-        // load: ptxas 13.0 / 13.3 move the load above the wait (probes/nc_pdl `hoist`, GB300
-        // returns the primary's old word 200/200). Every grid starts after the one before it on
-        // its chain has started, so only the link next to j decides.
-        let before = |i: usize, j: usize| {
-            let mut x = i;
-            while let Some(p) = launch.prev_grid(x) {
-                if p == j {
-                    return !launch.grids[x].pdl;
-                }
-                x = p;
-            }
-            false
-        };
+        // Grid j completes before grid i starts (`Launch::completes_before`): j is a
+        // predecessor of i, or of a grid on a predecessor path to i, that was launched without
+        // PDL after it (or waits for it). A PDL grid may start while the grid before it still
+        // runs (E-PDL), and its griddepcontrol.wait does not order an `.nc` load: ptxas 13.0 /
+        // 13.3 move the load above the wait (probes/nc_pdl `hoist`, GB300 returns the primary's
+        // old word 200/200). ASSUME(E-LAUNCH-ORDER): only a recorded or declared launch order
+        // counts; an older capture's list may serialize grids that overlapped.
+        let before = |i: usize, j: usize| launch.order_completes_before(j, i);
         // The `.nc` read's grid and the write's grid overlap in time.
         let nc_conflict = |gr: usize, gw: usize| {
             gr == gw || gr >= 63 || gw >= 63 || !(before(gr, gw) || before(gw, gr))
@@ -1469,22 +1462,67 @@ impl Machine {
         // A write after `.nc` reads of another grid that it happens after the completion of
         // (that grid's done clocks, joined at a griddepcontrol.wait or a stream-ordered
         // launch): the reads were performed before (a PDL dependent's write, after its wait, of
-        // bytes its primary read).
+        // bytes its primary read). ASSUME(E-LAUNCH-ORDER): those joins follow the launch list,
+        // so only with a recorded or declared launch order.
         let done_vcs = &self.done_vcs;
-        let done_before = |g: usize| {
+        let done_by = |g: usize| {
             g != my_grid
                 && done_vcs
                     .get(g)
                     .and_then(|d| d.as_ref())
                     .is_some_and(|d| vc_covers(vc, d))
         };
-        let nc_hit_mask = |mask: u64| {
-            (0..64).any(|g| {
-                mask >> g & 1 == 1 && nc_conflict(g, my_grid) && !(g < 63 && done_before(g))
-            })
+        let done_before = |g: usize| launch.order_recorded && done_by(g);
+        // For the report only: does the pair conflict by the launch list's own order too
+        // (without E-LAUNCH-ORDER's gate)? `wrote_after`: the write follows `.nc` reads of
+        // that grid (the done-clock exemption applies).
+        let listed_conflict = |gr: usize, gw: usize, wrote_after: bool| {
+            let ord = |i: usize, j: usize| launch.completes_before(j, i);
+            (gr == gw || gr >= 63 || gw >= 63 || !(ord(gr, gw) || ord(gw, gr)))
+                && !(wrote_after && gr < 63 && done_by(gr))
         };
-        // (the `.nc` load's pc, the write's pc and actor, byte)
-        let mut nc_hits: Vec<(u32, u32, u32, u64)> = Vec::new();
+        // The grid of `mask` whose `.nc` reads this write conflicts with (one that conflicts
+        // by the launch list's own order too, if there is one), and whether only the gate
+        // makes it conflict.
+        let nc_hit_mask = |mask: u64| -> Option<(usize, bool)> {
+            let mut first = None;
+            for g in (0..64).filter(|&g| {
+                mask >> g & 1 == 1 && nc_conflict(g, my_grid) && !(g < 63 && done_before(g))
+            }) {
+                if listed_conflict(g, my_grid, true) {
+                    return Some((g, false));
+                }
+                first.get_or_insert(g);
+            }
+            first.map(|g| (g, true))
+        };
+        // A write before an `.nc` read that happens before the reading grid started: its CTAs
+        // joined the done clocks of its full predecessors (`launch_cta`, `Launch::full_preds`:
+        // the grid before it when launched without PDL, and the grids it `waits` for), which
+        // cover every write that happens before those grids completed (a peer GPU's write,
+        // then a release / acquire hand-off to a predecessor). The read's own clock does not
+        // count: an acquire or a griddepcontrol.wait does not order an `.nc` load
+        // (probes/nc_pdl `hoist`). ASSUME(E-LAUNCH-ORDER): the predecessors follow the launch
+        // list, so only with a recorded or declared launch order (`before_start`;
+        // `started_after` for the report's ungated view). Not at the SASS front's strict level:
+        // its acquire fence `CCTL.IVALL` has no scope (ptxas 13.0 compiles fence.acquire.gpu,
+        // .cluster and .sys alike to a bare CCTL.IVALL, and `acquire_pending` scopes it by the
+        // loads), so a .gpu acquire of a peer GPU's release synchronizes there and would exempt
+        // the peer's writes.
+        let exempt = hw_order || kern.front == Front::Ptx;
+        let started_after = |w: &Epoch| {
+            exempt
+                && launch.full_preds(my_grid).any(|p| {
+                    done_vcs
+                        .get(p)
+                        .and_then(|d| d.as_ref())
+                        .is_some_and(|d| w.clock <= vc_get(d, w.actor))
+                })
+        };
+        let before_start = |w: &Epoch| launch.order_recorded && started_after(w);
+        // (the `.nc` load's pc, the write's pc and actor, byte, the reading grid, whether only
+        // E-LAUNCH-ORDER's gate makes it a conflict)
+        let mut nc_hits: Vec<(u32, u32, u32, u64, usize, bool)> = Vec::new();
         let mut benign: Vec<(Epoch, u64)> = Vec::new();
         let mut own_benign: Option<(Epoch, u64)> = None;
         let vm = VcMemo::new(vc);
@@ -1544,17 +1582,28 @@ impl Machine {
                 // S-NC (a same-value write, above, changes nothing an `.nc` read could see).
                 if write.is_some() {
                     if let Some((mask, rpc)) = s.nc {
-                        if nc_hits.is_empty() && nc_hit_mask(mask) {
-                            nc_hits.push((rpc, pc, actor, a as u64));
+                        if nc_hits.is_empty() {
+                            if let Some((g, gated)) = nc_hit_mask(mask) {
+                                nc_hits.push((rpc, pc, actor, a as u64, g, gated));
+                            }
                         }
                     }
                 } else if nc_read {
                     if nc_hits.is_empty() {
+                        let hit = |w: &&Epoch| {
+                            !w.sv && nc_conflict(my_grid, grid_of(w.actor)) && !before_start(w)
+                        };
+                        let listed = |w: &&Epoch| {
+                            listed_conflict(my_grid, grid_of(w.actor), false) && !started_after(w)
+                        };
                         if let Some(w) = s
                             .writes()
-                            .find(|w| !w.sv && nc_conflict(my_grid, grid_of(w.actor)))
+                            .filter(hit)
+                            .find(listed)
+                            .or_else(|| s.writes().find(hit))
                         {
-                            nc_hits.push((pc, w.pc, w.actor, a as u64));
+                            let gated = !listed(&w);
+                            nc_hits.push((pc, w.pc, w.actor, a as u64, my_grid, gated));
                         }
                     }
                     s.nc = Some(match s.nc {
@@ -1721,16 +1770,30 @@ impl Machine {
                 }
             }
         }
-        for (rpc, wpc, wactor, b) in nc_hits {
+        for (rpc, wpc, wactor, b, gr, gated) in nc_hits {
             let name = match loc {
                 Loc::Global { alloc, .. } => self.launch.allocs[alloc].name.clone(),
                 _ => String::new(),
             };
+            // ASSUME(E-LAUNCH-ORDER): name the gate when the launch list alone would have
+            // excluded the pair.
+            let gw = self
+                .launch
+                .grid_index(self.threads[self.actor_thread(wactor)].cta as u32);
             let msg = format!(
-                "non-coherent load (ld.global.nc / LDG.CONSTANT) at {} reads byte {b:#x} of {name}, which {} writes at {} while the load's kernel runs: the memory consistency model does not apply to ld.global.nc (PTX ISA 9.5 section 8.1), so the load may return stale data (S-NC)",
+                "non-coherent load (ld.global.nc / LDG.CONSTANT) at {} reads byte {b:#x} of {name}, which {} writes at {} while the load's kernel runs: the memory consistency model does not apply to ld.global.nc (PTX ISA 9.5 section 8.1), so the load may return stale data (S-NC){}",
                 self.k.describe(rpc as usize),
                 self.actor_name(wactor),
-                self.k.describe(wpc as usize)
+                self.k.describe(wpc as usize),
+                if gated {
+                    format!(
+                        ". The launch list orders kernels {} and {}, but the case's launch order is unknown (an older capture may list grids that ran at the same time one after the other), so that order does not exclude the conflict (E-LAUNCH-ORDER)",
+                        gw.min(gr),
+                        gw.max(gr)
+                    )
+                } else {
+                    String::new()
+                }
             );
             self.report_pcs(
                 "violation",
@@ -2520,13 +2583,22 @@ impl Machine {
         // (`grid_gate_open`): without PDL after that grid completed, and then everything it
         // did happens-before the CTA's threads.
         let gi = self.launch.grid_index(cta as u32);
-        let done = match self.launch.prev_grid(gi) {
+        let mut done = match self.launch.prev_grid(gi) {
             Some(p) => {
                 self.rec_grid_reads(p);
                 (!self.launch.grids[gi].pdl).then(|| self.grid_done_vc_cached(p))
             }
             None => None,
         };
+        // `waits` (event waits, graph joins): each completed before the CTA launches.
+        for w in self.launch.grids[gi].waits.clone() {
+            self.rec_grid_reads(w);
+            let d = self.grid_done_vc_cached(w);
+            match &mut done {
+                Some(v) => vc_join(v, &d),
+                None => done = Some(d),
+            }
+        }
         self.l1_cta_launch(cta); // ASSUME(E-L1-CORES): see l1_cores.rs
         let mc = !(self.launch.mcast.is_empty() && self.launch.views.is_empty());
         for t in 0..self.threads.len() {
@@ -2617,8 +2689,16 @@ impl Machine {
 
     /// May the CTAs of grid `gi` (> 0) launch? With PDL once every CTA of the previous grid
     /// triggered (`griddepcontrol.launch_dependents`, any one thread suffices) or exited
-    /// entirely (probes/pdl); without PDL once the previous grid completed.
+    /// entirely (probes/pdl); without PDL once the previous grid completed. In both cases
+    /// also once every grid it `waits` for completed.
     pub fn grid_gate_open(&self, gi: usize) -> bool {
+        if !self.launch.grids[gi]
+            .waits
+            .iter()
+            .all(|&w| self.grid_complete(w))
+        {
+            return false;
+        }
         // ASSUME(E-PDL): a grid on a GPU no earlier grid ran on is launched independently,
         // at any time (launch skew between GPUs).
         let Some(p) = self.launch.prev_grid(gi) else {
@@ -2639,7 +2719,7 @@ impl Machine {
     /// Does CTA `cta`'s grid have a successor that waits on it (gate footprints needed)?
     fn has_dependent(&self, cta: u16) -> bool {
         let gi = self.launch.grid_index(cta as u32);
-        (gi + 1..self.launch.grids.len()).any(|j| self.launch.prev_grid(j) == Some(gi))
+        (gi + 1..self.launch.grids.len()).any(|j| self.launch.is_pred(gi, j))
     }
 
     /// DPOR (space 9, id = CTA): thread `t`'s trigger (`what` = 0) or exit (1), which the next
@@ -2678,7 +2758,12 @@ impl Machine {
         );
         match s {
             Scope::Sys => true,
-            Scope::Gpu => self.launch.g(cx).device == self.launch.g(cy).device,
+            // Kernels in different memory synchronization domains are system-scope distanced
+            // (CUDA 13.0 cuda.h, CUlaunchMemSyncDomain): `.gpu` does not reach across them.
+            Scope::Gpu => {
+                let (gx, gy) = (self.launch.g(cx), self.launch.g(cy));
+                gx.device == gy.device && gx.mem_domain == gy.mem_domain
+            }
             Scope::Cluster => self.launch.cluster_of(cx).0 == self.launch.cluster_of(cy).0,
             Scope::Cta => cx == cy,
         }
@@ -2773,10 +2858,45 @@ impl Machine {
         } else {
             VC::new()
         };
+        // ASSUME(S-SCOPE): a read-modify-write continues the release sequence of the write it
+        // reads only when the two are morally strong (PTX ISA 9.5 section 8.9.2: a write
+        // precedes an atomic operation in observation order only through a morally strong
+        // pair): complete overlap, and the same thread or scopes that include each other's
+        // thread. Under the hardware ordering (E-HW-L1) every strong pair is morally strong.
+        // ASSUME(S-SCOPE): the release patterns it continues stay apart from its own
+        // (`SyncCell::cont`): a reader synchronizes with each only when that pattern's first
+        // operation and the reader's acquire are morally strong (PTX ISA 9.5 section 8.9.4).
+        // Under the hardware ordering every release is at system scope: one clock.
+        let mut cont = Vec::new();
+        let mut cont_join = VC::new();
         if rmw {
             if let Some(old) = self.syncs.get(&key) {
-                if self.overlap_complete(old.writer, old.pc, t as u32, pc) {
-                    vc_join(&mut rel, &old.rel);
+                if self.overlap_complete(old.writer, old.pc, t as u32, pc)
+                    && (old.writer == t as u32
+                        || self.launch.hw_order
+                        || self.scopes_mutual(
+                            old.writer,
+                            strong_code(old.scope),
+                            t as u32,
+                            strong_code(m.scope),
+                        ))
+                {
+                    if self.launch.hw_order {
+                        vc_join(&mut rel, &old.rel);
+                        for c in &old.cont {
+                            vc_join(&mut rel, &c.rel);
+                        }
+                    } else {
+                        cont = old.cont.clone();
+                        cont_join = old.cont_join.clone();
+                        SyncCell::add_cont(
+                            &mut cont,
+                            &mut cont_join,
+                            old.writer,
+                            &old.rel,
+                            old.rel_scope,
+                        );
+                    }
                     vc_join(&mut rr, &old.rr);
                 }
             }
@@ -2795,6 +2915,8 @@ impl Machine {
                 },
                 rel,
                 rel_scope,
+                cont,
+                cont_join,
                 rr,
             },
         );
@@ -2877,13 +2999,32 @@ impl Machine {
         if !self.overlap_complete(c.writer, c.pc, me, pc) {
             return;
         }
+        // ASSUME(S-SCOPE): the release patterns a read can synchronize with are the write's own
+        // and those its read-modify-write continued (`SyncCell::cont`), each only when the
+        // pattern's first operation and the reader's acquire are morally strong (PTX ISA 9.5
+        // section 8.9.4): the release's scope includes the reader, and the acquire's scope (the
+        // read's here; the fence's for a relaxed read, `acquire_pending`) includes the
+        // pattern's thread. For the write's own pattern the second part is the moral strength
+        // of the read and the write (below). Until 2026-11-11 a continued release took the
+        // read-modify-write's thread and scopes (MISS 112).
+        let cont_in = |x: &Self, e: &SyncRel| hw || x.scope_includes(e.rel_scope, e.writer, me);
         // The thread's own write: nothing to acquire, unless it was a read-modify-write that
-        // continued another thread's release sequence (`sync_publish` joins the clocks): an
-        // NVLS barrier's `multimem.red` +1 followed by a poll of the same flag.
+        // continued another thread's release sequence: an NVLS barrier's `multimem.red` +1
+        // followed by a poll of the same flag.
         if c.writer == me {
             if hw || m.acquires() {
                 let mut v = self.threads[t].vc.clone();
                 vc_join(&mut v, &c.rel);
+                let pass = |e: &SyncRel| {
+                    cont_in(self, e) && (hw || self.scope_includes(m.scope, me, e.writer))
+                };
+                if !c.cont.is_empty() && c.cont.iter().all(pass) {
+                    vc_join(&mut v, &c.cont_join);
+                } else {
+                    for e in c.cont.iter().filter(|e| pass(e)) {
+                        vc_join(&mut v, &e.rel);
+                    }
+                }
                 if v != self.threads[t].vc {
                     self.threads[t].make_mut().vc = v;
                     if hw && !m.acquires() {
@@ -2893,17 +3034,22 @@ impl Machine {
             }
             return;
         }
-        // Moral strength: overlap (above), and scopes.
-        if !hw
-            && (!self.scopes_mutual(c.writer, strong_code(c.scope), me, strong_code(m.scope))
-                || !self.scope_includes(c.rel_scope, c.writer, me))
-        {
+        // Moral strength of the read and the write (observation order): overlap (above), and
+        // scopes.
+        if !hw && !self.scopes_mutual(c.writer, strong_code(c.scope), me, strong_code(m.scope)) {
+            return;
+        }
+        let own = hw || self.scope_includes(c.rel_scope, c.writer, me);
+        let cont: Vec<&SyncRel> = c.cont.iter().filter(|e| cont_in(self, e)).collect();
+        if !own && cont.is_empty() {
             return;
         }
         // ASSUME(E-READ-DONE): the writer's completed reads come before this read, and so
         // before every later step of this thread (write-after-read ordering only).
-        if let Some(rr) = crate::machine::rr_new(&self.threads[t].vc, &c.rr) {
-            vc_join(&mut self.threads[t].make_mut().vc, &rr);
+        if own {
+            if let Some(rr) = crate::machine::rr_new(&self.threads[t].vc, &c.rr) {
+                vc_join(&mut self.threads[t].make_mut().vc, &rr);
+            }
         }
         // Hardware ordering: nothing new when the reader already has the writer's clock at
         // the write (every published clock is a whole snapshot of its writer's knowledge).
@@ -2919,33 +3065,73 @@ impl Machine {
             self.mark_fence_acq(t);
             return;
         }
+        // (writer, release, scope) of each pattern the read observes. When every continued
+        // pattern passes, their join (`SyncCell::cont_join`) stands for them, with the same
+        // clocks as one entry per pattern: an acquiring read joins it at once; on the SASS
+        // front a relaxed read's later acquire is `CCTL.IVALL`, which joins every pending
+        // release whatever its writer (`acquire_pending(None)`; only a case's `exit_fence`
+        // acquires at a scope there), so one pending entry, keyed by the first pattern's
+        // writer, holds them. Other users of the writer keys: the certificate's comparisons of
+        // pending releases (C-POLL, C-CAS), which fail on a key mismatch, and
+        // `Machine::fence_acq`, which marks every read whose release adds to the thread at the
+        // acquire either way (the releases one key merges can mark more reads).
+        let mut rels: Vec<(u32, VC, Scope)> = Vec::with_capacity(2 + cont.len());
+        if own {
+            rels.push((c.writer, c.rel.clone(), c.rel_scope));
+        }
+        let all = !cont.is_empty() && cont.len() == c.cont.len();
+        if m.acquires() {
+            if all
+                && cont
+                    .iter()
+                    .all(|e| self.scope_includes(m.scope, me, e.writer))
+            {
+                rels.push((cont[0].writer, c.cont_join.clone(), cont[0].rel_scope));
+            } else {
+                for e in cont {
+                    if self.scope_includes(m.scope, me, e.writer) {
+                        rels.push((e.writer, e.rel.clone(), e.rel_scope));
+                    }
+                }
+            }
+        } else if all && self.k.front == Front::Sass && self.launch.exit_fence.is_none() {
+            let rs = cont.iter().map(|e| e.rel_scope).min().unwrap_or(Scope::Sys);
+            rels.push((cont[0].writer, c.cont_join.clone(), rs));
+        } else {
+            for e in cont {
+                rels.push((e.writer, e.rel.clone(), e.rel_scope));
+            }
+        }
         if !m.acquires() {
             if let Some(f) = &self.fence_acq {
                 let pc = self.threads[t].pc;
-                f.lock()
-                    .unwrap()
-                    .origins
-                    .entry((t as u32, c.writer))
-                    .or_default()
-                    .insert(pc);
+                let mut g = f.lock().unwrap();
+                for (w, _, _) in &rels {
+                    g.origins.entry((t as u32, *w)).or_default().insert(pc);
+                }
             }
         }
         let th = self.threads[t].make_mut();
         if m.acquires() {
-            let gains = !crate::machine::vc_covers(&th.vc, &c.rel);
-            vc_join(&mut th.vc, &c.rel);
-            vc_join(&mut th.acq_view, &c.rel);
+            let mut gains = false;
+            for (_, rel, _) in &rels {
+                gains |= !crate::machine::vc_covers(&th.vc, rel);
+                vc_join(&mut th.vc, rel);
+                vc_join(&mut th.acq_view, rel);
+            }
             // An acquiring read that synchronized (`Machine::fence_acq`).
             if gains {
                 self.mark_fence_acq(t);
             }
         } else {
-            match th.acq_pending.iter_mut().find(|p| p.0 == c.writer) {
-                Some(p) => {
-                    vc_join(&mut p.1, &c.rel);
-                    p.2 = p.2.min(c.rel_scope);
+            for (w, rel, rs) in rels {
+                match th.acq_pending.iter_mut().find(|p| p.0 == w) {
+                    Some(p) => {
+                        vc_join(&mut p.1, &rel);
+                        p.2 = p.2.min(rs);
+                    }
+                    None => th.acq_pending.push((w, rel, rs)),
                 }
-                None => th.acq_pending.push((c.writer, c.rel, c.rel_scope)),
             }
         }
     }
@@ -17479,17 +17665,18 @@ fn propagates_undef(op: &Op) -> bool {
 /// The size of the scalar memory locations the memory instruction at `pc` accesses: an `ld` /
 /// `st` element (PTX ISA 9.5 section 8.2.4: a vector access is one operation per element), an
 /// `atom` / `red` operand (`.v2` / `.v4.f32` per element; `bf16x2` per half, 8.2.5), a
-/// `multimem.ld_reduce` lane; 0 for any other instruction.
+/// `multimem.ld_reduce` or `multimem.st` lane; 0 for any other instruction.
 pub fn elem_bytes(k: &Kernel, pc: u32) -> u8 {
     match k.code.get(pc as usize).map(|i| &i.op) {
         Some(Op::Ld { bytes, n, .. }) => bytes / (*n).max(1),
-        Some(Op::St { bytes, v, .. }) => {
-            bytes
-                / match v {
-                    Val::Reg(_, c) => (*c).max(1),
-                    _ => 1,
-                }
-        }
+        Some(Op::St { bytes, v, .. }) => multimem_st_lane(&k.code[pc as usize].text)
+            .unwrap_or_else(|| {
+                bytes
+                    / match v {
+                        Val::Reg(_, c) => (*c).max(1),
+                        _ => 1,
+                    }
+            }),
         Some(Op::Atom {
             op: AtomOp::FAddFtz,
             ..
@@ -17502,6 +17689,23 @@ pub fn elem_bytes(k: &Kernel, pc: u32) -> u8 {
         Some(Op::LdReduce { ty, .. }) => ty.lane_bytes() as u8,
         _ => 0,
     }
+}
+
+/// The lane of a PTX `multimem.st` (`text`: its instruction), lowered to a global `St` that
+/// keeps only the access width: one location per value of a packed type (`.f16x2`, `.e4m3x4`;
+/// PTX ISA 9.5 section 8.2.5) and per element of a vector, as `McTy::lane_bytes` for
+/// `multimem.ld_reduce`. None for any other instruction.
+fn multimem_st_lane(text: &str) -> Option<u8> {
+    let opcode = text
+        .split_whitespace()
+        .find(|w| w.starts_with("multimem.st."))?;
+    opcode.split('.').rev().find_map(|m| match m {
+        "u64" | "b64" | "s64" | "f64" => Some(8),
+        "u32" | "b32" | "s32" | "f32" => Some(4),
+        "f16" | "f16x2" | "bf16" | "bf16x2" => Some(2),
+        "e4m3" | "e4m3x2" | "e4m3x4" | "e5m2" | "e5m2x2" | "e5m2x4" => Some(1),
+        _ => None,
+    })
 }
 
 /// ASSUME(S-SCOPE), complete overlap (`Machine::overlap_complete`) of two accesses (actor,

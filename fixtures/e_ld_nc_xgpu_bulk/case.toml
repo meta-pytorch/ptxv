@@ -1,0 +1,85 @@
+name = "e_ld_nc_xgpu_bulk"
+description = """
+S-NC across GPUs, the launch-clock exemption vs an async-proxy write in flight: GPU 1's writer
+bulk-stores a shared-memory tile into GPU 0 memory, waits with cp.async.bulk.wait_group.read
+(the source reads only; the global writes may still be in flight) and signals a flag with
+st.release.sys; GPU 0's waiter acquires it; GPU 0's reader, stream-ordered after the waiter
+without PDL, reads the data with ld.global.nc. good: the bulk writes are not ordered before the
+release: race and violation. FULL: cp.async.bulk.wait_group 0 (the writes complete) before the
+release: clean (SASS strict: a violation, no exemption there). coherent: a coherent reader, a
+race. expect is the PTX ISA verdict (both fronts since the fixes of MISS 32, PTX front, and
+MISS 102, SASS front)."""
+ptx = "kernel.ptx"
+entry = "waiter"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states.
+launch_order = "declared"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "iota"
+device = 0
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[launches]]
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "flag" },
+]
+
+[[launches]]
+entry = "reader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 0
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "wait_group.read before the release: the bulk writes may land while the reader runs (race and violation)"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "FULL"
+summary = "a full wait_group before the release: the writes complete before the hand-off: clean (SASS strict: a violation, no exemption there)"
+marker = "@WAIT"
+find = "cp.async.bulk.wait_group.read 0;"
+replace = "cp.async.bulk.wait_group 0;"
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "coherent"
+summary = "control: wait_group.read, coherent reader (a race only)"
+marker = "@LD"
+find = "ld.global.nc.u32"
+replace = "ld.global.u32"
+expect = ["race"]

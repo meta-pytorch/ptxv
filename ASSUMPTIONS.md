@@ -2117,9 +2117,12 @@ grid has executed `griddepcontrol.launch_dependents` (one thread of the CTA suff
 exited entirely, and they get **no** ordering from it. `griddepcontrol.wait` blocks until the
 previous grid has completed and then acquires everything it did; in the first grid it is a
 no-op. The trigger orders no memory. Only the immediately preceding grid *on the same GPU* is a
-prerequisite. A grid on a GPU no earlier grid ran on (`device = N`, rung 1f) is launched
-independently: it may launch at any point, with no ordering against the other GPUs' kernels
-(arbitrary launch skew).
+prerequisite (or the grid `after` names; -1: none). A grid on a GPU no earlier grid ran on
+(`device = N`, rung 1f) is launched independently: it may launch at any point, with no ordering
+against the other GPUs' kernels (arbitrary launch skew). A grid's `waits` (event waits and
+graph joins of a capture that records streams, E-LAUNCH-ORDER) are further prerequisites
+without PDL: its CTAs launch once each of them completed, and everything they did happens
+before them. Whether the list is the order the GPU enforced is E-LAUNCH-ORDER.
 - Evidence: `probes/pdl` (GB300, 20 runs per experiment). With the attribute, a dependent
   without `wait` runs while the primary is still running after every CTA triggered (19/20; one
   launch came late) or when one thread per CTA triggered (20/20). It never runs early if any
@@ -2235,6 +2238,151 @@ independently: it may launch at any point, with no ordering against the other GP
 - If wrong: *miss* of a cross-group interaction that the obligations do not cover.
 - Where: `groups.rs`; `exec.rs` `access_x` (`xg`); `explore.rs` (`terminal_sink`,
   `sync_por_state_ok`); `wellsync.rs` (`certify_keep`, `carry`).
+
+### E-LAUNCH-ORDER · code
+**A case's launch list is the order the GPU enforced only when its `launch_order` says so:
+"recorded" (written by a capture that records streams, events and graph edges) or "declared"
+(a hand-written case). Launch-order exclusions rely on the list only then.** The list is one
+ordered list per GPU: each grid's predecessor is the previous launch on its GPU, or `after`
+(-1: none), with `pdl` for a programmatic edge, plus `waits` (further grids it starts after
+they completed). Before 2026-11-11 every list counted as enforced, but the capture tools did
+not record what would make that true (MISS 113): tools/capture.py and the in-process
+ptxv.capture listed the launches of every stream in API order, tools/capture_dist.py
+serialized a rank's streams even at a stream switch without an event (it warned "may overlap
+... the case serializes them"), launches made during stream capture were listed in API order,
+and the ProgrammaticEvent / LaunchCompletionEvent attributes, which make a waiting stream's
+kernel start before the event's kernel completes, were not recorded. An exclusion could then
+treat grids that ran at the same time as ordered: a wrong clean (repros, clean before the gate:
+fixtures/e_launch_order UNKNOWN, e_ld_nc_pdl UNKNOWN and UNKNOWN_DONE, e_launch_order_l1
+UNKNOWN).
+- Recorded order (docs/capture.md, "Launch order"): an edge is written only where CUDA
+  enforces it [doc, CUDA 13.0 cuda.h and runtime API]:
+  - the previous launch on the same stream (with PDL, a programmatic edge);
+  - an event: `cuEventRecord(e, S1)` after launch A and `cuStreamWaitEvent(S2, e)` before
+    launch B: B starts after A completed (the event covers all work submitted to S1);
+  - stream capture: the same rules among the launches of one capture (the graph's edges), and
+    no edge between a captured launch and an uncaptured one (the graph runs when launched);
+  - ProgrammaticEvent without triggerAtBlockStart: a programmatic edge ("the dependent
+    launches can choose to wait on the dependency using the programmatic sync"); with
+    triggerAtBlockStart, or LaunchCompletionEvent ("blocks of B may begin before all blocks
+    of A have begun"; "not visible to cudaGridDependencySynchronize()"): no edge.
+  A join (several predecessors) keeps one as `after` and the others in `waits`. An event's
+  record ends at cuEventDestroy (the driver hands the handle to the next new event, and a wait
+  on an event never recorded orders nothing; before the capture recorded cuEventDestroy, such a
+  wait took the destroyed event's edge: a wrong clean, and GB300 overlapped the two kernels in
+  99 of 100 runs) and at any graph launch (a graph's event record nodes); an event shared with
+  another process (cuIpcOpenEventHandle, cuIpcGetEventHandle) orders nothing until destroyed;
+  after cuStreamUpdateCaptureDependencies a capturing stream's next launch has no edge from
+  what the stream was given before. Order the capture does not record (host synchronization,
+  the legacy default stream's implicit synchronization, stream memory waits and copies, host
+  functions, graph launches whose graph was not captured) is left out: it only removes edges,
+  with one exception at the strict level. After a wait for a ProgrammaticEvent, an unrecorded
+  operation on the waiting stream does not stop the programmatic edge from reaching the
+  stream's next launch, which CUDA orders only after that operation (itself started at the
+  primary's trigger), not after the primary's later writes [argued]. On GB300 the waiting
+  stream's next kernel never started before the primary ended (0 of 100 runs directly after
+  the wait, 0 of 100 with a memset between, 100 of 100 overlapped without the wait) [GB300
+  measured], so there the edge is weaker than the hardware. A launch issued into a graph
+  capture has no edge to any launch outside its capture: the graph runs when launched, maybe
+  more than once, so a graph's kernels are unordered with the program's other kernels (a
+  false alarm where the program orders them, e.g. an eager kernel after the replay on the
+  same stream).
+- What "recorded" needs from the records (python/ptxv/_order.py): every launch issued outside a
+  capture names its stream by cuStreamGetId's id (a handle may be reused after the stream is
+  destroyed; stream 0 is the legacy or the calling thread's stream depending on the entry
+  point, and the id is queried through the call's own flavour); a launch inside a capture
+  carries the capture's id and is named by handle within it (cuStreamGetId, cuStreamGetDevice
+  and cuStreamGetFlags on a capturing stream fail with CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED and
+  invalidate the capture, GB300 measured with the CUDA 13 driver; cuStreamGetCaptureInfo,
+  cuStreamGetAttribute and cuStreamGetCtx are legal); no launch between the kept ones is
+  missing from the records (ptxvcap injection mode with a filter writes
+  `unrecorded_before`); the kept launches are in issue order; every record comes from a call
+  that succeeded (each call is written once it returned); the kept launches of one process are
+  on one GPU (a case written by one process has no per-launch device); and every record names
+  its host thread, with the calls of different threads apart in time: each record's `t0`
+  (before the call) after the `t1` (after the call returned) of every earlier record of another
+  thread, so the records are in the order the driver took the calls (probes/launchcap keeps
+  the launch being recorded per thread; before that, two threads launching at once gave launch
+  records another thread's PDL attribute and stream, GB300 measured). Otherwise the capture
+  writes `launch_order = "unknown"`.
+- Gate (`Launch::order_recorded`, `Launch::order_completes_before`): with an unknown order,
+  S-NC's stream-order exclusion and done-clock exemption, and E-L1-CORES's kernel-boundary
+  exclusions (`grids_ordered`, the done-clock check of E-L1-HAVOC), do not apply. The S-NC
+  message then names the gate. A recorded or declared case is checked for consistency: a launch
+  without `after` must be on its implicit predecessor's stream when both name one (`stream`;
+  crates/sim/tests/fixtures.rs `e_launch_order_stream_switch_needs_after`). The check reads
+  only the case text: it cannot see an edge the capture wrongly derived (an event wait matched
+  to the wrong record, launches of two GPUs listed on one).
+- Not gated: E-PDL itself. An unknown-order list still orders its grids (launch gate and the
+  done-clock join at launch), so a plain race between two grids that an older capture
+  serialized is not reported (fixtures/e_launch_order PLAIN_UNKNOWN: clean; GB300 overlapped
+  such a writer and reader on two streams without an event, the reader reading the bytes
+  before the write in 199 of 200 runs). That residue is MISS 127 (open): `PTXV_UNRECORDED_ORDER=
+  concurrent` drops every predecessor of an unknown-order case (each grid as `after = -1`),
+  the strict reading, for measurement (crates/cli/tests/launch_order.rs: PLAIN_UNKNOWN is then
+  a race).
+- `waits` (E-PDL): a grid's CTAs launch once its predecessor allows it and every grid in
+  `waits` completed, and join each one's done clocks; launch groups, slices and DPOR's
+  footprints count them like a predecessor.
+- `mem_sync_domain` (cudaLaunchAttributeMemSyncDomain and its map): S-SCOPE.
+- Evidence: doc (the cuda.h text above; graph edge ports `CU_GRAPH_KERNEL_NODE_PORT_*`);
+  model: fixtures/e_launch_order (good clean; UNKNOWN violation, clean before the gate;
+  UNORD race + violation; PLAIN, PLAIN_UNKNOWN clean), e_launch_waits (good clean, NOWAIT
+  race + violation, UNKNOWN violation, UNORD race), e_ld_nc_pdl UNKNOWN / UNKNOWN_DONE
+  (violation; clean before), e_launch_order_l1 (UNKNOWN stale; clean before),
+  e_ld_nc_xgpu_unord (good, the order unknown: violation; REC, recorded: clean on the PTX front
+  through S-NC's launch-clock exemption, a violation at the SASS front's strict level; UNORD
+  race + violation); source mutants lo-* (tools/mutate/srcmut.py). The capture side (docs/capture.md "Launch
+  order"; argued from the CUDA semantics above, run on GB300): two streams with an event, the
+  same without it (the race is reported; captured with the previous tools, it lists the
+  launches in API order and is clean), a graph with a fork and a join, and two ranks through
+  tools/capture_dist.py give the edges the semantics give; so do a wait on a new event that
+  got a destroyed event's handle (no edge: the race is reported), one process with a kernel on
+  each of two GPUs (unknown), and two threads launching through cudaLaunchKernelEx at once
+  (every launch keeps its own PDL attribute and stream; unknown) or one after the other
+  (recorded); python/tests/test_order.py. GB300 differential (`ptxv hw`, which runs each launch
+  on its case stream with event edges since 2026-11-11): with a 2 ms delay before the writer's
+  store, e_launch_order UNORD and e_launch_waits NOWAIT differ from the ordered output in 200 of
+  200 runs, their event-ordered good variants in 0 of 200.
+- kernel_db A/B (2026-11-11, model; builds before and after the gate): 119 records with two or
+  more grids on one GPU and 10 one-grid-per-GPU controls, SASS and 4 PTX checks, 3000 states /
+  300 s each. Of the 133 checks, 4 are complete in both builds, 69 stop at the budget with
+  findings in both, 17 are inconclusive in both, and 43 time out or fail. No class in `got`
+  changes; one record's S-NC findings include gated ones (DeepEP combine-reduce, a violation in
+  both builds); 24 records gain a gb300 `latent-closed-world` stale read (the E-L1-HAVOC probe
+  without the kernel-boundary credit, e.g. a grid reading what an earlier grid on its GPU
+  wrote); the controls are unchanged. At 20000 states / 900 s the 30 records with `.nc` loads
+  (10 of them with a class in both builds): no class changes, 3 records (DeepEP combine and
+  combine-reduce) gain gated S-NC findings. The gate only removes exclusions, so a record
+  without `.nc` loads keeps its strict-level classes at any budget [argued]; the 20 `.nc` checks
+  still without a class at 20000 states are the precision cost not measured. The strict reading
+  (`PTXV_UNRECORDED_ORDER=concurrent`) on the 90 checks with a class in both builds: 38 lose it
+  at the same budget and 19 of the other 52 change class (new races, 2 deadlocks).
+- Declaring an older capture's order (data, not applied): a stream handle value alone never
+  suffices (a destroyed stream's handle is reused; 0x0 is a different stream per thread and
+  entry point). A tools/capture_dist.py capture can be declared when, in its captured window
+  (rank.json "records", not the launches before it), every launch between the first and last
+  kept one on a GPU, kept or not, is on 0x0, none of the dropped ones carries PDL, and one host
+  thread issued every launch, with no graph capture or replay (then 0x0 is the legacy stream or
+  that thread's own, which CUDA orders in issue order). 85 of the 119 records meet it; 3 more
+  (launches from two threads through autograd's backward) and the 31 ptxv.capture records with
+  their 4 PTX-front captures (capture.json keeps no handle values or raw records) need a
+  re-capture.
+- Placement: strict and gb300 alike. Which launches CUDA orders is the programming model's
+  contract, not a property of GB300.
+- Status: **argued**.
+- If wrong: *miss* if a recorded edge is not enforced (a capture bug, such as an event wait
+  matched to the wrong record, a launch written with another thread's attributes, or launches of
+  two GPUs listed on one: the `stream` check does not see these), or if an older capture is
+  marked declared without the evidence above or evidence that every stream switch is ordered by
+  an event (fixtures/r4b_moe is declared on the latter: its capture.json notes each switch, no
+  kernel filter). *False alarm* where an enforced order is not recorded (the list above), or for older
+  captures whose order was in fact enforced.
+- Where: `crates/case` (`launch_order`, `stream`, `waits`, `mem_sync_domain`), `lib.rs`
+  (`launch_order`), `machine.rs` (`Launch::order_completes_before`, `completes_before`,
+  `hb_before`, `full_preds`), `exec.rs` (`access_x`, `launch_cta`, `grid_gate_open`),
+  `l1_cores.rs`, `dpor.rs`, `groups.rs`, `slices.rs`.
+- Retire: never (an input assumption).
 
 ### E-POLL-ACQ · code
 **Opt-in: a thread that leaves a warp-level poll loop acquires what its polls observed**
@@ -2619,7 +2767,9 @@ only meets its own fills. Listed in every `hw_l1` verdict without `l1_coresident
 (case `l1_coresident = true`, `PTXV_L1_CORES=0|1`; implies `hw_l1`; `crates/sim/src/l1_cores.rs`).
 - Model:
   - launches that are not stream-ordered (a launch with `after = -1` is on another stream)
-    may be resident together; a PDL edge counts as unordered;
+    may be resident together; a PDL edge counts as unordered; with an unknown launch order (an
+    older capture, E-LAUNCH-ORDER) no two grids count as stream-ordered, and the kernel
+    boundary of E-L1-HAVOC's done-clock check is not assumed;
   - a line filled by one grid hits for another grid's load on the same SM when the two may be
     resident together (`l1_shared`); a CTA's launch drops the lines other grids left on its SM
     (the kernel boundary of probes/l1_kbound, taken as happening at launch on each SM);
@@ -5253,6 +5403,18 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
   each one's scope includes the other's thread (`.cta`: same CTA, `.cluster`, `.gpu`: same
   GPU, `.sys`: all) and, on the PTX front, they overlap completely (below). Morally strong
   accesses do not race; any other conflicting pair not ordered by happens-before is a race.
+- Memory synchronization domains (2026-11-11, MISS 113): `.gpu` includes only the threads of
+  grids in the same domain (case `mem_sync_domain`, captured from
+  cudaLaunchAttributeMemSyncDomain / MemSyncDomainMap or the stream's attribute). CUDA 13.0
+  cuda.h, CUlaunchMemSyncDomain [doc]: "Memory operations done in kernels launched in
+  different domains are considered system-scope distanced. In other words, a GPU scoped memory
+  synchronization is not sufficient for memory order to be observed by kernels in another
+  memory synchronization domain even if they are on the same GPU." Kernel boundaries are not
+  changed (stream order still joins done clocks). fixtures/e_mem_sync_domain: a .gpu release /
+  acquire between concurrent kernels of domains 0 and 1 is a race, the .sys pair clean (clean
+  before the domain was modeled). Older captures carry no domain (0 for every grid): they
+  serialize a GPU's grids except PDL pairs, so only a PDL pair in different domains that
+  synchronizes at .gpu scope could be missed.
 - Complete overlap (MISS 80, 2026-11-11). PTX ISA 9.5 section 8.7: two operations are morally
   strong only if all of these hold: "The operations are related in program order (i.e, they are
   both executed by the same thread), or each operation is strong and specifies a scope that
@@ -5274,23 +5436,30 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
   - Now, on the PTX front at the strict level, two strong thread instructions are one location
     when their scalar elements are the same size (`same_location`, `elem_bytes`: the ld / st
     element, the atom / red operand, `.v2` / `.v4.f32` per element, `bf16x2` per half, the
-    `multimem.ld_reduce` lane). Both cover the byte being checked and each element is
-    naturally aligned (S-ALIGN), so equal sizes are one location. A partially overlapping
-    strong pair is a race (the message says mixed-size data race); a partially overlapping read
-    does not synchronize with the write (`sync_observe_cell`), its own thread's included, and
-    does not continue its release sequence (`sync_publish`); a strong write no longer drops an
-    ordered earlier strong access of another size from the shadow (`access_x` `keep`).
+    `multimem.ld_reduce` and `multimem.st` lane). Both cover the byte being checked and each
+    element is naturally aligned (S-ALIGN), so equal sizes are one location. A partially
+    overlapping strong pair is a race (the message says mixed-size data race); a partially
+    overlapping read does not synchronize with the write (`sync_observe_cell`), its own thread's
+    included, and does not continue its release sequence (`sync_publish`); a strong write no
+    longer drops an ordered earlier strong access of another size from the shadow (`access_x`
+    `keep`).
     e_scope_mixed VEC (a relaxed v2.u32 load whose first element is the flag, then
-    `fence.acq_rel.gpu`) stays clean.
+    `fence.acq_rel.gpu`) stays clean. A packed `multimem.st` (`.f16x2`, `.e4m3x4`) is one
+    location per value (8.2.5), as `multimem.ld_reduce` is per lane; until 2026-11-11 it was
+    one location of its register width, so an f16x2 store and an unordered f16x2 reduction of
+    the word were a mixed-size race (fixtures/e_scope_mm_lane good, a false alarm;
+    nondeterministic now; MIXED, a .b32 store against the f16 lanes, stays a race).
   - Not decided (scopes only, as before): the SASS front (an instruction's width is not the
     PTX element size: ptxas merges a vector's elements into one access, `ld.relaxed.v2.u32` is
     one 64-bit `LDG.E.64.STRONG`), accesses of asynchronous units (bulk and TMA reductions,
     `st.async`), the NIC (S-NIC), and instructions without a known element size. A
     synchronization source is still keyed by its first byte: a read that starts at another
     byte of the write does not observe it (no synchronization: races only added).
-  - Fixtures e_scope_mixed (good, VEC clean; MIXED, WIDE race on PTX, clean on SASS) and
-    e_warp_order_mixed (good nondeterministic, MIXED race on PTX; both clean on SASS); source
-    mutants scope-overlap, scope-overlap-race, scope-overlap-sync, scope-elem-vector.
+  - Fixtures e_scope_mixed (good, VEC clean; MIXED, WIDE race on PTX, clean on SASS),
+    e_warp_order_mixed (good nondeterministic, MIXED race on PTX; both clean on SASS) and
+    e_scope_mm_lane (good nondeterministic, MIXED race on PTX; both nondeterministic on SASS);
+    source mutants scope-overlap, scope-overlap-race, scope-overlap-sync, scope-elem-vector,
+    scope-elem-mmst.
   - A/B (2026-11-11, model; the fix against its parent, PTX front, `--certify`): 65 kernel_db
     records whose PTX has strong accesses of two sizes, triaged at 2000 states, and the 39 that
     hit the bound rerun at 20000 states; 23 fixture checks. No record flips (46 unchanged, 11
@@ -5313,6 +5482,55 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
   front-end; SASS `st.release` is `MEMBAR` + a relaxed store; fixture e_ring R1). Across the
   65 other PTX fixtures, no verdict changes; explored states grow by up to 2.7x
   (r1g_allreduce good: 119,899 to 326,045 states, clean either way).
+- Release sequences through read-modify-writes (MISS 100, 2026-11-11): a read-modify-write
+  continues the release sequence of the write it reads only when the two are morally strong
+  (`sync_publish`: the same thread, or scopes that include each other's thread, and complete
+  overlap). PTX ISA 9.5 section 8.9.2: "A write W precedes a read R in observation order if: R
+  and W are morally strong and R reads the value written by W, or For some atomic operation Z,
+  W precedes Z and Z precedes R in observation order". Until 2026-11-11 every read-modify-write
+  continued it: a `.cta` release continued through a relaxed atomic of another CTA, and the
+  thread that acquired the atomic's value synchronized with the release (fixtures/e_rseq_scope
+  CTAREL: clean on both fronts, now a race; good, a `.gpu` release, stays clean). Under the
+  hardware ordering every strong pair is morally strong (E-HW-L1), so the hardware model is
+  unchanged; the GB300 profile re-run (`sass_gb300`) keeps the strict memory model and reports
+  the race too. A/B (both fixes against their parent, 2026-11-11, model: every kernel_db
+  record and fixture with a read-modify-write outside shared::cta memory and an
+  acquire-capable access, 516 check pairs): the check refused a continuation in 4 records
+  (cute ReduceScatterFusion w2 and w4, dg_cute_fused w2 and w4) and in fixtures/r1h_nvls B63,
+  none of whose verdicts changed; CTAREL's are the only flips. Source mutant rseq-scope.
+  Placement: ISA text, the strict level of both fronts (the SASS front takes the release scope
+  from `MEMBAR`).
+- The first operations of a continued release sequence (MISS 112, 2026-11-11): the release
+  patterns a read-modify-write continues stay apart from its own (`SyncCell::cont`, merged per
+  thread and scope), and a read synchronizes with each only when the pattern's first operation
+  and the read's acquire are morally strong (`sync_observe_cell`, `acquire_pending`): the
+  release's scope includes the reader, and the scope of the acquiring read, or of the acquire
+  fence after a relaxed read, includes the thread that made the release. PTX ISA 9.5 section
+  8.9.4: "A release pattern X synchronizes with an acquire pattern Y, if a write operation in X
+  precedes a read operation in Y in observation order, and the first operation in X and the
+  last operation in Y are morally strong". Until 2026-11-11 a continued release took the
+  read-modify-write's thread and scopes: a `.cta` fence heading the pattern (fixtures/e_rseq_head
+  FREL) was clean on both fronts, and a `.cta` acquire fence after the poll (e_rseq_facq
+  CTAFENCE) or a `.cta` acquire read of the atomic's value (CTAACQ, whose flag read races in any
+  case) synchronized on the PTX front; their data reads race now. The `.gpu` variants stay
+  clean. When one pattern fails and another passes, the read synchronizes with the passing one
+  only (TWOHEAD: the `.cta` fence's pattern and a `.gpu` release atomic's; OWN: the reader's own
+  atomic continued the pattern; e_rseq_twopat CTAFENCE: a `.cta` acquire fence after a relaxed
+  poll takes the pattern of its CTA only); the patterns' join (`SyncCell::cont_join`) stands
+  for them only when every one passes, and the SASS front's single pending entry for them
+  (`CCTL.IVALL` takes every entry) is not used on the PTX front. Under the hardware ordering
+  every release is at system scope and they join into one clock (E-HW-L1), so the hardware model
+  is unchanged; the GB300 profile re-run (`sass_gb300`) keeps the strict memory model and
+  reports the races too. A/B (the 516 check pairs of MISS 100's, model): no verdict changed
+  outside the fixtures above, whose CTAACQ and REL_CTA also gain the data read's race. On the
+  261 checks that continued a release sequence the cached join and per-pattern joins give the
+  same classes, levels and findings on 231 and differ on none (2 have a verdict with the cached
+  join only, 28 with neither). One node, interleaved, the slowest records: wall time 1.02 to
+  1.27 times the parent's (per-pattern joins: up to 4.56), peak RSS 0.99 to 1.08 times. Source
+  mutants rseq-head-rel, rseq-head-acq, rseq-head-fence, rseq-head-join, rseq-head-cache,
+  rseq-head-own and rseq-head-shortcut. Placement: ISA text, the strict level of both fronts; on
+  the SASS front an acquire fence is `CCTL.IVALL`, unscoped (none for `.cta`), so only the
+  release side is decided there.
 - A morally strong read whose thread the release's scope includes acquires it at once
   (acquire read) or at its next acquire fence (relaxed read; `fence.acq_rel.<scope>` acquires
   observations whose writer its scope includes, and SASS `CCTL.IVALL` acquires all of them).
@@ -5352,14 +5570,18 @@ S-MBAR-SCOPE (until 2026-11-09 they were treated as sufficient). Since rung 1f:
   `MEMBAR.SC` and `fence.sc` act as `MEMBAR.ALL` / `fence.acq_rel` (no SC total order), and
   `atom` / `red` without a scope are `.gpu`, the PTX ISA default.
 - Where: `exec.rs` `morally_strong`, `scope_includes`, `sync_publish`, `sync_observe`,
-  `acquire_pending`, `same_location`, `elem_bytes`; `ptx` `mem_sync`; `sass` `sass_strong`,
-  `sass_scope`.
+  `acquire_pending`, `same_location`, `elem_bytes`, `SyncCell::cont`; `ptx` `mem_sync`; `sass`
+  `sass_strong`, `sass_scope`.
 - Status: **validated** for `.gpu` vs `.sys` across two GPUs (`fixtures/r1f_pingpong`): B20
   (relaxed poll, no acquire) is a race in both models and **wrong 1000/1000 on GB300** (a stale
   L1 hit on the payload); B19 (release at `.gpu`) is a race in both models and latent on GB300
   (20,000 runs). B56 (`fence.acq_rel.gpu` as the acquire) is a race in PTX and clean in SASS:
   only the release half of the fence is scoped.
-- If wrong: *miss* of mbarrier scope bugs (a remote arrive with `.release.cta`).
+- If wrong: *miss* of mbarrier scope bugs (a remote arrive with `.release.cta`). *Miss* for
+  SASS-derived contracts (records checked on the SASS front only): the SASS front does not
+  decide overlap, so a mixed-size race between strong accesses is not reported there, and its
+  acquire fence `CCTL.IVALL` has no scope, so a `.gpu` acquire fence of another GPU's release
+  synchronizes there (B56 above).
 - Retire: scopes on mbarrier operations.
 
 ### S-RED-ASYNC · code
@@ -6060,45 +6282,194 @@ ordinary load by that thread at the fence and at the TMA (race-checked).
 ### S-NC · code
 **A non-coherent load (`ld.global.nc`, SASS `LDG .CONSTANT`, also the 32-byte
 `LDG.E.ENL2.256.CONSTANT`) is exact for bytes nothing writes while its kernel runs; a write of
-a byte it reads during the kernel is a `violation` (`nc-written:<load pc>:<write pc>`).** The
-PTX ISA puts these loads outside the memory consistency model (PTX ISA 9.5 section 8.1: "The
-memory consistency model does not apply to texture (including ld.global.nc) and surface
-accesses"), so no ordering (a bar.sync, a release / acquire pair, program order) makes such a
-read return the written value; ptxas may also move or rematerialize it.
+a byte it reads while the load's kernel runs is a `violation` (`nc-written:<load pc>:<write
+pc>`).** The PTX ISA puts these loads outside the memory consistency model (PTX ISA 9.5 section
+8.1: "The memory consistency model does not apply to texture (including ld.global.nc) and
+surface accesses"), so no ordering (a bar.sync, a release / acquire pair, program order,
+griddepcontrol.wait) makes such a read return the written value; ptxas also moves these loads
+across all of them (GB300 measured below).
 - Rule (`exec.rs` `access_x`, per global byte, `Sh::nc`): an `.nc` read conflicts with every
-  write of the byte (plain, strong, atomic, TMA / async-proxy) in either order, whether or not
-  happens-before orders them, when both run in one grid or in grids that overlap in time.
-  Grid j does not overlap a later grid i when j completes before i starts: j is on i's
-  stream-order chain (`Launch::prev_grid`) and the grid that follows j on it was launched
-  without PDL. A PDL grid may start while the grid before it still runs (E-PDL), and its
-  griddepcontrol.wait does not order an `.nc` load (probes/nc_pdl). Every grid starts after
-  the one before it on its chain has started, so only the link next to j decides. A write
-  that comes after `.nc` reads of another grid and happens after that grid's completion (its
-  done clocks, joined at a griddepcontrol.wait or a stream-ordered launch,
-  `Machine::done_vcs`) does not conflict: the reads were performed before it (a PDL
-  dependent's write, after its wait, of bytes its primary read). Launch groups clear the
-  marks at their boundary (`Sh::demote`). A same-value write (S-SAME-VALUE) changes nothing a
-  read can see and is not counted. The mark is the set of grids that read the byte with
-  `.nc` and the lowest such load's pc (order-free, so commuting reads leave one shadow).
-- Before 2026-11-09 `.nc` was a coherent weak load on both front-ends: an `.nc` read
-  of data written before a bar.sync was clean. Until 2026-11-10 a PDL dependent counted as
-  stream-ordered after its primary: probes/nc_pdl hoist was clean on both fronts, the PTX
-  front predicting t + 7 where GB300 returns 0 (200/200 runs): ptxas 13.0 / 13.3 move the
-  dependent's LDG.E.CONSTANT above griddepcontrol.wait (ACQBULK) and above the flag store that
-  lets the primary write.
+  write of the byte (plain, strong, atomic / red, TMA and bulk async-proxy stores, NIC and
+  peer stores, through any mapping of the allocation) in either order, whether or not
+  happens-before orders them, when both run in one grid or in grids that overlap in time. Grid
+  j does not overlap a later grid i when j completes before i starts
+  (`Launch::completes_before`): j is a predecessor of i, or of a grid on a predecessor path to
+  i, that was launched without PDL after it or waits for it (`waits`). A PDL grid may start
+  while the grid before it still runs (E-PDL), and its griddepcontrol.wait does not order an
+  `.nc` load (probes/nc_pdl). Every grid starts after its predecessors have started, so only
+  the link next to j decides. Grids on different GPUs always overlap as launches: `after` and
+  `waits` name only earlier launches on the same GPU (others are refused), so only memory
+  synchronization orders them.
+  A write before an `.nc` read that happens before the reading grid started does not conflict:
+  the grid's CTAs joined at launch the done clocks of its full predecessors (`launch_cta`,
+  `Launch::full_preds`: the grid before it when launched without PDL, and the grids it
+  `waits` for), which cover every write that happens before their completion (a peer GPU's
+  writes, then a release / acquire hand-off to a predecessor; fixtures/e_ld_nc_xgpu). The
+  read's own clock does not count: an acquire or a griddepcontrol.wait does not order an `.nc`
+  load (probes/nc_pdl hoist). The exemption applies on the PTX front and in the hardware model
+  (`Launch::hw_order`), not at the SASS front's strict level: there the acquire fence is
+  `CCTL.IVALL`, which has no scope (`acquire_pending` scopes it by the loads; ptxas 13.0,
+  sm_103a, compiles fence.acquire.gpu, fence.acquire.cluster and fence.acquire.sys alike to a
+  bare `CCTL.IVALL`, and fence.acq_rel.gpu to its release half `MEMBAR.ALL.GPU; ERRBAR;
+  CGAERRBAR` and then `CCTL.IVALL`; compiled), so a .gpu acquire of a peer GPU's release
+  synchronizes there and would exempt the peer's writes (e_ld_nc_xgpu ACQONLYGPU and
+  ACQFENCEGPU: the race is not seen at that level, the violation is). The GB300 profile
+  re-run (`sass_gb300`) has no hardware ordering, and the hardware model runs only to classify
+  races and stale reads (`twolevel::wanted`), so an S-NC violation the SASS front's strict
+  level reports stands at its gb300 level too.
+  A write that comes after `.nc` reads of another grid and happens after that grid's
+  completion (its done clocks, joined at a griddepcontrol.wait or a stream-ordered launch,
+  `Machine::done_vcs`) does not conflict: the reads were performed before it (a PDL dependent's
+  write, after its wait, of bytes its primary read). The three apply only when the case's
+  launch order is recorded or declared (E-LAUNCH-ORDER, MISS 113): an older capture's list may
+  serialize grids of different streams that ran at the same time. A same-value write
+  (S-SAME-VALUE) changes nothing a read can see and is not counted. The mark is the set of
+  grids that read the byte with `.nc` (grids from 63 on share one bit and always conflict) and
+  the lowest such load's pc (order-free, so commuting reads leave one shadow). Launch groups
+  clear the marks at their boundary (`Sh::demote`): no PDL edge crosses groups,
+  stream-ordered later groups do not conflict, and a later group's access ordered after an
+  earlier group's access on another GPU is ordered through a demoted access, which is a race
+  (model: a two-GPU flag hand-off, whole case `violation`, `--groups` `race`).
+- Forms (ptxas 13.0 and 13.3, sm_103a, compiled; then checked with an in-place write, model):
+  each `ld.global.nc` tried (u8 / s8 / u16 / s16 / u32 / f32 / u64 / f64, .v2 / .v4 / .v8 /
+  .v2.u64 / .v4.u64 / .b128, `.ca` / `.cg` / `.cs`, `.L1::no_allocate` / `::evict_last` /
+  `::evict_first` / `::evict_unchanged`, `.L2::64B` / `128B` / `256B`, `.L2::cache_hint`,
+  `.L2::evict_first` / `::evict_last` / `::evict_normal` on .v8 and .v4.b64) is an LDG with
+  `.CONSTANT` (`.U8`, `.S8`, `.U16`, `.S16`, `.64`, `.128`, `.ENL2.256`, `.NA`, `.EL`, `.EF`,
+  `.EU`, `.LTC64B` / `.LTC128B` / `.LTC256B`), and every one is reported on both fronts, except
+  that the SASS modifier gate refuses `.EU`, `.LTC64B` and `.LTC256B` (fails closed). A vector
+  load with sink `_` destinations: the PTX front refuses it, the SASS front reports it (a
+  32-byte load with a word mask marks all 32 bytes: a write to a sink word alone is a violation
+  there, a false alarm; model, independent review 2026-11-11). `ldu.global` compiles to a
+  coherent `LDG.E`, so its read-only precondition is not visible in the SASS and the SASS front
+  does not check it (the PTX front refuses `ldu`, `tex`, `suld`; the SASS front refuses texture
+  and surface opcodes). No coherent `ld.global` of the 454 fixture and probe kernels that both
+  ptxas versions compile (of 460 PTX files) compiles to a `.CONSTANT` load. The kernel_db's SASS
+  has LDG.E.CONSTANT,
+  .64, .U16, .U8, .128 and .NA.128 .CONSTANT. cp.async writes shared memory only.
+- Before 2026-11-09 `.nc` was a coherent weak load on both front-ends (an `.nc` read of data
+  written before a bar.sync was clean, the PTX front predicting the new word); from 2026-11-06
+  (fail-closed ld / st qualifiers) to 2026-11-09 the PTX front refused `.nc`. Until 2026-11-10
+  a PDL dependent counted as stream-ordered after its primary (probes/nc_pdl hoist: clean on
+  both fronts, the PTX front predicting t + 7). Until 2026-11-11 a write that happens before
+  the reading grid started was reported unless its own grid was stream-ordered before the
+  reader (e_ld_nc_xgpu good, a peer GPU's writes: violation on both fronts, the contract
+  clean; so was a grid after a PDL grid that waits, reading what the grid before the PDL grid
+  wrote).
 - Where: `ptx` `ld` arm (`Op::Ld::nc`), `sass` `LDG` / `LDG .256` (`.CONSTANT`), `exec.rs`
-  `access_x`, `machine.rs` `Sh::nc`. fixtures/e_ld_nc, fixtures/e_ld_nc_pdl (stream order,
-  PDL, a write after the primary's completion), probes/nc_pdl (both front-ends).
+  `access_x`, `machine.rs` `Sh::nc`. fixtures/e_ld_nc, e_ld_nc_forms (per byte, .v4 / .v8, red,
+  bulk copy, another CTA after release / acquire), e_ld_nc_pdl (stream order, PDL, a write
+  after the primary's completion; UNKNOWN, UNKNOWN_DONE: the same with the launch order
+  unknown), e_launch_order and e_launch_waits (E-LAUNCH-ORDER), e_ld_nc_xgpu (launch order
+  declared; a peer GPU's writes before the reader starts; a plain-store signal: a race and a
+  violation; a signal or an acquire whose scope leaves out the other GPU, a relaxed signal,
+  fence patterns, a reader ordered after nothing; WAITS: the reader joins the waiter through
+  `waits`), e_ld_nc_xgpu_unord (the launch order unknown: violation; recorded: clean, a
+  violation at the SASS front's strict level; a reader ordered after nothing),
+  e_ld_nc_xgpu_frel (the hand-off through a release sequence whose first operation is a .gpu
+  fence, MISS 112), e_ld_nc_xgpu_bulk (a bulk store's writes in flight after
+  wait_group.read; MISS 32, MISS 102), probes/nc_hoist, probes/nc_pdl (all both front-ends).
+  Source mutants (tools/mutate/srcmut.py, all caught):
+  nc-coherent, nc-after-skip, nc-before-skip, nc-sass-ldg, nc-sass-256, nc-ptx-drop,
+  nc-ptx-vec-drop, nc-pdl-ordered, nc-start-readclock (the read's own clock in place of its
+  grid's launch clock), nc-start-gate (the launch-clock exemption with the launch order
+  unknown), nc-start-waits (the grid before it only, not its `waits`), nc-start-sass (the
+  exemption at the SASS front's strict level), nc-start-profile (the exemption in the SASS
+  front's GB300 profile re-run; tests/fixtures.rs e_ld_nc_xgpu_no_exemption_at_sass_gb300);
+  the precision mutants nc-done-off and nc-start-off.
 - Found in the captured DeepEP layer (fixtures/r4b_moe): cached_notify_combine reads
   send_head with `__ldg` (LDG.E.CONSTANT) and writes those entries in the same kernel (CUDA:
   the read-only data cache is for data read-only for the kernel's lifetime). Reported as a
   violation; the outputs still equal the GPU's.
-- Status: **argued** from the PTX ISA text. Not litmus-tested: the rule reports what the ISA
-  leaves undefined, whatever GB300 does.
+- Evidence:
+  - ISA text: PTX ISA 9.5 section 8.1 (above).
+  - Doc text (the stream-order exclusion and the launch-clock exemption): CUDA C++
+    Programming Guide 12.8 section 16.4.2, "Data that is read-only for the entire lifetime of
+    the kernel can also be cached in the unified L1/texture cache described in the previous
+    section by reading it using the __ldg() function", and 16.9.2 for compute capability
+    10.0, "Global memory behaves the same way as for devices of compute capability 5.x"; CUDA
+    Programming Guide 13.5 section 5.4.1.4: "Accesses to __global__ function const pointers
+    marked with __restrict__ are compiled as read-only cache loads, similar to the PTX
+    ld.global.nc or __ldg() low-level load and store functions instructions". The read-only
+    condition covers the kernel's lifetime, which starts after a stream-ordered earlier grid
+    has completed and after every write that happens before the launch.
+  - GB300 measured: probes/nc_hoist (ptxas hoists the load above a store and a bar.sync; the
+    old word, all 64 outputs, 20/20 scrubbed runs on 2026-11-09, 200/200 on 2026-11-10);
+    probes/nc_pdl hoist (ptxas hoists the load above griddepcontrol.wait and the flag store
+    that lets the primary write; the old word, all 32 outputs, 200/200 runs; the coherent load
+    of good 200/200 = model); probes/nc_pdl late (the load kept after ACQBULK, the lines read
+    with .nc before the wait): 0 of 200 runs stale, a bound. probes/l1_kbound: 0 stale
+    LDG.E.CONSTANT reads in 1.56e10 after a kernel boundary (the gb300 bound for the
+    stream-order exclusion and the launch-clock exemption, not their strict basis).
+  - Model: the fixtures and mutants above. kernel_db A/B (2026-11-10, the fix reverted against
+    this tree, the records' own checks): of 72 record checks whose SASS has an LDG .CONSTANT
+    form (no record has PTX `.nc`), 3 gain nc-written violations at both levels (DeepEP combine
+    on 2 and 4 GPUs: k_combine_reduce's LDG.E.NA.128.CONSTANT reads bytes a peer's k_combine
+    bulk-copies, a pair both arms already report as a race). The three are false alarms
+    (independent review, 2026-11-11), not true finds: at sass_gb300 the run itself shows every
+    fill between the CCTL.IVALL and the LDG.E.NA.128.CONSTANT coming after the write landed; at
+    ptx_contract they repeat the race of the plain-store signal, and with a release / acquire
+    signal the same structure was a violation too (e_ld_nc_xgpu good, until the launch-clock
+    exemption above). With the exemption the three are unchanged, every class and nc-written
+    signature (the signal is a plain store, so no write happens before the reader's launch).
+    39 are unchanged and 30 have no verdict in either arm (timeout or out of memory); under a
+    2000-state bound with a run to the end, 17 of those 30 are unchanged (12 of them end in a
+    trap or a race and a trap, k_hybrid_*; 5 in contract, race, unmodeled and violation) and
+    13 again have no verdict. The exemption on every S-NC fixture and probe (the cross-GPU and
+    launch-order ones included) and the review's PDL chain probes, as written and with their
+    launch order declared (2026-11-11, the tip against the tip with the exemption off, 144
+    checks, both fronts): 9 change, all on the PTX front, violation -> clean: a grid after a PDL
+    grid that waits (chain T3 midwait with its launch order declared; as written, the order
+    unknown, it stays a violation), e_ld_nc_xgpu good, SIGFENCE, ACQFENCE, ACQONLYSYS and
+    WAITS, e_ld_nc_xgpu_unord REC, e_ld_nc_xgpu_frel SYSF and e_ld_nc_xgpu_bulk FULL. The SASS
+    front and the checks whose launch order is unknown change nowhere. Fixture and probe
+    checks with `.nc` / `.CONSTANT` loads: 33 of 76 flip, each a designed hazard or the PTX
+    front's former refusal of `.nc` (13 SASS clean -> violation or race -> race and violation,
+    13 PTX refusal -> violation, 7 PTX refusal -> clean); no false alarm.
+- Placement: strict (`ptx_contract`), and kept under the gb300 profile (not a discharged
+  deviation): the ISA leaves the read undefined, and GB300 returned the stale word for the
+  compiled code in both probes. The only GB300 null (nc_pdl late) is one shape on one GPU, a
+  bound that would at most justify a gb300-only exception, which is not made. The stream-order
+  exclusion (a write by a grid that completes before the reading grid starts) and the
+  launch-clock exemption (a write that happens before it starts) are strict on the contract's
+  scope, the kernel's lifetime (doc text above); probes/l1_kbound is their gb300 bound (a
+  kernel boundary on one GPU; the cross-GPU hand-off was not run on GB300, argued: the same
+  boundary). The exemption is applied on the PTX front's strict level and in the hardware model;
+  the SASS front's strict level, whose acquire has no scope, does without it, and its S-NC
+  violations stand at both of its levels (the GB300 profile re-run has no hardware ordering,
+  and the hardware model classifies races and stale reads only).
+- Status: **validated** for the hazard (ISA text, GB300 stale words in nc_hoist and nc_pdl);
+  the rule reports what the ISA leaves undefined, whatever GB300 does.
 - If wrong: *false alarm* (a kernel that writes bytes it also reads with `.nc` and is correct
-  on GB300). The stream-order exclusion is a *miss* only if an earlier grid's write could reach
-  an `.nc` read of a later stream-ordered grid stale (the driver invalidates the non-coherent
-  caches between dependent grids; E-HW-L1's kernel-boundary litmus, probes/l1_kbound).
+  on GB300; an atomic that leaves the value unchanged counts as a write; a write ordered before
+  the reading grid's start only through a PDL launch, which the launch does not join; a list
+  whose launch order is unknown, where no launch-order exclusion applies (E-LAUNCH-ORDER); on
+  the SASS front, a write of another grid ordered only before the reading grid's start, which
+  the exemption would clear (no exemption at its strict level, and its violations stand at
+  gb300: e_ld_nc_xgpu good, SIGFENCE, ACQFENCE, ACQONLYSYS and WAITS, e_ld_nc_xgpu_unord REC,
+  e_ld_nc_xgpu_frel SYSF, e_ld_nc_xgpu_bulk FULL); the DeepEP combine flips above at
+  sass_gb300; grids from 63 on; a SASS 32-byte load with a word mask marks all 32 bytes, model:
+  a write to a sink word alone is reported). *Miss*: the stream-order exclusion, the
+  launch-clock exemption and the after-completion exclusion take a recorded or declared launch
+  order as given. Where it orders grids that ran concurrently, a write of one can reach the
+  other's `.nc` read: captures serialized streams and CUDA graphs and dropped the
+  ProgrammaticEvent / LaunchCompletionEvent launch attributes (MISS 113; e_ld_nc_xgpu UNORD and
+  e_ld_nc_xgpu_unord UNORD are the unordered launch). Since 2026-11-11 (MISS 113) no
+  launch-order exclusion applies to a list whose order is unknown, so only a recorded edge that
+  the GPU did not enforce (a capture bug) remains (E-LAUNCH-ORDER). The launch-clock exemption
+  and the after-completion exclusion also follow the model's happens-before, so where it is
+  wider than the ISA's, a write the ISA leaves unordered with the read is cleared, and such a
+  miss also hides the S-NC violation of a cross-GPU `.nc` reader: on the PTX front MISS 32
+  (wait_group.read modelled as a full wait: e_ld_nc_xgpu_bulk), MISS 100 and MISS 112 (release
+  sequences through read-modify-writes: e_ld_nc_xgpu_frel), all three fixed on 2026-11-11; for
+  SASS-derived contracts the scopeless `CCTL.IVALL` acquire, which keeps the exemption off the
+  SASS front's strict level but still widens its after-completion exclusion. The hardware
+  model's happens-before follows GB300, not the ISA (a bulk `DEPBAR` acquires a store's global
+  writes there, as measured, E-ASYNC-STEP), so the exemption it applies is a gb300-level
+  result. Beyond these, the three are a *miss* only if a write that happens before a grid
+  starts could reach that grid's `.nc` read stale: the guide limits the read-only condition to
+  the kernel's lifetime (doc text), and GB300 showed no stale read after a kernel boundary
+  (probes/l1_kbound, a bound).
 - Retire: never (ISA contract).
 
 ### E-UNI · code

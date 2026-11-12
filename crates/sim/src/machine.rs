@@ -677,7 +677,7 @@ pub fn strong_code(s: Scope) -> u8 {
 pub const STRONG_SYS: u8 = Scope::Sys as u8 + 1;
 
 /// The last strong write of a location, as a synchronization source (S-SCOPE).
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug)]
 pub struct SyncCell {
     pub writer: u32,
     /// Scope of the write itself (moral strength with a reader).
@@ -685,15 +685,99 @@ pub struct SyncCell {
     /// The write's instruction (moral strength with a reader: complete overlap, S-SCOPE);
     /// `u32::MAX` for a write that is not an instruction (the NIC's).
     pub pc: u32,
-    /// What a reader that observes it acquires: the writer's clock at the release (release
-    /// write) or at its last release fence (relaxed write after a fence), joined along the
-    /// release sequence of later read-modify-writes.
+    /// What a reader that observes it acquires from the write's own release pattern: the
+    /// writer's clock at the release (release write) or at its last release fence (relaxed
+    /// write after a fence).
     pub rel: VC,
     /// Scope the release was made at (the fence's, for a fence-then-relaxed-write).
     pub rel_scope: Scope,
+    /// The release patterns of earlier writes that this read-modify-write continues (sorted
+    /// by writer and scope, merged): a reader synchronizes with each only when the pattern's
+    /// first operation and the reader's acquire are morally strong (PTX ISA 9.5 section
+    /// 8.9.4, S-SCOPE). Empty under the hardware ordering, which joins them into `rel`.
+    pub cont: Vec<SyncRel>,
+    /// The join of `cont`'s releases: what a read acquires from them when every one passes
+    /// (one clock join in place of one per pattern).
+    pub cont_join: VC,
     /// E-READ-DONE: the writer's completed reads (`Machine::read_release`), which a strong
     /// read observing this write orders before itself for write-after-read purposes.
     pub rr: VC,
+}
+
+/// A release pattern a synchronization source continues (`SyncCell::cont`): the thread of its
+/// first operation, what it releases, and the scope of the release.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct SyncRel {
+    pub writer: u32,
+    pub rel: VC,
+    pub rel_scope: Scope,
+}
+
+/// Every field but `cont_join`, a function of `cont`.
+impl Hash for SyncCell {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.writer.hash(h);
+        self.scope.hash(h);
+        self.pc.hash(h);
+        self.rel.hash(h);
+        self.rel_scope.hash(h);
+        self.cont.hash(h);
+        self.rr.hash(h);
+    }
+}
+
+impl SyncCell {
+    /// Add a continued release, joined into an entry of the same writer and scope (and into
+    /// `join`, the entries' join, `SyncCell::cont_join`).
+    pub fn add_cont(
+        cont: &mut Vec<SyncRel>,
+        join: &mut VC,
+        writer: u32,
+        rel: &VC,
+        rel_scope: Scope,
+    ) {
+        if *rel == VC::new() {
+            return;
+        }
+        vc_join(join, rel);
+        match cont.binary_search_by_key(&(writer, rel_scope), |c| (c.writer, c.rel_scope)) {
+            Ok(i) => vc_join(&mut cont[i].rel, rel),
+            Err(i) => cont.insert(
+                i,
+                SyncRel {
+                    writer,
+                    rel: rel.clone(),
+                    rel_scope,
+                },
+            ),
+        }
+    }
+
+    /// Launch groups: `cont` entrywise met with `o`'s, when both continue the same releases,
+    /// and the met entries' join (`cont_join`).
+    pub fn cont_meet(&self, o: &SyncCell) -> Option<(Vec<SyncRel>, VC)> {
+        if self.cont.len() != o.cont.len()
+            || self
+                .cont
+                .iter()
+                .zip(&o.cont)
+                .any(|(a, b)| (a.writer, a.rel_scope) != (b.writer, b.rel_scope))
+        {
+            return None;
+        }
+        let cont: Vec<SyncRel> = self
+            .cont
+            .iter()
+            .zip(&o.cont)
+            .map(|(a, b)| SyncRel {
+                writer: a.writer,
+                rel: vc_meet(&a.rel, &b.rel),
+                rel_scope: a.rel_scope,
+            })
+            .collect();
+        let join = vc_join_all(cont.iter().map(|c| &c.rel));
+        Some((cont, join))
+    }
 }
 
 impl Epoch {
@@ -1923,6 +2007,13 @@ pub struct Grid {
     /// Stream-order override (`NextLaunch::after`): the grid this one waits for instead of
     /// the previous one on its GPU (None inside: nothing).
     pub after: Option<Option<usize>>,
+    /// Further grids (earlier, same GPU) that must complete before this one's CTAs launch
+    /// (`NextLaunch::waits`: event waits, graph joins); ordered as by a predecessor launched
+    /// without PDL (E-PDL).
+    pub waits: Vec<usize>,
+    /// Memory synchronization domain (`NextLaunch::mem_sync_domain`): `.gpu` scope includes
+    /// only the threads of grids on the same GPU in the same domain (S-SCOPE).
+    pub mem_domain: u32,
     /// Constant-bank words (bank, byte offset, value) that hold a module data global's
     /// address: its buffer's address + addend (S-GLOBAL-INIT). They override the bank bytes.
     pub cbank_relocs: Vec<(u8, u32, u64)>,
@@ -1952,6 +2043,10 @@ pub struct Launch {
     /// C-TICKET-ADDR declarations (case `permuted`): (counter allocation, row allocations).
     pub perm: Vec<(usize, Vec<usize>)>,
     pub grids: Vec<Grid>,
+    /// E-LAUNCH-ORDER: the case's launch order was recorded by the capture or declared by its
+    /// author (case `launch_order`). Launch-order exclusions apply only then
+    /// (`order_completes_before`).
+    pub order_recorded: bool,
     pub allocs: Vec<Alloc>,
     /// NVLS multicast objects (case `multicast`, S-MULTIMEM).
     pub mcast: Vec<McObj>,
@@ -2054,6 +2149,70 @@ impl Launch {
         (0..gi)
             .rev()
             .find(|&j| self.grids[j].device == self.grids[gi].device)
+    }
+    /// ASSUME(E-PDL): the grids that must complete before grid `gi`'s CTAs launch: its
+    /// predecessor when `gi` was launched without PDL, and its `waits`.
+    pub fn full_preds(&self, gi: usize) -> impl Iterator<Item = usize> + '_ {
+        let p = self.prev_grid(gi).filter(|_| !self.grids[gi].pdl);
+        p.into_iter().chain(self.grids[gi].waits.iter().copied())
+    }
+    /// Is grid `j` a predecessor (`prev_grid` or `waits`) of grid `i`?
+    pub fn is_pred(&self, j: usize, i: usize) -> bool {
+        self.prev_grid(i) == Some(j) || self.grids[i].waits.contains(&j)
+    }
+    /// ASSUME(E-PDL): does grid `j` complete before grid `i` starts, by the order the case
+    /// states? Every grid starts after each of its predecessors started (a PDL grid after its
+    /// predecessor's CTAs triggered or exited), and after each `full_preds` grid completed.
+    /// So `j` completes before `i` starts when `j` is a full predecessor of `i` or of a grid
+    /// on a predecessor path to `i`. Predecessors are earlier grids, so the search ends.
+    pub fn completes_before(&self, j: usize, i: usize) -> bool {
+        if j >= i {
+            return false;
+        }
+        let mut seen = vec![false; i + 1];
+        let mut stack = vec![i];
+        while let Some(x) = stack.pop() {
+            if std::mem::replace(&mut seen[x], true) {
+                continue;
+            }
+            if self.full_preds(x).any(|p| p == j) {
+                return true;
+            }
+            stack.extend(self.prev_grid(x).filter(|&p| p > j));
+            stack.extend(self.grids[x].waits.iter().copied().filter(|&p| p > j));
+        }
+        false
+    }
+    /// ASSUME(E-LAUNCH-ORDER): `completes_before` for launch-order exclusions (S-NC's
+    /// stream-order exclusion): only when the case's launch order is recorded or declared. An
+    /// older capture may list grids of different streams one after the other although they
+    /// ran at the same time (MISS 113).
+    pub fn order_completes_before(&self, j: usize, i: usize) -> bool {
+        self.order_recorded && self.completes_before(j, i)
+    }
+    /// ASSUME(E-PDL): does grid `j` start after grid `i` completed with everything `i` did
+    /// happening before it: `i` is reached from `j` through `full_preds` links only (a PDL
+    /// link orders no memory)?
+    pub fn hb_before(&self, i: usize, j: usize) -> bool {
+        if i >= j {
+            return false;
+        }
+        let mut seen = vec![false; j + 1];
+        let mut stack = vec![j];
+        while let Some(x) = stack.pop() {
+            if std::mem::replace(&mut seen[x], true) {
+                continue;
+            }
+            for p in self.full_preds(x) {
+                if p == i {
+                    return true;
+                }
+                if p > i {
+                    stack.push(p);
+                }
+            }
+        }
+        false
     }
     pub fn cluster_size(&self, cta: u32) -> u32 {
         self.g(cta).cluster_size()

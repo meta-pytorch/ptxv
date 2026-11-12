@@ -197,7 +197,13 @@ pub fn restrict(m: &Machine, warps: &[u32]) -> Result<Machine, String> {
     for g in 0..m.launch.grids.len() {
         let live = |m: &Machine, g: usize| m.grid_threads(g).any(|t| m.threads[t].st != St::Exited);
         if live(&m, g) {
-            if let Some(p) = m.launch.prev_grid(g) {
+            let preds: Vec<usize> = m
+                .launch
+                .prev_grid(g)
+                .into_iter()
+                .chain(m.launch.grids[g].waits.iter().copied())
+                .collect();
+            for p in preds {
                 if live(&m, p) {
                     return Err(format!(
                         "launch {g} waits for launch {p}, which is live in the same slice run"

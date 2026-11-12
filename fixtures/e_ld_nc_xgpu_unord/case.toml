@@ -1,0 +1,79 @@
+name = "e_ld_nc_xgpu_unord"
+description = """
+E-LAUNCH-ORDER, S-NC across GPUs (MISS 113 repro): GPU 1's writer stores data into GPU 0
+memory, then publishes a flag with st.release.sys; GPU 0's waiter acquires it; GPU 0's reader,
+after the waiter on GPU 0, reads data with ld.global.nc. The launch-clock exemption (writes the
+reader's launch clock covers) applies only when the reader's predecessor is recorded: good, an
+older capture's unknown-order list, is a violation; REC, the same list recorded, is clean
+(the SASS front's strict level has no launch-clock exemption: a violation there);
+UNORD, a reader that waits for nothing (what a programmatic-event or launch-completion wait on
+another stream allows), is a race and a violation."""
+ptx = "kernel.ptx"
+entry = "waiter"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "iota"
+device = 0
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[launches]]
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "flag" },
+]
+
+[[launches]]
+entry = "reader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 0
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "as an older capture lists it (launch order unknown): the cross-GPU write is a violation"
+expect = ["violation"]
+
+[[variants]]
+id = "REC"
+summary = "the same list, recorded (the reader follows the waiter on GPU 0's stream): the reader's launch clock covers the writes, clean (SASS strict: a violation, no exemption there)"
+launch_order = "recorded"
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "UNORD"
+summary = "the reader ordered after nothing (a programmatic-event or launch-completion wait on another stream): race + violation"
+launch_order = "recorded"
+after = [[2, -1]]
+expect = ["race", "violation"]

@@ -8,6 +8,8 @@ grid = [1, 1, 1]
 block = [1, 1, 1]
 outputs = ["out_0_0", "out_1_0", "out_2_0", "out_0_1", "out_1_1", "out_2_1"]
 replicas = [["out_0_0", "out_1_0", "out_2_0"], ["out_0_1", "out_1_1", "out_2_1"]]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states.
+launch_order = "declared"
 
 [[buffers]]
 name = "buf0"

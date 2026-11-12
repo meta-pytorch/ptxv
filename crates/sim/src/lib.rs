@@ -479,11 +479,26 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                     Some(Some(a))
                 }
             },
+            waits: l
+                .waits
+                .iter()
+                .map(|&w| {
+                    if w < 0 || w as usize >= grids.len() || grids[w as usize].device != l.device {
+                        bail!(
+                            "launch {}: waits names {w}, not an earlier launch on its GPU",
+                            grids.len()
+                        );
+                    }
+                    Ok(w as usize)
+                })
+                .collect::<Result<Vec<_>>>()?,
+            mem_domain: l.mem_sync_domain.unwrap_or(0),
             cbank_relocs: vec![],
         };
         cta0 += g.ctas();
         grids.push(g);
     }
+    let order_recorded = launch_order(m, &launches, &mut grids)?;
     let notes = global_buffers(case, k, &mut allocs, &mut grids)?;
     let outputs = m
         .outputs
@@ -583,6 +598,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         notes,
         perm,
         grids,
+        order_recorded,
         replicas,
         allocs,
         mcast,
@@ -630,6 +646,53 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
     })
     .with_hw_model_env();
     Ok(resolve_scratch(case, k, launch))
+}
+
+/// ASSUME(E-LAUNCH-ORDER): the case's `launch_order`. Recorded or declared: true, once a
+/// launch without `after` is checked to be on the stream of the previous launch on its GPU,
+/// where both name a stream (a capture names the predecessor at every stream switch).
+/// Unknown: false. With `PTXV_UNRECORDED_ORDER=concurrent`, the grids of an unknown-order
+/// case also lose their predecessors (`after = -1`, no `waits`): every grid may then run at
+/// the same time as every other, the strict reading of a list whose order nobody recorded.
+/// The default (`ordered`) keeps E-PDL's order and only drops the launch-order exclusions.
+fn launch_order(
+    m: &ptxv_case::Manifest,
+    launches: &[ptxv_case::LaunchSpec],
+    grids: &mut [Grid],
+) -> Result<bool> {
+    let recorded = m.launch_order_recorded()?;
+    if recorded {
+        for (gi, l) in launches.iter().enumerate() {
+            if l.after.is_some() {
+                continue;
+            }
+            let Some(p) = (0..gi).rev().find(|&j| launches[j].device == l.device) else {
+                continue;
+            };
+            if let (Some(a), Some(b)) = (launches[p].stream, l.stream) {
+                if a != b {
+                    bail!(
+                        "launch {gi} (stream {b}) follows launch {p} (stream {a}) on GPU {} without `after`: with launch_order = {:?} a launch on another stream than its predecessor must name it",
+                        l.device,
+                        m.launch_order.as_deref().unwrap_or("")
+                    );
+                }
+            }
+        }
+    }
+    match std::env::var("PTXV_UNRECORDED_ORDER").as_deref() {
+        Err(_) | Ok("ordered") => {}
+        Ok("concurrent") => {
+            if !recorded {
+                for g in grids.iter_mut() {
+                    g.after = Some(None);
+                    g.waits.clear();
+                }
+            }
+        }
+        Ok(x) => bail!("PTXV_UNRECORDED_ORDER={x}: expected ordered or concurrent"),
+    }
+    Ok(recorded)
 }
 
 /// S-INIT, scratch buffers (`Buffer::scratch`, allocated inside the captured region): one

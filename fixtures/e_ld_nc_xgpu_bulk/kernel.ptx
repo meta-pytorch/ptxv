@@ -1,0 +1,87 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-NC launch-clock exemption vs an async-proxy write still in flight.
+// GPU 1 writer: smem[t] = 300 + t; fence.proxy.async.shared::cta; bar.sync; t0: bulk store of the
+//   128-byte tile to data (peer GPU 0 memory); commit; cp.async.bulk.wait_group.read 0 (only the
+//   source reads are done: the global writes may still be in flight); st.release.sys flag = 1.
+// GPU 0 waiter: t0 spins ld.acquire.sys flag until 1. GPU 0 reader (stream-ordered after the
+// waiter, no PDL): out[t] = ld.global.nc data[t].
+// good (.read): the bulk writes are not ordered before the release (PTX ISA 9.5: wait_group.read
+//   waits for the source reads only): a race, and the writes may land while the reader runs.
+// FULL: wait_group 0 (the writes complete) before the release: the writes happen before the
+//   reader starts: clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.shared .align 128 .b8 tile[128];
+
+.visible .entry waiter(.param .u64 pflag)
+.reqntid 32
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<4>;
+    ld.param.u64 %rd1, [pflag];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra $L_done;
+$L_spin:
+    ld.acquire.sys.global.u32 %r2, [%rd1];
+    setp.eq.u32 %p2, %r2, 0;
+    @%p2 bra $L_spin;
+$L_done:
+    bar.sync 0;
+    ret;
+}
+
+.visible .entry writer(.param .u64 pdata, .param .u64 pflag)
+.reqntid 32
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [pdata];
+    ld.param.u64 %rd2, [pflag];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r5, tile;
+    shl.b32 %r6, %r1, 2;
+    add.u32 %r7, %r5, %r6;
+    add.u32 %r2, %r1, 300;
+    st.shared.u32 [%r7], %r2;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra $L_done;
+    cp.async.bulk.global.shared::cta.bulk_group [%rd1], [%r5], 128;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group.read 0;                   // @WAIT
+    mov.u32 %r3, 1;
+    st.release.sys.global.u32 [%rd2], %r3;
+$L_done:
+    ret;
+}
+
+.visible .entry reader(.param .u64 pdata, .param .u64 pout)
+.reqntid 32
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [pdata];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.nc.u32 %r2, [%rd4];                      // @LD
+    st.global.u32 [%rd5], %r2;
+    ret;
+}

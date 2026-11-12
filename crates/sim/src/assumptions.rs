@@ -623,6 +623,13 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "E-LAUNCH-ORDER",
+        kind: "code",
+        status: "argued",
+        title: "a recorded or declared launch list (after, waits, pdl) is the order the GPU enforced; launch-order exclusions (S-NC, E-L1-CORES) apply only then (machine-level, for_machine)",
+        applies: never,
+    },
+    Assumption {
         id: "E-ASYNC-STEP",
         kind: "code",
         status: "argued",
@@ -2040,6 +2047,11 @@ pub fn for_machine(m: &crate::machine::Machine) -> Vec<String> {
     }
     if m.launch.exit_fence.is_some() {
         v.push("E-EXIT-FENCE".into());
+    }
+    // A GPU with two or more grids: their order comes from the launch list.
+    let g = &m.launch.grids;
+    if (1..g.len()).any(|i| g[..i].iter().any(|x| x.device == g[i].device)) {
+        v.push("E-LAUNCH-ORDER".into());
     }
     // A declared dead workspace downgrades undefined data left in it to a note.
     if m.launch.allocs.iter().any(|a| a.dead) {

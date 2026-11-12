@@ -1,0 +1,89 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-NC launch-clock exemption over a release sequence whose first operation is a .gpu fence on
+// another GPU (the release-pattern head of MISS 112, across GPUs).
+//   GPU 1 writer: data[t] = 100 + t (peer stores into GPU 0 memory); bar.sync; t0:
+//     fence.acq_rel.gpu; st.relaxed.sys flag = 1 (release pattern X; first operation: the fence).
+//   GPU 0 waiter: t1 spins ld.relaxed.sys flag until 1, then atom.relaxed.sys.add flag, 1 (Z);
+//     t0 spins ld.acquire.sys flag until 2 (Y); bar.sync.
+//   GPU 0 reader, stream-ordered after the waiter (no PDL): out[t] = ld.global.nc data[t].
+// PTX ISA 9.5 section 8.9.4: X synchronizes with Y only if X's first operation (the .gpu fence on
+// GPU 1) and Y's last operation (t0's acquire on GPU 0) are morally strong; the fence's scope does
+// not include GPU 0, so the writes are not ordered before the reader: race and violation.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry waiter(.param .u64 pflag)
+.reqntid 32
+{
+    .reg .pred %p<6>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<4>;
+    ld.param.u64 %rd1, [pflag];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p3, %r1, 1;
+    @%p3 bra $L_z;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra $L_done;
+$L_spin:
+    ld.acquire.sys.global.u32 %r2, [%rd1];
+    setp.ne.u32 %p2, %r2, 2;                           // @RCHK
+    @%p2 bra $L_spin;
+    bra $L_done;
+$L_z:
+    ld.relaxed.sys.global.u32 %r3, [%rd1];
+    setp.eq.u32 %p4, %r3, 0;
+    @%p4 bra $L_z;
+    atom.relaxed.sys.global.add.u32 %r4, [%rd1], 1;    // @Z
+$L_done:
+    bar.sync 0;
+    ret;
+}
+
+.visible .entry writer(.param .u64 pdata, .param .u64 pflag)
+.reqntid 32
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [pdata];
+    ld.param.u64 %rd2, [pflag];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.u32 %r2, %r1, 100;
+    st.global.u32 [%rd4], %r2;
+    bar.sync 0;
+    setp.ne.u32 %p1, %r1, 0;
+    mov.u32 %r3, 1;
+    @%p1 bra $L_w;
+    fence.acq_rel.gpu;                                 // @FENCE
+    st.relaxed.sys.global.u32 [%rd2], %r3;
+$L_w:
+    ret;
+}
+
+.visible .entry reader(.param .u64 pdata, .param .u64 pout)
+.reqntid 32
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [pdata];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.nc.u32 %r2, [%rd4];                      // @LD
+    st.global.u32 [%rd5], %r2;
+    ret;
+}

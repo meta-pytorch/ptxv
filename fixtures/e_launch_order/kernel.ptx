@@ -1,0 +1,54 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-LAUNCH-ORDER: two kernels on two streams of one GPU, 1 CTA x 32 each.
+//   writer (stream 0): data[t] = t + 100.
+//   reader (stream 1): out[t] = ld.global.nc data[t] (@LD).
+// good: stream 1 waits for an event recorded on stream 0 after the writer (a capture that
+//   records streams writes after = 0): the writer completes before the reader starts, so the
+//   .nc read is exact (S-NC): clean.
+// UNKNOWN: the same list from an older capture (launch order unknown): nothing says that the
+//   list's order was enforced, so the stream-order exclusion does not apply: a violation.
+// UNORD: stream 1 waits for nothing (after = -1): a race and a violation.
+// PLAIN / PLAIN_UNKNOWN: the reader's load is a coherent ld.global. E-PDL still orders the
+//   grids of an unknown-order list (only the exclusions are gated): both clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry writer(.param .u64 pdata)
+.reqntid 32
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pdata];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd2, %r1, 4;
+    add.s64         %rd3, %rd1, %rd2;
+    add.u32         %r2, %r1, 100;
+    st.global.u32   [%rd3], %r2;
+    ret;
+}
+
+.visible .entry reader(.param .u64 pdata, .param .u64 pout)
+.reqntid 32
+{
+    .reg .b32   %r<8>;
+    .reg .b64   %rd<8>;
+
+    ld.param.u64    %rd1, [pdata];
+    ld.param.u64    %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32         %r1, %tid.x;
+    mul.wide.u32    %rd3, %r1, 4;
+    add.s64         %rd4, %rd1, %rd3;
+    add.s64         %rd5, %rd2, %rd3;
+    ld.global.nc.u32 %r2, [%rd4];                   // @LD
+    st.global.u32   [%rd5], %r2;
+    ret;
+}

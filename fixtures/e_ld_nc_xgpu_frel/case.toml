@@ -1,0 +1,94 @@
+name = "e_ld_nc_xgpu_frel"
+description = """
+S-NC across GPUs, the launch-clock exemption over a release sequence (MISS 112): GPU 1's writer
+stores data into GPU 0 memory, then a release pattern headed by fence.acq_rel.gpu signals a flag;
+a GPU 0 thread continues the sequence with a relaxed .sys atomic; GPU 0's waiter acquires the
+atomic's value; GPU 0's reader, stream-ordered after the waiter without PDL, reads data with
+ld.global.nc. The .gpu fence and the GPU 0 acquire are not morally strong (PTX ISA 9.5 section
+8.9.4): no synchronization, so the writes may land while the reader runs (good: race and
+violation; clean until 2026-11-11, MISS 112). SYSF: a .sys fence, clean (SASS strict: a
+violation, no exemption there). NOZ: no atomic, the acquire reads the head's write. coherent: a
+coherent reader, a race."""
+ptx = "kernel.ptx"
+entry = "waiter"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+# E-LAUNCH-ORDER: a hand-written case; the launch list is the stream order its author states.
+launch_order = "declared"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "iota"
+device = 0
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[launches]]
+entry = "writer"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 1
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "flag" },
+]
+
+[[launches]]
+entry = "reader"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+device = 0
+params = [
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "head fence.acq_rel.gpu on GPU 1, atomic on GPU 0, acquire on GPU 0: no synchronization (8.9.4): race and violation"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "SYSF"
+summary = "head fence.acq_rel.sys: synchronizes: clean (SASS strict: a violation, no exemption there)"
+marker = "@FENCE"
+find = "fence.acq_rel.gpu;"
+replace = "fence.acq_rel.sys;"
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOZ"
+summary = "control: no atomic, t0 acquires the head's write directly: race and violation"
+marker = "@RCHK"
+find = "setp.ne.u32 %p2, %r2, 2;"
+replace = "setp.ne.u32 %p2, %r2, 1;"
+edits = [{ marker = "@Z", find = "atom.relaxed.sys.global.add.u32 %r4, [%rd1], 1;", replace = "// no Z" }]
+expect = ["race", "violation"]
+
+[[variants]]
+id = "coherent"
+summary = "good with a coherent reader: race"
+marker = "@LD"
+find = "ld.global.nc.u32"
+replace = "ld.global.u32"
+expect = ["race"]

@@ -1,0 +1,36 @@
+name = "e_rseq_scope"
+description = """
+S-SCOPE, release sequences (MISS 100): t0 (CTA 0) stores data and releases flag f; t1 (CTA 1),
+ordered after the release by a second flag, increments f with a relaxed atomic; t2 (CTA 0)
+acquires f until it reads the increment, then reads the data. good: the release is .gpu, so it
+and the atomic are morally strong and the atomic continues the release sequence (PTX ISA 9.5
+section 8.9.2): clean. CTAREL: the release is .cta, which does not include t1, so the atomic
+does not continue it and t2's data read races with the data store (clean until 2026-11-11)."""
+ptx = "kernel.ptx"
+entry = "rseq_scope"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the release at .gpu: the atomic continues its release sequence"
+expect = ["clean"]
+
+[[variants]]
+id = "CTAREL"
+summary = "the release at .cta: the atomic in CTA 1 is not morally strong with it"
+marker = "@W"
+find = "st.release.gpu.global.u32 [%rd1+4], %r4;"
+replace = "st.release.cta.global.u32 [%rd1+4], %r4;"
+expect = ["race"]

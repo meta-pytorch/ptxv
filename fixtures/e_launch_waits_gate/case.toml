@@ -1,0 +1,67 @@
+name = "e_launch_waits_gate"
+description = """
+E-LAUNCH-ORDER, `waits` as a launch gate: ka on stream 0 and kb on stream 1; kc on stream 0
+follows ka and waits for an event recorded after kb (`waits = [1]`). kb spins until kc sets a
+flag. kc cannot start before kb completes, so the launch is a deadlock (a grid in `waits` holds
+the launch back, beyond the join of its done clocks); without the event wait (NOWAIT) kc sets
+the flag after ka and kb completes."""
+ptx = "kernel.ptx"
+entry = "ka"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["a", "b"]
+launch_order = "recorded"
+stream = 0
+
+[[buffers]]
+name = "a"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "b"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[launches]]
+entry = "kb"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+stream = 1
+after = -1
+params = [
+    { kind = "ptr", buffer = "flag" },
+    { kind = "ptr", buffer = "b" },
+]
+
+[[launches]]
+entry = "kc"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+stream = 0
+after = 0
+waits = [1]
+params = [{ kind = "ptr", buffer = "flag" }]
+
+[[variants]]
+id = "good"
+summary = "kc waits for kb, which waits for kc's flag: deadlock"
+expect = ["deadlock"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "stream 0 does not wait for kb's event: kc sets the flag after ka and kb completes"
+waits = [[2]]
+expect = ["clean"]

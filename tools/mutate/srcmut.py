@@ -1074,22 +1074,89 @@ MUTANTS += [
     ),
 ]
 
-# S-NC: a non-coherent load (ld.global.nc, LDG .CONSTANT) of bytes written while its kernel
-# runs is a violation, also when a PDL dependent reads its primary's output.
+# S-NC (MISS 21): a non-coherent load (ld.global.nc, LDG .CONSTANT) of bytes written while its
+# kernel runs is a violation. Each mutant weakens one part; the e_ld_nc* fixtures catch it.
+NC_TEST = ("ptxv-sim", "fixtures", "e_ld_nc_written_during_kernel")
+NC_FORMS = ("ptxv-sim", "fixtures", "e_ld_nc_every_form")
 NC_PDL = ("ptxv-sim", "fixtures", "e_ld_nc_pdl_overlapping_launches")
+NC_XGPU = ("ptxv-sim", "fixtures", "e_ld_nc_xgpu_write_before_start")
+NC_PROFILE = ("ptxv-sim", "fixtures", "e_ld_nc_xgpu_no_exemption_at_sass_gb300")
 MUTANTS += [
+    # .nc reads are coherent weak loads again (the miss: exec.rs never marks them).
+    SrcMutant(
+        "nc-coherent",
+        "crates/sim/src/exec.rs",
+        "        let nc_read = write.is_none()\n            && strong == 0",
+        "        let nc_read = false\n            && strong == 0",
+        [("e_ld_nc", v, f, []) for v in ("written", "inplace") for f in ("ptx", "sass")],
+        [NC_TEST],
+    ),
+    # A write after the .nc load of its bytes is not checked (e_ld_nc inplace: the loading
+    # thread overwrites the word; e_ld_nc_forms RED: an atomic after the barrier).
+    SrcMutant(
+        "nc-after-skip",
+        "crates/sim/src/exec.rs",
+        "                            if let Some((g, gated)) = nc_hit_mask(mask) {",
+        "                            if let Some((g, gated)) = nc_hit_mask(mask).filter(|_| false) {",
+        [("e_ld_nc", "inplace", f, []) for f in ("ptx", "sass")]
+        + [("e_ld_nc_forms", "RED", f, []) for f in ("ptx", "sass")],
+        [NC_TEST],
+    ),
+    # An .nc load of bytes written before it (ordered by bar.sync) is not checked.
+    SrcMutant(
+        "nc-before-skip",
+        "crates/sim/src/exec.rs",
+        "                            !w.sv && nc_conflict(my_grid, grid_of(w.actor)) && !before_start(w)",
+        "                            false && !w.sv && nc_conflict(my_grid, grid_of(w.actor)) && !before_start(w)",
+        [("e_ld_nc", "written", f, []) for f in ("ptx", "sass")],
+        [NC_TEST],
+    ),
+    # SASS: LDG .CONSTANT lifted as a coherent load.
+    SrcMutant(
+        "nc-sass-ldg",
+        "crates/sass/src/lib.rs",
+        '                // `.CONSTANT`: ld.global.nc (S-NC).\n                nc: has("CONSTANT"),',
+        '                // `.CONSTANT`: ld.global.nc (S-NC).\n                nc: false,',
+        [("e_ld_nc", "written", "sass", []), ("e_ld_nc_forms", "BYTE", "sass", []),
+         ("e_ld_nc_forms", "V4", "sass", [])],
+        [NC_TEST, NC_FORMS],
+    ),
+    # SASS: the 32-byte LDG.E.ENL2.256.CONSTANT lifted as a coherent load.
+    SrcMutant(
+        "nc-sass-256",
+        "crates/sass/src/lib.rs",
+        '                mask,\n                nc: has("CONSTANT"),',
+        '                mask,\n                nc: false,',
+        [("e_ld_nc_forms", "V8", "sass", [])],
+        [NC_FORMS],
+    ),
+    # PTX: `.nc` dropped on a scalar ld (the original MISS 21 state of the PTX front).
+    SrcMutant(
+        "nc-ptx-drop",
+        "crates/ptx/src/lib.rs",
+        "bits < 32,\n                    nc: has(\"nc\"),",
+        "bits < 32,\n                    nc: false,",
+        [("e_ld_nc", v, "ptx", []) for v in ("written", "inplace")],
+        [NC_TEST],
+    ),
+    # PTX: `.nc` dropped on ld.global.nc.v2 / .v4 / .v8.
+    SrcMutant(
+        "nc-ptx-vec-drop",
+        "crates/ptx/src/lib.rs",
+        "bits < 32,\n                            nc: has(\"nc\"),",
+        "bits < 32,\n                            nc: false,",
+        [("e_ld_nc_forms", v, "ptx", []) for v in ("V4", "V8")],
+        [NC_FORMS],
+    ),
     # A PDL dependent counts as stream-ordered after its primary again: its .nc read of the
     # primary's output after griddepcontrol.wait is clean (probes/nc_pdl: GB300 old word 200/200).
+    # (machine.rs `Launch::completes_before`, which S-NC's `before` calls since MISS 113.)
     SrcMutant(
         "nc-pdl-ordered",
-        "crates/sim/src/exec.rs",
-        "                    return !launch.grids[x].pdl;",
-        "                    return true;",
-        [
-            ("e_ld_nc_pdl", v, f, [])
-            for v in ("PDLNC", "EARLY")
-            for f in ("ptx", "sass")
-        ],
+        "crates/sim/src/machine.rs",
+        "            if self.full_preds(x).any(|p| p == j) {",
+        "            if self.prev_grid(x) == Some(j) || self.full_preds(x).any(|p| p == j) {",
+        [("e_ld_nc_pdl", v, f, []) for v in ("PDLNC", "EARLY") for f in ("ptx", "sass")],
         [NC_PDL],
     ),
     # Precision: a write after the completion of the grid that read its bytes with .nc is
@@ -1102,6 +1169,168 @@ MUTANTS += [
         "                mask >> g & 1 == 1 && nc_conflict(g, my_grid)",
         [("e_ld_nc_pdl", "good", f, []) for f in ("ptx", "sass")],
         [NC_PDL],
+    ),
+    # Precision: a write that happens before the reading grid started (its launch clock, the
+    # done clocks of its full predecessors) is reported again (e_ld_nc_xgpu good: a peer GPU's
+    # writes, then a release / acquire hand-off to the reader's stream predecessor; PTX front,
+    # the SASS front's strict level does not apply the exemption).
+    SrcMutant(
+        "nc-start-off",
+        "crates/sim/src/exec.rs",
+        "        let before_start = |w: &Epoch| launch.order_recorded && started_after(w);",
+        "        let before_start = |w: &Epoch| false && launch.order_recorded && started_after(w);",
+        [("e_ld_nc_xgpu", v, "ptx", []) for v in ("good", "SIGFENCE", "ACQFENCE", "ACQONLYSYS")]
+        + [("e_ld_nc_xgpu_frel", "SYSF", "ptx", [])],
+        [NC_XGPU],
+    ),
+    # The launch-clock exemption at the SASS front's strict level too: its CCTL.IVALL acquire has
+    # no scope (fence.acquire.gpu and fence.acquire.sys compile to the same bare CCTL.IVALL), so a
+    # .gpu acquire fence of a peer GPU's release exempts the peer's writes (e_ld_nc_xgpu
+    # ACQONLYGPU and ACQFENCEGPU on SASS: clean, the violation lost).
+    SrcMutant(
+        "nc-start-sass",
+        "crates/sim/src/exec.rs",
+        "        let exempt = hw_order || kern.front == Front::Ptx;",
+        "        let exempt = hw_order || true;",
+        [("e_ld_nc_xgpu", v, "sass", []) for v in ("good", "ACQFENCEGPU", "ACQONLYGPU")],
+        [NC_XGPU],
+    ),
+    # The launch-clock exemption in the SASS front's GB300 profile re-run too (its E-HW-L1
+    # switch on, no hardware ordering): e_ld_nc_xgpu good, SIGFENCE, ACQFENCE and ACQONLYSYS
+    # lose their violation at sass_gb300 only, which the strict-level checks do not see.
+    SrcMutant(
+        "nc-start-profile",
+        "crates/sim/src/exec.rs",
+        "        let exempt = hw_order || kern.front == Front::Ptx;",
+        "        let exempt = hw_order || launch.hw_l1 || kern.front == Front::Ptx;",
+        [],
+        [NC_PROFILE],
+    ),
+    # The read's own clock in place of its grid's launch clock: a write ordered before the read
+    # by a bar.sync, an acquire or a griddepcontrol.wait is exempt, which none of them is (the
+    # load moves above them: probes/nc_hoist, nc_pdl hoist).
+    SrcMutant(
+        "nc-start-readclock",
+        "crates/sim/src/exec.rs",
+        "        let before_start = |w: &Epoch| launch.order_recorded && started_after(w);",
+        "        let _ = &started_after; let before_start = |w: &Epoch| w.clock <= vc_get(vc, w.actor);",
+        [("e_ld_nc", "written", f, []) for f in ("ptx", "sass")]
+        + [("e_ld_nc_pdl", "PDLNC", f, []) for f in ("ptx", "sass")],
+        [NC_TEST, NC_PDL],
+    ),
+    # E-LAUNCH-ORDER: the launch-clock exemption for a list whose launch order is unknown (an
+    # older capture's list may serialize grids that ran at the same time).
+    SrcMutant(
+        "nc-start-gate",
+        "crates/sim/src/exec.rs",
+        "        let before_start = |w: &Epoch| launch.order_recorded && started_after(w);",
+        "        let before_start = |w: &Epoch| started_after(w);",
+        [("e_ld_nc_xgpu_unord", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "e_ld_nc_xgpu_unord_launch_order")],
+    ),
+    # The launch clock from the grid before it only, without the grids it `waits` for (a join).
+    SrcMutant(
+        "nc-start-waits",
+        "crates/sim/src/exec.rs",
+        "                && launch.full_preds(my_grid).any(|p| {",
+        "                && launch.prev_grid(my_grid).filter(|_| !launch.grids[my_grid].pdl).into_iter().any(|p| {",
+        [("e_ld_nc_xgpu", "WAITS", "ptx", [])],
+        [NC_XGPU],
+    ),
+]
+
+# E-LAUNCH-ORDER (MISS 113): launch-order exclusions apply only to a recorded or declared launch
+# order (case `launch_order`); an older capture's list may serialize grids of different streams
+# that ran at the same time. `waits` (event waits, graph joins) order like a stream predecessor;
+# `mem_sync_domain` narrows .gpu scope to one domain.
+LO_UNKNOWN = ("ptxv-sim", "fixtures", "e_ld_nc_pdl_unknown_order")
+LO_STREAMS = ("ptxv-sim", "fixtures", "e_launch_order_two_streams")
+LO_WAITS = ("ptxv-sim", "fixtures", "e_launch_waits_join")
+LO_L1 = ("ptxv-sim", "fixtures", "e_launch_order_l1_boundary")
+MUTANTS += [
+    # S-NC's stream-order exclusion applies to an unknown-order list again.
+    SrcMutant(
+        "lo-nc-gate",
+        "crates/sim/src/machine.rs",
+        "        self.order_recorded && self.completes_before(j, i)",
+        "        self.completes_before(j, i)",
+        [("e_launch_order", "UNKNOWN", f, []) for f in ("ptx", "sass")]
+        + [("e_launch_waits", "UNKNOWN", f, []) for f in ("ptx", "sass")],
+        [LO_STREAMS, LO_WAITS],
+    ),
+    # S-NC's done-clock exemption applies to an unknown-order list again.
+    SrcMutant(
+        "lo-done-gate",
+        "crates/sim/src/exec.rs",
+        "        let done_before = |g: usize| launch.order_recorded && done_by(g);",
+        "        let done_before = |g: usize| done_by(g);",
+        [("e_ld_nc_pdl", "UNKNOWN_DONE", f, []) for f in ("ptx", "sass")],
+        [LO_UNKNOWN],
+    ),
+    # E-L1-CORES / E-L1-HAVOC: the kernel boundary of an unknown-order list counts again
+    # (`grids_ordered`, then the done-clock check).
+    SrcMutant(
+        "lo-l1-gate",
+        "crates/sim/src/l1_cores.rs",
+        "    l.order_recorded && l.hb_before(a, b)",
+        "    l.hb_before(a, b)",
+        [("e_launch_order_l1", "UNKNOWN", f, []) for f in ("ptx", "sass")],
+        [LO_L1],
+    ),
+    SrcMutant(
+        "lo-l1-done-gate",
+        "crates/sim/src/l1_cores.rs",
+        "            if self.launch.order_recorded\n                && self.launch.full_preds(rg).any(|p| {",
+        "            if self.launch.full_preds(rg).any(|p| {",
+        [("e_launch_order_l1", "UNKNOWN", f, []) for f in ("ptx", "sass")],
+        [LO_L1],
+    ),
+    # A wait (`waits`) no longer joins the waited grid's done clocks at launch: kc's read of
+    # kb's output races.
+    SrcMutant(
+        "lo-waits-hb",
+        "crates/sim/src/exec.rs",
+        "            match &mut done {\n                Some(v) => vc_join(v, &d),\n                None => done = Some(d),\n            }",
+        "            let _ = d;",
+        [("e_launch_waits", "good", f, []) for f in ("ptx", "sass")],
+        [LO_WAITS],
+    ),
+    # A wait no longer counts as completing before the grid starts (S-NC).
+    SrcMutant(
+        "lo-waits-nc",
+        "crates/sim/src/machine.rs",
+        "        p.into_iter().chain(self.grids[gi].waits.iter().copied())",
+        "        p.into_iter().chain(self.grids[gi].waits.iter().copied().filter(|_| false))",
+        [("e_launch_waits", "good", f, []) for f in ("ptx", "sass")],
+        [LO_WAITS],
+    ),
+    # A wait no longer holds the grid's launch back (only the join of done clocks stays): kc
+    # launches before kb completes, sets the flag kb spins on, and the deadlock is gone.
+    SrcMutant(
+        "lo-waits-gate",
+        "crates/sim/src/exec.rs",
+        "            .waits\n            .iter()\n            .all(|&w| self.grid_complete(w))",
+        "            .waits\n            .iter()\n            .all(|_| true)",
+        [("e_launch_waits_gate", "good", f, []) for f in ("ptx", "sass")],
+        [("ptxv-sim", "fixtures", "e_launch_waits_gate")],
+    ),
+    # A recorded launch order accepts a stream switch without `after` again.
+    SrcMutant(
+        "lo-stream-check",
+        "crates/sim/src/lib.rs",
+        "                if a != b {\n                    bail!(\n                        \"launch {gi} (stream {b})",
+        "                if false && a != b {\n                    bail!(\n                        \"launch {gi} (stream {b})",
+        [],
+        [("ptxv-sim", "fixtures", "e_launch_order_stream_switch_needs_after")],
+    ),
+    # .gpu scope includes the threads of another memory synchronization domain again.
+    SrcMutant(
+        "lo-mem-domain",
+        "crates/sim/src/exec.rs",
+        "                gx.device == gy.device && gx.mem_domain == gy.mem_domain",
+        "                gx.device == gy.device",
+        [("e_mem_sync_domain", "good", f, []) for f in ("ptx", "sass")],
+        [("ptxv-sim", "fixtures", "e_mem_sync_domain_scope")],
     ),
 ]
 
@@ -1165,6 +1394,112 @@ MUTANTS += [
         "        Some(Op::Ld { bytes, n, .. }) => bytes / (*n).clamp(1, 1),",
         [("e_scope_mixed", "VEC", "ptx", [])],
         [SCOPE_OVERLAP],
+    ),
+    # Precision: a packed multimem.st is one location of its register width again, not one per
+    # lane (e_scope_mm_lane good: a mixed-size race against an f16x2 multimem.ld_reduce).
+    SrcMutant(
+        "scope-elem-mmst",
+        "crates/sim/src/exec.rs",
+        "        Some(Op::St { bytes, v, .. }) => multimem_st_lane(&k.code[pc as usize].text)\n",
+        "        Some(Op::St { bytes, v, .. }) => multimem_st_lane(&k.code[pc as usize].text)\n            .filter(|_| false)\n",
+        [("e_scope_mm_lane", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "scope_multimem_lane")],
+    ),
+]
+
+# S-SCOPE release sequences (MISS 100): exec.rs `sync_publish` lets a read-modify-write continue
+# the release sequence of the write it reads only when the two are morally strong. Without the
+# scope check a .cta release continues through an atomic in another CTA again: e_rseq_scope
+# CTAREL is clean.
+RSEQ = ("ptxv-sim", "fixtures", "rseq_rmw_morally_strong")
+MUTANTS += [
+    SrcMutant(
+        "rseq-scope",
+        "crates/sim/src/exec.rs",
+        "                    && (old.writer == t as u32\n                        || self.launch.hw_order\n",
+        "                    && (true\n                        || self.launch.hw_order\n",
+        [("e_rseq_scope", "CTAREL", f, []) for f in ("ptx", "sass")],
+        [RSEQ],
+    ),
+]
+
+# S-SCOPE release sequences (MISS 112): the release patterns a read-modify-write continues stay
+# apart (`SyncCell::cont`), each checked against the reader: its release scope includes the
+# reader (rseq-head-rel), the acquiring read's scope includes its thread (rseq-head-acq), and a
+# relaxed read leaves it to the acquire fence under its own thread (rseq-head-fence);
+# rseq-head-join joins them into the read-modify-write's release again (the fix undone). Their
+# join (`SyncCell::cont_join`) stands for them only when every one passes: rseq-head-cache drops
+# that condition for another thread's read, rseq-head-own for the atomic's own thread.
+RSEQ_HEAD = ("ptxv-sim", "fixtures", "rseq_head_morally_strong")
+MUTANTS += [
+    SrcMutant(
+        "rseq-head-rel",
+        "crates/sim/src/exec.rs",
+        "        let cont_in = |x: &Self, e: &SyncRel| hw || x.scope_includes(e.rel_scope, e.writer, me);",
+        "        let cont_in = |x: &Self, e: &SyncRel| hw || true || x.scope_includes(e.rel_scope, e.writer, me);",
+        [("e_rseq_head", "FREL", f, []) for f in ("ptx", "sass")],
+        [RSEQ_HEAD],
+    ),
+    SrcMutant(
+        "rseq-head-acq",
+        "crates/sim/src/exec.rs",
+        "                    if self.scope_includes(m.scope, me, e.writer) {",
+        "                    if true {",
+        [],
+        [RSEQ_HEAD],
+    ),
+    SrcMutant(
+        "rseq-head-fence",
+        "crates/sim/src/exec.rs",
+        "            for e in cont {\n                rels.push((e.writer, e.rel.clone(), e.rel_scope));",
+        "            for e in cont {\n                rels.push((c.writer, e.rel.clone(), e.rel_scope));",
+        [("e_rseq_facq", "CTAFENCE", "ptx", [])],
+        [RSEQ_HEAD],
+    ),
+    SrcMutant(
+        "rseq-head-join",
+        "crates/sim/src/exec.rs",
+        "                        cont = old.cont.clone();\n"
+        "                        cont_join = old.cont_join.clone();\n"
+        "                        SyncCell::add_cont(\n"
+        "                            &mut cont,\n"
+        "                            &mut cont_join,\n"
+        "                            old.writer,\n"
+        "                            &old.rel,\n"
+        "                            old.rel_scope,\n"
+        "                        );",
+        "                        vc_join(&mut rel, &old.rel);",
+        [("e_rseq_head", "FREL", f, []) for f in ("ptx", "sass")]
+        + [("e_rseq_facq", "CTAFENCE", "ptx", [])],
+        [RSEQ_HEAD],
+    ),
+    SrcMutant(
+        "rseq-head-cache",
+        "crates/sim/src/exec.rs",
+        "        let all = !cont.is_empty() && cont.len() == c.cont.len();",
+        "        let all = !cont.is_empty();",
+        [("e_rseq_head", "TWOHEAD", f, []) for f in ("ptx", "sass")],
+        [RSEQ_HEAD],
+    ),
+    SrcMutant(
+        "rseq-head-own",
+        "crates/sim/src/exec.rs",
+        "                if !c.cont.is_empty() && c.cont.iter().all(pass) {",
+        "                if !c.cont.is_empty() {",
+        [("e_rseq_head", "OWN", "ptx", [])],
+        [RSEQ_HEAD],
+    ),
+    # The SASS front's shortcut for a relaxed read (one pending entry, keyed by the first
+    # pattern's writer, for all continued patterns; CCTL.IVALL takes every entry) on the PTX
+    # front too: a .cta acquire fence then takes a pattern whose thread is in another CTA
+    # (e_rseq_twopat CTAFENCE: clean).
+    SrcMutant(
+        "rseq-head-shortcut",
+        "crates/sim/src/exec.rs",
+        "        } else if all && self.k.front == Front::Sass && self.launch.exit_fence.is_none() {",
+        "        } else if all && self.launch.exit_fence.is_none() {",
+        [("e_rseq_twopat", "CTAFENCE", "ptx", [])],
+        [RSEQ_HEAD],
     ),
 ]
 
@@ -2280,6 +2615,53 @@ MUTANTS += [
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_tags_are_a_ptx_checks")],
     ),
+    # soundness.py `of_record`: check_ptx beside a check is judged at the check's rev again,
+    # whatever rev of its own it stores (an older build's open misses go).
+    SrcMutant(
+        "kdb-snd-check-ptx-at-check-rev",
+        "fb/kernel_db/soundness.py",
+        '            and cp["ptxv_rev"] != rev\n',
+        "            and False\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_judged_at_its_own_rev")],
+    ),
+    # soundness.py `of_record`: with a rev of its own, check_ptx's tags are not judged at all.
+    SrcMutant(
+        "kdb-snd-check-ptx-own-rev-dropped",
+        "fb/kernel_db/soundness.py",
+        '                    (cp["ptxv_rev"], self.record_tags({"check_ptx": cp})["race"]),\n',
+        "",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_check_ptx_judged_at_its_own_rev")],
+    ),
+    # export_records.py `apply_rev_fix`: a stored check_ptx rev is not audited.
+    SrcMutant(
+        "kdb-export-rev-fix-check-only",
+        "fb/kernel_db/export_records.py",
+        '    for k in ("check", "check_ptx"):\n',
+        '    for k in ("check",):\n',
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_rev_fix")],
+    ),
+    # audit_ptxv_rev.py `resolve`: check_ptx's rev is taken from the runner's logs of the check
+    # task (a run of the check is no evidence of check_ptx's binary).
+    SrcMutant(
+        "kdb-audit-check-ptx-run-logs",
+        "fb/kernel_db/audit_ptxv_rev.py",
+        "    if field != \"check\":\n        # The runner's logs below are of the record's check task, not of this check.\n",
+        "    if False:\n        # The runner's logs below are of the record's check task, not of this check.\n",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_check_ptx_rev_on_names_only")],
+    ),
+    # audit_ptxv_rev.py `checks_to_audit`: a stored check_ptx rev is not audited.
+    SrcMutant(
+        "kdb-audit-check-ptx-ignored",
+        "fb/kernel_db/audit_ptxv_rev.py",
+        '    if isinstance(rec.get("check_ptx"), dict) and "ptxv_rev" in rec["check_ptx"]:\n',
+        "    if False:\n",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_check_ptx_rev_on_names_only")],
+    ),
     # `cmd_check` (check and suite): the profile name is read without the check again; only
     # `check`'s early refusal is left, so `suite` runs with an unknown name.
     SrcMutant(
@@ -2460,6 +2842,35 @@ MUTANTS += [
         "    if False:\n",
         [],
         [("ptxv", "srcmut_anchors", "every_srcmut_mutant_finds_its_text_once")],
+    ),
+    # srcmut.py --check-anchors on the path the anchors check takes (no --root, every mutant),
+    # where the positive control does not go (one mutant, --root): test_mutate's
+    # test_srcmut_check_anchors, in --quick through the_mutation_tools_tests_pass. Only the first
+    # mutant chosen is checked; mutants of .rs files are skipped; nothing is checked without
+    # --root.
+    SrcMutant(
+        "srcmut-anchors-first-only",
+        "tools/mutate/srcmut.py",
+        "    for m in mutants:\n",
+        "    for m in mutants[:1]:\n",
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    SrcMutant(
+        "srcmut-anchors-skip-rs",
+        "tools/mutate/srcmut.py",
+        "    for m in mutants:\n",
+        '    for m in mutants:\n        if m.file.endswith(".rs"):\n            continue\n',
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    SrcMutant(
+        "srcmut-anchors-default-none",
+        "tools/mutate/srcmut.py",
+        "        broken = broken_anchors(ROOT if a.root is None else a.root, chosen)\n",
+        "        broken = broken_anchors(a.root, chosen) if a.root is not None else []\n",
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
     ),
     # The host token without the boot: another machine of the same name, or this one before a
     # reboot, is this host.
