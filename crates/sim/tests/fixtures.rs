@@ -2565,6 +2565,52 @@ fn binary_kernel(case: &Case, variant: &str) -> anyhow::Result<ptxv_ir::Kernel> 
     ptxv_sass::load_cubin(&c, &case.m.entry)
 }
 
+/// MISS 149 (fixtures/c_fa4_fwd): FA4's softmax warps store P with STTM, wait
+/// (FENCE.VIEW.ASYNC.T) and one elected lane arrives for the MMA warp. Since MISS 107 an STTM's
+/// TMEM write enters the thread's clock at its FENCE.VIEW.ASYNC.T, so the lockstep join
+/// (E-LOCKSTEP) must follow the fence for the other lanes' writes to reach the elected lane's
+/// arrive: the certificate holds and the output equals the captured GPU bytes. Without the
+/// fence the writes race (`c_fa4_fwd_without_the_fence_races`).
+#[test]
+fn c_fa4_fwd_certifies() {
+    let case = Case::load(root().join("fixtures/c_fa4_fwd")).unwrap();
+    let k = binary_kernel(&case, "good").unwrap();
+    let launch = build_launch(&case, &k).unwrap();
+    let v = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)))
+        .verdict
+        .expect("c_fa4_fwd certifies");
+    assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+    let report = case.expect_report(&v.outputs[0]).unwrap();
+    assert!(
+        !report.is_empty() && report.iter().all(|l| l.contains("bitwise equal")),
+        "{report:?}"
+    );
+}
+
+/// MISS 149 negative controls (fixtures/c_fa4_fwd NOWST1 / NOWST2: a FENCE.VIEW.ASYNC.T before
+/// an arrive NOPed): the softmax warps' STTM writes are not complete at the arrive, so they
+/// race with the PV UTCHMMA; the lockstep join after the fence must not hide that. One cluster
+/// at a time (E-CTA-INDEP), as `ptxv check` explores it.
+#[test]
+#[ignore = "heavy: two cluster-sliced explorations of 146k states; about 1700 s here (ptxv check: about 60 s each)"]
+fn c_fa4_fwd_without_the_fence_races() {
+    let case = Case::load(root().join("fixtures/c_fa4_fwd")).unwrap();
+    for nv in ["NOWST1", "NOWST2"] {
+        let k = binary_kernel(&case, nv).unwrap();
+        let launch = Arc::new(build_launch(&case, &k).unwrap());
+        let k = Arc::new(k);
+        let make = || Machine::new(k.clone(), launch.clone());
+        let x = ptxv_sim::explore::explore_symmetric(&make, 2_000_000, &mut |_, _| {});
+        assert!(
+            x.findings
+                .iter()
+                .any(|f| f.kind == "race" && f.sig.starts_with("race:tmem:")),
+            "{nv}: no TMEM race: {:?}",
+            x.classes()
+        );
+    }
+}
+
 /// Rung 4 (softmax, layer/rms norm, row reductions, attention; Triton and torch's own
 /// kernels): every variant gets its expected classes (MUFU per N-MUFU; their outputs are
 /// checked against GB300 by `captured_outputs_match_the_gpu`). "unlifted" cases are coverage

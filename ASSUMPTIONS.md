@@ -1157,7 +1157,11 @@ independent threads.
 - Memory instructions joined: `LD*` / `ST*` / atomics / `LDTM` and (2026-11-05) `STTM`: FA4's
   softmax warps store P with `STTM`, wait (`FENCE.VIEW.ASYNC.T`) and one elected lane per warp
   arrives on the MMA warp's mbarrier; without the join every other lane's `STTM` raced with
-  the PV `UTCHMMA` (a false race in every FA4 forward / decode kernel).
+  the PV `UTCHMMA` (a false race in every FA4 forward / decode kernel). Since MISS 107 an
+  STTM's TMEM write enters the thread's clock only at its `FENCE.VIEW.ASYNC.T`, so the join at
+  the STTM no longer carried it: `FENCE.VIEW.ASYNC.T` is joined too (2026-11-12, MISS 149;
+  the four `c_fa4_*` certificates were refused until then). `c_fa4_fwd` NOWST1 / NOWST2 (the
+  fence NOPed) still race: the join orders what each lane completed, not its pending writes.
 - **Known gap:** every split is joined, also one the model merged at a pc after a divergent
   branch without a convergence point, where hardware need not run the two sides together.
   Joining only while the warp is converged (`Machine::wdiv`, as the PTX labels below use it)
@@ -4408,7 +4412,9 @@ a divergent path.
 - SASS `STTM` (2026-11-12, MISS 107): its tensor-memory write is an event of the thread's
   STTM actor (`Machine::sttm_actor_id`, the fifth fixed actor per thread), ordered after
   everything the thread has seen, that enters the thread's clock (and its MMA pipes') only
-  at its `FENCE.VIEW.ASYNC.T`, ptxas's lowering of `tcgen05.wait::st` (`Op::TmemWaitSt`).
+  at its `FENCE.VIEW.ASYNC.T`, ptxas's lowering of `tcgen05.wait::st` (`Op::TmemWaitSt`); a
+  converged warp's lanes are joined after the fence (E-LOCKSTEP, MISS 149), so an elected
+  lane's later release carries every lane's completed writes.
   Before, the write was complete at issue: an STTM in flight at a `BAR.SYNC` was ordered
   before the next writer of its columns (the reviewer's STNW: SASS clean while round 2's MMA
   overwrote D). The STTM's register read scoreboard says nothing about the TMEM write and is

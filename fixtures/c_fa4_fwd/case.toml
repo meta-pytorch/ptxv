@@ -130,3 +130,25 @@ value = 1
 id = "good"
 summary = "as captured"
 expect = ["clean"]
+
+# MISS 149 negative controls: the softmax warps' STTM writes of P reach the PV UTCHMMA only
+# through FENCE.VIEW.ASYNC.T (the thread's tcgen05.wait::st, MISS 107), the lockstep join after
+# it (E-LOCKSTEP) and the elected lane's arrive. Without the fence the writes are not complete
+# at the arrive: a race (a join at the fence alone must not make them so).
+[[variants]]
+id = "NOWST1"
+summary = "the FENCE.VIEW.ASYNC.T before the all-thread first-split arrive NOPed"
+patch = [{ at = "@0x5830", nop = true, expect = "NOP" }]
+expect = ["race"]
+
+[[variants]]
+id = "NOWST2"
+summary = "the FENCE.VIEW.ASYNC.T before the elected-lane P_lastsplit arrive NOPed"
+patch = [{ at = "@0x5990", nop = true, expect = "NOP" }]
+expect = ["race"]
+
+[[variants]]
+id = "NOWST12"
+summary = "both FENCE.VIEW.ASYNC.T NOPed"
+patch = [{ at = "@0x5830", nop = true, expect = "NOP" }, { at = "@0x5990", nop = true, expect = "NOP" }]
+expect = ["race"]

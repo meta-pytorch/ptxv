@@ -477,6 +477,17 @@ MUTANTS += [
         [],
         [("ptxv-sim", "fixtures", "dpor_backtracks_a_disabled_process")],
     ),
+    # MISS 149: the SASS lockstep join no longer follows FENCE.VIEW.ASYNC.T; the softmax warps'
+    # STTM writes (complete at the thread's own fence since MISS 107) do not reach the elected
+    # lane's arrive and race with the PV UTCHMMA: c_fa4_fwd's certificate is refused.
+    SrcMutant(
+        "lockstep-nowaitst",
+        "crates/sim/src/exec.rs",
+        "                        | Op::TmemSt { .. }\n                        | Op::TmemWaitSt\n",
+        "                        | Op::TmemSt { .. }\n",
+        [],
+        [("ptxv-sim", "fixtures", "c_fa4_fwd_certifies")],
+    ),
     # E-HW-SPLIT-UR at every level: the strict level drops the switches too (MISS 52's
     # refutation at the strict level must stand: a measured null result is a bound).
     SrcMutant(

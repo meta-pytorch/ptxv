@@ -4942,6 +4942,11 @@ impl Machine {
             // for every split, as before (E-LOCKSTEP: gating them on `converged` made
             // e_mma_pair_m128's exploration exceed 2M states). PTX lanes are independent
             // threads and get no such ordering.
+            // FENCE.VIEW.ASYNC.T (tcgen05.wait::st, warp-aligned) is joined too: since MISS 107
+            // an STTM's TMEM write enters the thread's clock only there, so the join at the
+            // STTM itself no longer carries the write: FA4's elected-lane arrive after the
+            // warp's STTMs and FENCE.VIEW.ASYNC.T did not cover the other lanes' writes, which
+            // were reported racing with the PV UTCHMMA (c_fa4_*, certificate refused).
             if k.front == Front::Sass
                 && members.len() > 1
                 && matches!(
@@ -4952,6 +4957,7 @@ impl Machine {
                         | Op::Atom { .. }
                         | Op::TmemLd { .. }
                         | Op::TmemSt { .. }
+                        | Op::TmemWaitSt
                         | Op::StMatrix { .. }
                         | Op::LdMatrix { .. }
                 )

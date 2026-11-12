@@ -139,6 +139,10 @@ hex = "0100000001000000000086c7"
 [[variants]]
 id = "good"
 summary = "as compiled by CuTeDSL"
-# Races the tcgen05 thread-sync fences would order: contract (E-TC-FENCE-NOP).
-expect = ["contract", "violation"]
+# Races the tcgen05 thread-sync fences would order: contract (E-TC-FENCE-NOP). The epilogue's
+# tcgen05.ld has no tcgen05.wait::ld: its registers are read before a wait (violation) and its
+# never-waited TMEM reads race with the thread's own tcgen05.dealloc (PTX ISA 9.7.18.6.1; MISS
+# 105 / 111, as r1a B05: before, the fence and the dealloc's actor ordered them).
+# PTX-level UB; ptxas 13.0 still orders the register uses by scoreboard (expect_sass clean).
+expect = ["contract", "race", "violation"]
 expect_sass = ["clean"]
