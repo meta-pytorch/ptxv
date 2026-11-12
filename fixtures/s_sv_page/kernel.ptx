@@ -1,0 +1,65 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-SAME-VALUE per byte across a whole shadow page (512 bytes). One CTA, 2 warps. Thread 0
+// bulk-loads a 512-byte tile from a (zeros); every thread waits for it and meets at a bar.sync.
+// Thread 0 then reloads the tile from b (iota: the page's first byte is 0 again, the other
+// bytes change), waits for the reload and sets a shared flag; thread 32 spins on the flag and
+// bulk-stores the tile to out. With st.release / ld.acquire the reload happens before the
+// store's reads (good, clean); relaxed, the reads race with the reload.
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry s_sv_page(.param .u64 pa, .param .u64 pb, .param .u64 pout) {
+    .shared .align 1024 .b8 tile[512];
+    .shared .align 8 .b64 mbar;
+    .shared .align 4 .b32 flag;
+    .reg .b64 %rd<8>;
+    .reg .b32 %r<8>;
+    .reg .pred %p<5>;
+    ld.param.u64 %rd1, [pa];
+    ld.param.u64 %rd2, [pb];
+    ld.param.u64 %rd3, [pout];
+    add.u64 %rd5, %rd2, 4;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, tile;
+    mov.u32 %r3, mbar;
+    mov.u32 %r4, flag;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra $L_sync;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+    st.shared.u32 [%r4], 0;
+    fence.proxy.async.shared::cta;
+$L_sync:
+    bar.sync 0;
+    @%p1 bra $L_wait0;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r3], 512;
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r2], [%rd1], 512, [%r3];
+$L_wait0:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r3], 0;
+    @!%p2 bra $L_wait0;
+    bar.sync 0;
+    setp.ne.u32 %p3, %r1, 32;
+    @%p3 bra $L_t0;
+$L_spin:
+    ld.acquire.cta.shared.u32 %r5, [%r4];   // @POLL
+    setp.eq.u32 %p4, %r5, 0;
+    @%p4 bra $L_spin;                       // @WAITBRA
+    cp.async.bulk.global.shared::cta.bulk_group [%rd3], [%r2], 512;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    bra.uni $L_end;
+$L_t0:
+    @%p1 bra $L_end;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r3], 512;
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r2], [%rd2], 512, [%r3]; // @B
+$L_wait1:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r3], 1;
+    @!%p2 bra $L_wait1;
+    mov.u32 %r6, 1;
+    st.release.cta.shared.u32 [%r4], %r6;   // @FLAG
+$L_end:
+    ret;
+}

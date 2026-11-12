@@ -1,0 +1,82 @@
+name = "e_ld_nc_pdl"
+description = """
+S-NC across launches (E-PDL): k1, stream-ordered after k0, reads k0's output with
+ld.global.nc (exact); k2, launched with programmatic stream serialization, reads k1's output
+after griddepcontrol.wait and overwrites k1's .nc input after the wait (good: clean). PDLNC:
+k2's read is ld.global.nc, which the wait does not order (probes/nc_pdl): reported. EARLY: k2
+overwrites k1's .nc input before its wait: a race and an S-NC violation."""
+ptx = "kernel.ptx"
+entry = "k0"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["b", "out", "src"]
+
+[[buffers]]
+name = "a"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [32]
+init = "iota"
+
+[[buffers]]
+name = "b"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[launches]]
+entry = "k1"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+params = [
+    { kind = "ptr", buffer = "a" },
+    { kind = "ptr", buffer = "src" },
+    { kind = "ptr", buffer = "b" },
+]
+
+[[launches]]
+entry = "k2"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+pdl = true
+params = [
+    { kind = "ptr", buffer = "b" },
+    { kind = "ptr", buffer = "src" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "PDLNC"
+summary = "k2 reads k1's output with ld.global.nc after griddepcontrol.wait"
+marker = "@READ"
+find = "ld.global.u32"
+replace = "ld.global.nc.u32"
+expect = ["violation"]
+
+[[variants]]
+id = "EARLY"
+summary = "k2 overwrites src[t], which k1 reads with .nc, before its griddepcontrol.wait"
+edits = [
+    { marker = "@EARLY", find = "// (early slot)", replace = "st.global.u32 [%rd6], %r5;" },
+    { marker = "@LATE", find = "st.global.u32   [%rd6], %r5;", replace = "<delete>" },
+]
+expect = ["race", "violation"]

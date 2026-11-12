@@ -699,6 +699,100 @@ MUTANTS += [
     ),
 ]
 
+# S-NC: a non-coherent load (ld.global.nc, LDG .CONSTANT) of bytes written while its kernel
+# runs is a violation, also when a PDL dependent reads its primary's output.
+NC_PDL = ("ptxv-sim", "fixtures", "e_ld_nc_pdl_overlapping_launches")
+MUTANTS += [
+    # A PDL dependent counts as stream-ordered after its primary again: its .nc read of the
+    # primary's output after griddepcontrol.wait is clean (probes/nc_pdl: GB300 old word 200/200).
+    SrcMutant(
+        "nc-pdl-ordered",
+        "crates/sim/src/exec.rs",
+        "                    return !launch.grids[x].pdl;",
+        "                    return true;",
+        [
+            ("e_ld_nc_pdl", v, f, [])
+            for v in ("PDLNC", "EARLY")
+            for f in ("ptx", "sass")
+        ],
+        [NC_PDL],
+    ),
+    # Precision: a write after the completion of the grid that read its bytes with .nc is
+    # reported again (e_ld_nc_pdl good: a PDL dependent overwrites its primary's .nc input after
+    # griddepcontrol.wait).
+    SrcMutant(
+        "nc-done-off",
+        "crates/sim/src/exec.rs",
+        "                mask >> g & 1 == 1 && nc_conflict(g, my_grid) && !(g < 63 && done_before(g))",
+        "                mask >> g & 1 == 1 && nc_conflict(g, my_grid)",
+        [("e_ld_nc_pdl", "good", f, []) for f in ("ptx", "sass")],
+        [NC_PDL],
+    ),
+]
+
+# S-SAME-VALUE per byte across a uniform shadow page (MISS 69): exec.rs `access_x` splits a
+# uniform page before `for_run` when a write keeps the value of only some of its bytes. Without
+# the split the page's first byte stands for the page again: s_sv_page PAGE and CONC (a reload
+# that keeps only the first byte, then reads of the tile) are clean.
+SV_PAGE = ("ptxv-sim", "fixtures", "s_sv_page_split_by_byte")
+MUTANTS += [
+    SrcMutant(
+        "sv-page-onebyte",
+        "crates/sim/src/exec.rs",
+        "                    if wundef != 0 || (kept != 0 && kept != per) {",
+        "                    if false && (wundef != 0 || (kept != 0 && kept != per)) {",
+        [("s_sv_page", v, f, []) for v in ("PAGE", "CONC") for f in ("ptx", "sass")],
+        [SV_PAGE],
+    ),
+]
+
+# S-SCOPE, complete overlap (MISS 80; PTX ISA 9.5 section 8.7): exec.rs `same_location` decides
+# whether two strong thread accesses of the PTX front are one location (scalar element sizes,
+# `elem_bytes`). scope-overlap: every pair is one location again (scopes only): a u8 / u64
+# acquire of a u32 release flag is clean (e_scope_mixed MIXED, WIDE) and the warp's u8 load of
+# a u32 store nondeterministic (e_warp_order_mixed MIXED). scope-overlap-race: the race
+# filter's moral strength ignores overlap (`morally_strong`), the acquire still does not
+# synchronize. scope-overlap-sync: a partially overlapping acquire synchronizes again
+# (`sync_observe_cell`): the flag race remains, the data race goes (test only).
+# scope-elem-vector: a vector load is one location of its whole width (a precision mutant:
+# VEC races).
+SCOPE_OVERLAP = ("ptxv-sim", "fixtures", "scope_complete_overlap")
+MUTANTS += [
+    SrcMutant(
+        "scope-overlap",
+        "crates/sim/src/exec.rs",
+        "    x == 0 || y == 0 || x == y\n",
+        "    x == 0 || y == 0 || x == y || true\n",
+        [("e_scope_mixed", v, "ptx", []) for v in ("MIXED", "WIDE")]
+        + [("e_warp_order_mixed", "MIXED", "ptx", [])],
+        [SCOPE_OVERLAP],
+    ),
+    SrcMutant(
+        "scope-overlap-race",
+        "crates/sim/src/exec.rs",
+        "        self.overlap_complete(a, pa, b, pb) && self.scopes_mutual(a, sa, b, sb)",
+        "        self.scopes_mutual(a, sa, b, sb)",
+        [("e_warp_order_mixed", "MIXED", "ptx", [])],
+        [SCOPE_OVERLAP],
+    ),
+    SrcMutant(
+        "scope-overlap-sync",
+        "crates/sim/src/exec.rs",
+        "        if !self.overlap_complete(c.writer, c.pc, me, pc) {",
+        "        if false && !self.overlap_complete(c.writer, c.pc, me, pc) {",
+        [],
+        [SCOPE_OVERLAP],
+    ),
+    SrcMutant(
+        "scope-elem-vector",
+        "crates/sim/src/exec.rs",
+        "        Some(Op::Ld { bytes, n, .. }) => bytes / (*n).max(1),",
+        "        Some(Op::Ld { bytes, n, .. }) => bytes / (*n).clamp(1, 1),",
+        [("e_scope_mixed", "VEC", "ptx", [])],
+        [SCOPE_OVERLAP],
+    ),
+]
+
 # Entries no fixture reaches, with the reason.
 EXCLUDED = {
     "cbra-agree": (

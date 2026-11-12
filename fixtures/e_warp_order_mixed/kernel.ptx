@@ -1,0 +1,41 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-SCOPE, complete overlap, within one warp (E-WARP-ORDER). Lane 0 stores a u32 with
+// st.volatile; lane 1 loads it on the next instruction of the converged warp, with no
+// bar.warp.sync between them. Under the PTX memory model the lanes are threads.
+//   good:  u32 load of the same word: morally strong, so no race; the PTX front reports the
+//          pair as nondeterministic (either order), the SASS front runs it in program order.
+//   MIXED: u8 load of the word's byte 1: the two overlap partially (PTX ISA 9.5 section 8.7),
+//          so they are not morally strong: a mixed-size data race at the PTX contract.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_warp_order_mixed(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 x;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, x;
+    mov.u32 %r3, 0;
+    st.shared.u32 [%r2], %r3;
+    bar.warp.sync -1;
+    setp.eq.u32 %p1, %r1, 0;
+    setp.eq.u32 %p2, %r1, 1;
+    mov.u32 %r10, 0x01020304;
+    mov.u32 %r12, 0;
+    @%p1 st.volatile.shared.u32 [%r2], %r10;
+    @%p2 ld.volatile.shared.u32 %r12, [%r2];      // @LD
+    bar.warp.sync -1;
+    @!%p2 bra DONE;
+    st.global.u32 [%rd1], %r12;
+DONE:
+    ret;
+}

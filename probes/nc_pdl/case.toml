@@ -1,0 +1,96 @@
+name = "probe_nc_pdl"
+description = """
+Probe (S-NC, E-PDL): a dependent launched with programmatic stream serialization reads its
+primary's output after griddepcontrol.wait (kernel.ptx). produce triggers at once and writes
+buf's odd words only after consume's prologue has set a flag, so the two grids overlap. good: a
+coherent load after the wait reads t + 7 (GB300 200/200 runs = model). hoist: the load as
+ld.global.nc; ptxas 13.0 / 13.3 move it above the wait (ACQBULK) and the flag store, and GB300
+returns buf's old word 0 (all 32 outputs, 200/200 runs). late: the .nc load's address depends on
+a coherent load after the wait, so it stays after ACQBULK, and consume first reads the even
+words of the same lines with .nc; GB300 0 of 200 runs stale (a bound). ptxv reports hoist and
+late (nc-written) on both front-ends."""
+ptx = "kernel.ptx"
+entry = "produce"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "out2"]
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "idx"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "out2"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[launches]]
+entry = "consume"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+pdl = true
+params = [
+    { kind = "ptr", buffer = "flag" },
+    { kind = "ptr", buffer = "buf" },
+    { kind = "ptr", buffer = "w" },
+    { kind = "ptr", buffer = "idx" },
+    { kind = "ptr", buffer = "out" },
+    { kind = "ptr", buffer = "out2" },
+]
+
+[[variants]]
+id = "good"
+summary = "a plain ld.global of buf[2t + 1] after griddepcontrol.wait: ordered after produce's completion"
+expect = ["clean"]
+
+[[variants]]
+id = "hoist"
+summary = "that load as ld.global.nc (ptxas hoists it above the wait and the flag store)"
+marker = "@POST"
+find = "ld.global.u32"
+replace = "ld.global.nc.u32"
+expect = ["violation"]
+
+[[variants]]
+id = "late"
+summary = "the .nc load's address depends on a coherent load after the wait; the even words of the same lines are read with .nc before it"
+edits = [
+    { marker = "@PRE", find = "[%rd14]", replace = "[%rd20]" },
+    { marker = "@POST", find = "ld.global.u32   %r4, [%rd18];", replace = "ld.global.u32 %r7, [%rd13]; mul.wide.u32 %rd21, %r7, 4; add.u64 %rd22, %rd18, %rd21; ld.global.nc.u32 %r4, [%rd22];" },
+]
+expect = ["violation"]

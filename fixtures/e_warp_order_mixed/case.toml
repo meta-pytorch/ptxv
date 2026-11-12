@@ -1,0 +1,40 @@
+name = "e_warp_order_mixed"
+description = """
+S-SCOPE, complete overlap, within one converged warp (E-WARP-ORDER): lane 0 stores a u32 with
+st.volatile and lane 1 loads it on the next instruction, with no bar.warp.sync between them.
+good: a u32 load of the same word: morally strong, nondeterministic on the PTX front (the lanes
+are threads, either order), clean on the SASS front (program order). MIXED: a u8 load of byte 1
+of the word: the two overlap partially, so they are not morally strong (PTX ISA 9.5 section
+8.7): a mixed-size data race at the PTX contract (8.7.1, 8.7.2). Until 2026-11-11 the PTX front
+checked scopes only and reported MIXED as nondeterministic. The SASS front does not decide
+overlap and stays clean."""
+ptx = "kernel.ptx"
+entry = "e_warp_order_mixed"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "u32 store, u32 load of the same word"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "MIXED"
+summary = "u32 store, u8 load of its byte 1"
+marker = "@LD"
+find = "@%p2 ld.volatile.shared.u32 %r12, [%r2];"
+replace = "@%p2 ld.volatile.shared.u8 %r12, [%r2+1];"
+expect = ["race"]
+expect_sass = ["clean"]

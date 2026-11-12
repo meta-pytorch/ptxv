@@ -3407,6 +3407,7 @@ fn cell_eq(a: &Option<SyncCell>, b: &Option<SyncCell>) -> bool {
         (Some(a), Some(b)) => {
             a.writer == b.writer
                 && a.scope == b.scope
+                && a.pc == b.pc
                 && a.rel_scope == b.rel_scope
                 && a.rel == b.rel
         }
