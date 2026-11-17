@@ -7,10 +7,13 @@
 
 # ptxv
 
-A verifier for NVIDIA Blackwell (sm_100a / sm_103a) GPU kernels. It runs on the PTX or SASS of a captured launch and checks a kernel in two steps:
+A model checker for NVIDIA Blackwell (sm_100a / sm_103a) GPU kernels. ptxv is the explicit-state kind of verifier: it takes the PTX or SASS of one captured launch, builds a model of the machine that runs it (warps, async units, barriers, the PTX memory model), and explores the schedules the hardware may pick, checking properties on every state it reaches. It checks a kernel in two steps:
 
-1. **Execution.** Data races, deadlocks, hangs and protocol misuse (mbarrier, TMEM, TMA, clusters, multi-GPU memory) over the schedules the hardware may pick. The result also says whether every schedule computes each output with the same operations, or which variants can occur (for example with floating-point atomics).
+1. **Execution.** Data races, deadlocks, hangs and protocol misuse (mbarrier, TMEM, TMA, clusters, multi-GPU memory) over the schedules the hardware may pick. Each finding comes with the schedule that reaches it. The result also says whether every schedule computes each output with the same operations, or which variants can occur (for example with floating-point atomics).
 2. **Numerics.** Because step 1 established which operations produce each output on every schedule, they are extracted from one execution and analyzed: equivalence to a reference kernel with a proven per-output bound, and the distribution of the error under a distribution of inputs.
+
+> [!WARNING]
+> **ptxv is a work in progress.** Use it to catch bugs opportunistically, not to certify that a kernel is correct. A finding comes with the schedule that reaches it, which you can replay to confirm it. A `clean` verdict has no such check: ptxv still has false cleans, kernels it calls clean that misbehave on hardware, because a model shortcut is too generous or a hardware behavior is not yet modeled. The [soundness harness](docs/soundness-harness.md) looks for them ([latest results](docs/soundness-results.md)). Every verdict also holds only for the captured inputs and launch shape, under the assumptions it lists ([ASSUMPTIONS.md](ASSUMPTIONS.md)).
 
 ## Example
 
@@ -56,6 +59,10 @@ summary: tier 2 (CLT on both DAGs), agrees with the tier 3 cross-check
 
 errdist answers with an analytic central-limit model (Tier 2) when its applicability checks pass and a small Monte Carlo run (Tier 3) agrees; otherwise with Tier 3. Inputs that make every rounding exact are proven to give zero error (Tier 0). See [docs/errdist.md](docs/errdist.md).
 
+![errdist: the distribution of output error, in ulps, for two softmax kernels](docs/img/errdist_softmax.png)
+
+*errdist on two Triton softmax kernels over 64 f32 logits: `exp(x) / sum` and the max-subtracted `exp(x − max) / sum`. Each stem is the probability of an output error of k ulps (256 outputs per input). Near 0 both stay within a few ulps. Near 50 the naive kernel loses tens of ulps: Triton computes exp(x) as 2^(x·log2 e), and the f32 rounding of an exp2 argument near 72 is magnified in the result.*
+
 ## Build
 
 ```
@@ -77,7 +84,7 @@ The quick tier is the default: tests that take more than 30 s are marked `#[igno
 
 ## Trust
 
-Every verdict lists the modeling assumptions it relies on ([ASSUMPTIONS.md](ASSUMPTIONS.md)). The semantics of instructions, the memory model and the arithmetic units are encoded by hand and validated against GB300 hardware; they are not a formal specification. Unsupported instructions are rejected; an audit so that unsupported modifiers are also rejected, rather than ignored, is in progress.
+A clean verdict is not a proof (see the warning at the top). Every verdict lists the modeling assumptions it relies on ([ASSUMPTIONS.md](ASSUMPTIONS.md)). The semantics of instructions, the memory model and the arithmetic units are encoded by hand and validated against GB300 hardware; they are not a formal specification. Unsupported instructions are rejected; an audit so that unsupported modifiers are also rejected, rather than ignored, is in progress.
 
 ## Related verifiers
 
@@ -95,31 +102,49 @@ Every verdict lists the modeling assumptions it relies on ([ASSUMPTIONS.md](ASSU
 
 **Numerics.** Step 1 also establishes that every schedule computes each output with the same operations in the same order, or lists the variants (e.g. floating-point atomics). The numerics DAG of one execution is then the kernel's dataflow on every schedule: leaves are input elements; nodes are tensor-core steps, adds, FMAs and roundings, each with a model of its arithmetic (the tensor-core models are calibrated on GB300). errdist evaluates the DAG under an input distribution: Tier 0 proves the error is zero when every rounding is exact on the inputs' lattice; Tier 2 propagates per-node rounding laws with a central-limit model, and is reported when its applicability checks pass and Tier 3 agrees; Tier 3 is Monte Carlo through the DAG, bit-exact per sample. For a pair such as the one below, the two DAGs share their terms and differ in the order of the roundings, which is where the outputs differ.
 
-![The numerics DAG of one output for two kernels](docs/img/errdist_dag.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/errdist_dag-dark.svg">
+  <img src="docs/img/errdist_dag.svg" alt="The numerics DAG of one output for two kernels">
+</picture>
 
-*The DAG of out[0, 0] for a 64×64×64 bf16 GEMM (fixtures/c_equiv_mm_bf16): cuBLAS, and a Triton kernel that walks its two K blocks in reverse. The same 64 products enter the f32 accumulator in a different order.*
+*The DAG of out[0, 0] for a 64×64×64 bf16 GEMM (fixtures/c_equiv_mm_bf16): cuBLAS, and a Triton kernel that walks its two K blocks in reverse. The same 64 products enter the f32 accumulator in a different order. Drawn from ptxv's own model by [tools/figures/dag.py](tools/figures/dag.py).*
 
 Details: [docs/design.md](docs/design.md) (§0, §3) and [docs/errdist.md](docs/errdist.md) (§4, §5).
 
 ## Documentation
 
-| topic | doc |
+Start with [docs/capture.md](docs/capture.md) and [docs/python.md](docs/python.md) to check your own kernels, then [docs/design.md](docs/design.md) for how the checks work.
+
+| topic | docs |
 |---|---|
-| capturing kernels from PyTorch, Triton, CuTeDSL | [docs/capture.md](docs/capture.md) |
-| Python API | [docs/python.md](docs/python.md) |
-| execution checking: semantics, search, certificates | [docs/design.md](docs/design.md), [docs/sass-ctrl.md](docs/sass-ctrl.md), [docs/rung0.md](docs/rung0.md) – [docs/rung4.md](docs/rung4.md) |
-| equivalence of two kernels | [docs/compare.md](docs/compare.md), [docs/equiv-reassoc.md](docs/equiv-reassoc.md), [docs/equiv-mma.md](docs/equiv-mma.md), [docs/equiv-elementwise.md](docs/equiv-elementwise.md) |
-| error distributions (`errdist`) | [docs/errdist.md](docs/errdist.md) |
-| low-precision formats (fp8, fp4, MX, NVFP4) | [docs/lowp.md](docs/lowp.md) |
-| torch.compile vs eager | [docs/compile-vs-eager.md](docs/compile-vs-eager.md) |
-| SASS instruction coverage | [docs/lift-coverage.md](docs/lift-coverage.md) |
-| multi-node exploration | [docs/multinode.md](docs/multinode.md) |
-| JSON output | [docs/json.md](docs/json.md) |
-| fixtures that need regeneration (third-party kernels) | [docs/fixtures.md](docs/fixtures.md) |
-| roadmap and known gaps | [ROADMAP.md](ROADMAP.md), [BUGS.md](BUGS.md) |
+| **Using ptxv** | |
+| capturing kernels from PyTorch, Triton, CuTeDSL | [capture.md](docs/capture.md) |
+| Python API | [python.md](docs/python.md) |
+| JSON output of the CLI | [json.md](docs/json.md) |
+| torch.compile vs eager, kernel by kernel | [compile-vs-eager.md](docs/compile-vs-eager.md) |
+| **Execution checking** | |
+| semantics, search, certificates | [design.md](docs/design.md) |
+| SASS control bits (scoreboards, dependency barriers) | [sass-ctrl.md](docs/sass-ctrl.md) |
+| SASS instruction coverage | [lift-coverage.md](docs/lift-coverage.md) |
+| large grids, input coverage and their cost | [grid-cost.md](docs/grid-cost.md), [input-coverage-cost.md](docs/input-coverage-cost.md) |
+| multi-GPU and multi-node: NVLink, NVLS multicast, GPU-initiated RDMA | [multinode.md](docs/multinode.md), [nvls.md](docs/nvls.md), [nic.md](docs/nic.md) |
+| worked examples, from one TMA to MoE and all-reduce | [rung0](docs/rung0.md), [1a](docs/rung1a.md), [1b](docs/rung1b.md), [1c](docs/rung1c.md), [1d](docs/rung1d.md), [1e](docs/rung1e.md), [1f](docs/rung1f.md), [1g](docs/rung1g.md), [2](docs/rung2.md), [2e](docs/rung2e.md), [3b](docs/rung3b.md), [4](docs/rung4.md) |
+| **Numerics** | |
+| equivalence of two kernels | [compare.md](docs/compare.md), [equiv-reassoc.md](docs/equiv-reassoc.md), [equiv-mma.md](docs/equiv-mma.md), [equiv-elementwise.md](docs/equiv-elementwise.md) |
+| error distributions (`errdist`) | [errdist.md](docs/errdist.md) |
+| low-precision formats (fp8, fp4, MX, NVFP4) | [lowp.md](docs/lowp.md) |
+| **Trust and validation** | |
+| modeling assumptions behind each verdict | [ASSUMPTIONS.md](ASSUMPTIONS.md) |
+| the bug suite ptxv must catch | [BUGS.md](BUGS.md) |
+| finding false cleans: mutants checked against GB300 | [soundness-harness.md](docs/soundness-harness.md), [soundness-results.md](docs/soundness-results.md) |
+| hardware litmus tests behind the memory model | [smem-litmus.md](docs/smem-litmus.md), [poll-acq-litmus.md](docs/poll-acq-litmus.md), [smem-order-mapping.md](docs/smem-order-mapping.md), [tensormap.md](docs/tensormap.md) |
+| **Project** | |
+| roadmap and known gaps | [ROADMAP.md](ROADMAP.md) |
+| fixtures that need regeneration (third-party kernels) | [fixtures.md](docs/fixtures.md) |
+| contributing and testing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ## License
 
 ptxv is BSD licensed, as found in the [LICENSE](LICENSE) file.
 
-Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Changes: [CHANGELOG.md](CHANGELOG.md).
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Changes: [CHANGELOG.md](CHANGELOG.md).
