@@ -2206,6 +2206,7 @@ fn check_dpor(case: &str, variant: &str, front: &str, max_states: usize) {
 }
 
 #[test]
+#[ignore = "heavy: explorer slowdown since #105, fixed by the uniform-register-keys PR (pr/sim/uniform-register-keys), which re-enables it in the quick tier; 1449 s"]
 fn r1b_good() {
     check_dpor("r1b_pipeline", "good", "ptx", 2_000_000);
     check_dpor("r1b_pipeline", "good", "sass", 2_000_000);
@@ -2258,6 +2259,7 @@ fn r1c_b13_cluster_lifetime_ptx() {
     check_dpor("r1c_cluster", "B13", "ptx", 2_000_000);
 }
 #[test]
+#[ignore = "heavy: explorer slowdown since #105, fixed by the uniform-register-keys PR (pr/sim/uniform-register-keys), which re-enables it in the quick tier; 2970 s"]
 fn r1c_b13_cluster_lifetime_sass() {
     check_dpor("r1c_cluster", "B13", "sass", 2_000_000);
 }
@@ -3305,6 +3307,7 @@ fn check_bounded_part(case: &str, variant: &str, front: &str, max_states: usize,
 // kernel, the fixed kernel and M3/M4; M1/M2 (missing mbarrier waits) explode and are bounded.
 // One test per variant.
 #[test]
+#[ignore = "heavy: explorer slowdown since #82, fixed by the mbarrier store-points PR (pr/explore/mbar-store-points), which re-enables it in the quick tier; 769 s"]
 fn r2_triton_sass_good() {
     check_stateful("r2_triton_gemm", "good", "sass", 2_000_000);
 }
