@@ -1,0 +1,150 @@
+name = "c_num_nic_atomic_f32"
+description = """
+MISS 257 (N-NUM-TRACK, S-NIC-ATOMIC): NIC atomics on words that hold roundings or exact constants,
+in `ptxv num`. One GPU, a loopback IBGDA queue pair. Thread 0 writes dst's 8-byte words W0..W3 as
+(rn(0.1f + 0.2f), rn(1 + 1e-8f)), roundings of constants; W4 as (2.0f, 3.0f); W5 as the bf16
+elements bf16(rn(0.1f + 0.2f)), bf16(rn(1 + 1e-8f)), bf16(rn(1 + 1e-8f)), bf16(rn(0.1f + 0.2f)); W6, W7 as
+(rn(x[0] + y[0]), rn(x[1] + y[1])), the same roundings of input data. It posts one NIC atomic per
+word (W0: a compare-and-swap that fails; W1, W5, W6: a fetch-add of 0; W2, W7: a fetch-add of 1;
+W3: a fetch-add of 2^32; W4: a compare-and-swap that swaps in (7.0f, 5.0f)). W6, W7 and W5 go first
+and write no CQE: a CQE takes the taint of what its operation read
+(MISS 224), so a polled CQE of an atomic on input data would make every output input data. It
+polls the last completion and copies dst (out[0..16)) and the fetched values (sink, out[16..32))
+to out, and W5's four bf16 elements to outh. Every buffer the run writes is an output. No
+expected/: the NIC does not run on the hardware runner; GB300's bits of the two sums are
+probes/nic_num_shadow's arith/ (the same x[0..2), y[0..2)) and probes/nic_atomic_keeps_word's
+arith/ (the same constants), 20 of 20 scrubbed runs each."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "nic_atomics"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "outh", "dst", "sink", "sq", "cq", "uar", "dbr"]
+
+[[nic_qps]]
+name = "qp0"
+device = 0
+peer = 0
+qpn = 0x42
+sq = "sq"
+sq_wqes = 8
+cq = "cq"
+cq_cqes = 8
+db = "uar"
+
+[[nic_mrs]]
+key = 0x101
+buffer = "sink"
+
+[[nic_mrs]]
+key = 0x200
+buffer = "dst"
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [2]
+init = "zeros"
+values = [[0, 0.1], [1, 1.0]]
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [2]
+init = "zeros"
+values = [[0, 0.2], [1, 1e-8]]
+
+[[buffers]]
+name = "dst"
+dtype = "f32"
+shape = [16]
+init = "zeros"
+
+[[buffers]]
+name = "sink"
+dtype = "u64"
+shape = [8]
+init = "zeros"
+
+[[buffers]]
+name = "sq"
+dtype = "u8"
+shape = [512]
+init = "zeros"
+
+[[buffers]]
+name = "cq"
+dtype = "u8"
+shape = [512]
+init = "zeros"
+values = [[63, 241], [127, 241], [191, 241], [255, 241], [319, 241], [383, 241], [447, 241], [511, 241]]
+
+[[buffers]]
+name = "uar"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "dbr"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "outh"
+dtype = "bf16"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "sink"
+
+[[params]]
+kind = "ptr"
+buffer = "sq"
+
+[[params]]
+kind = "ptr"
+buffer = "cq"
+
+[[params]]
+kind = "ptr"
+buffer = "uar"
+
+[[params]]
+kind = "ptr"
+buffer = "dbr"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "outh"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

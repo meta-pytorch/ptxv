@@ -1,0 +1,28 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# SASS: ptxas if-converts lane 1's path (`@P0 SYNCS.ARRIVE...` then lane 0's arrive), so the
+# warp stays converged and issues X before Y in every schedule: test_wait is always true
+# (clean), and RACE has no race.
+good  ptx  stateful [nondeterministic]
+good  ptx  dpor     [nondeterministic]
+good  ptx  certify  [nondeterministic]
+good  sass stateful [clean]
+good  sass dpor     [clean]
+good  sass certify  [clean]
+NOBRK ptx  stateful [nondeterministic]
+NOBRK ptx  dpor     [nondeterministic]
+NOBRK ptx  certify  [nondeterministic]
+NOBRK sass stateful [clean]
+NOBRK sass dpor     [clean]
+NOBRK sass certify  [clean]
+SWAP  ptx  stateful [nondeterministic]
+SWAP  ptx  dpor     [nondeterministic]
+SWAP  ptx  certify  [nondeterministic]
+SWAP  sass stateful [clean]
+SWAP  sass dpor     [clean]
+SWAP  sass certify  [clean]
+RACE  ptx  stateful [nondeterministic,race]
+RACE  ptx  dpor     [nondeterministic,race]
+RACE  ptx  certify  [nondeterministic,race]
+RACE  sass stateful [clean]
+RACE  sass dpor     [clean]
+RACE  sass certify  [clean]

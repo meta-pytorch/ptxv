@@ -95,12 +95,13 @@ fn heavy_tails_refuse_tier2_and_fall_back_to_tier3() {
         return;
     }
     // 2% N(0, 64^2) outliers: y's excess kurtosis ~ 300; tier 2 would say 8.7e-5 against
-    // tier 3's 3.2e-5.
+    // tier 3's 3.2e-5. At a fixed Tier 3 count: since MISS 139 the default run grows Tier 3 to
+    // its 30 s work budget here (about 30800 inputs), and the outcome does not depend on it.
     let j = run(
         "outl",
         "fixtures/c_mm_bf16_nnt",
         "fixtures/errdist/outliers.json",
-        &[],
+        &["--mc", "3000"],
     );
     assert_eq!(best_tier(&j), 3);
     let t2 = j["estimates"]

@@ -38,6 +38,8 @@ marker = "@STMA"
 find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
 replace = "bar.sync 1, 160;"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 hw_note = "PTX-level: aligned bar.sync/bar.arrive of one id reached from different pcs by different warps (compute-sanitizer synccheck error). GB200 completes; ptxv models the per-warp rule only (E-ALIGNED), so clean"
 
 [[variants.edits]]
@@ -116,6 +118,8 @@ marker = "@STMA"
 find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
 replace = "bar.sync 1, 160;"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants.edits]]
 marker = "@CTMA"
@@ -196,6 +200,8 @@ marker = "@STMA"
 find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
 replace = "bar.sync 1, 160;"
 expect = ["deadlock", "violation"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "deadlock", "violation"]
 hw_note = "GB200 hangs (watchdog, 2/2 attempts, reporters' run). E-ALIGNED: divergent aligned barrier (was clean before ptxv modeled .aligned on named barriers)"
 
 [[variants.edits]]
@@ -283,7 +289,7 @@ marker = "@XTCF"
 replace = "<delete>"
 # As good_nofence: the fences would order every race (E-TC-FENCE-NOP).
 expect = ["contract"]
-expect_sass = ["clean"]
+expect_sass = ["contract"]
 
 [[variants.edits]]
 marker = "@STMA"
@@ -383,8 +389,9 @@ find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
 replace = "bar.sync 1, 160;"
 # The missing stats handoff can move arrivals across phases; exploration without the
 # plain-arrival reduction reaches distinct outputs of the race.
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:) too.
 expect = ["deadlock", "nondeterministic", "race", "violation"]
-expect_sass = ["deadlock", "nondeterministic", "violation"]
+expect_sass = ["contract", "deadlock", "nondeterministic", "violation"]
 
 [[variants.edits]]
 marker = "@CTMA"
@@ -460,7 +467,7 @@ summary = "control: post-fix, MMA frees TMEM without waiting phase 1 (no rendezv
 marker = "@XMTMW1"
 replace = "<delete>"
 expect = ["race"]
-expect_sass = ["race", "violation"]
+expect_sass = ["contract", "race", "violation"]
 
 [[variants]]
 id = "unaligned"
@@ -469,6 +476,8 @@ marker = "@STMA"
 find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
 replace = "barrier.cta.sync 1, 160;"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 hw_note = "ptxas lowers barrier.cta.sync to BRA.DIV + WARPSYNC.COLLECTIVE.ALL / BAR.SYNC R9,R9 / ENDCOLLECTIVE (lifts since E-COLLECTIVE-ALL)"
 
 [[variants.edits]]
@@ -547,6 +556,8 @@ marker = "@STMA"
 find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
 replace = "bar.sync 1, 160;"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 hw_note = "GB200: completes 200/200 (reporters' run). SASS: BRA.DIV + WARPSYNC.COLLECTIVE.ALL slow path (E-COLLECTIVE-ALL)"
 
 [[variants.edits]]

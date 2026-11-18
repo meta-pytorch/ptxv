@@ -1,0 +1,17 @@
+# run.sh, 2026-11-13, on agentDP before the fix (int7 a52ab526 gives the same DPOR lines): exit 1
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+rc=1
+
+# After the fix (a test writes the count keys of the phases it reads, MISS 275): exit 0
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+rc=0

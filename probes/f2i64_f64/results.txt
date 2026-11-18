@@ -1,0 +1,14 @@
+# GB300 (one GPU, GPU 0), 2026-11-12, rev d2a4ee90 + SND3 (agentSND-probes2): PTXV_HW_EXPECT=variant ptxv hw --runs 1000
+# --scrub (the patched image checked by --image-fnv); grid 1x1x1, block 256. First measured by the RVS2 review
+# (build of 6d676091, GPU 3: the same counts). Summary: COVER 0 / 1000 at stalls 2, 4, 8; NOWAIT 1000 / 1000;
+# OWN 0 / 1000 (a measured null: a bound at this shape, one GPU).
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw NOWAIT_S2 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 510)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+hw OWN_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER_S4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw NOWAIT_S4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 510)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+hw OWN_S4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw NOWAIT_S8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 510)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+hw OWN_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]

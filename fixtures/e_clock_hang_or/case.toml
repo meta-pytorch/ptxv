@@ -1,0 +1,83 @@
+name = "e_clock_hang_or"
+description = """
+E-CLOCK hang guard whose predicate is an OR combine (setp.gt.or). good: p4 = (now - start > x)
+|| (now - start > 2^32), trap when p4, x = 1000 loaded from memory. The slice of p4 stops at
+the load, and the trap side (p4 true) needs neither operand alone true, so no operand's slice
+decides the bound: the guard is a clock choice and the trap (after 1000 cycles on hardware) is
+explored. Taking the long compare as the predicate the trap needs would exempt the guard and
+miss the trap.
+ANDF: the same on the AND-false side: trap when !((now - start <= x) && (now - start <= 2^32)):
+the short compare alone reaches the trap, no operand is forced: a clock choice.
+AND: p4 = (x != 0) && (now - start > 2^32): the trap side needs the long compare true, a
+2^32 bound: the guard is exempt and the reader waits for the flag.
+PEEL: the DeepEP shape (ISETP.GT.U32.OR P0, PT, R19, 0x1, !P0): keep polling while
+(x == 0) || (now - start <= 2^32), else trap. The trap side, p4 false, needs the long compare
+true: a 2^32 bound, exempt."""
+ptx = "kernel.ptx"
+entry = "e_clock_hang_or"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1]
+init = "file"
+file = "in.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "OR of a short loaded bound and a long one, trap when either holds: a clock choice"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "ANDF"
+summary = "trap when !((elapsed <= x) && (elapsed <= 2^32)): the AND-false side, reached by the short compare alone: a clock choice"
+marker = "@CMP"
+find = "setp.gt.or.u64 %p4, %rd13, %rd6, %p5;"
+replace = "setp.le.and.u64 %p4, %rd13, %rd6, !%p5;"
+expect = ["nondeterministic", "trap"]
+
+[[variants.edits]]
+marker = "@BR"
+find = "@%p4 bra TIMEOUT;"
+replace = "@!%p4 bra TIMEOUT;"
+
+[[variants]]
+id = "AND"
+summary = "AND combine (x != 0) && elapsed > 2^32, trap when it holds: the trap needs the long compare, exempt"
+marker = "@CMP"
+find = "setp.gt.or.u64 %p4, %rd13, %rd6, %p5;"
+replace = "setp.ne.and.u32 %p4, %r6, 0, %p5;"
+expect = ["clean"]
+# SASS: ptxas folds the AND into a conditional branch on two predicates (`BRA P1, target`),
+# which the explorer cannot steer under a clock guard (clock.rs `clock_effects`).
+expect_sass = ["unmodeled"]
+
+[[variants]]
+id = "PEEL"
+summary = "DeepEP shape: poll while (x == 0) || elapsed <= 2^32, else trap: exempt"
+marker = "@CMP"
+find = "setp.gt.or.u64 %p4, %rd13, %rd6, %p5;"
+replace = "setp.eq.or.u32 %p4, %r6, 0, !%p5;"
+expect = ["clean"]
+
+[[variants.edits]]
+marker = "@BR"
+find = "@%p4 bra TIMEOUT;"
+replace = "@!%p4 bra TIMEOUT;"

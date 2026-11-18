@@ -1,0 +1,38 @@
+name = "e_mbar_discarded_poll"
+description = "RMK4 round 2 B1 (MISS 272, open): an mbarrier poll whose result is discarded, on an object that is not live. ptxas emits SYNCS.PHASECHK.TRANS64 PT, which the SASS lifter turns into Op::Nop, so good / INV are clean on SASS where PTX reports the violation; USED (result kept) reports on both fronts. Every variant on PTX, and USED on SASS, has no verdict under DPOR and --certify (MISS 267)."
+ptx = "kernel.ptx"
+entry = "e_mbar_discarded_poll"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "t0 test_waits on a never-initialized mbarrier, result discarded"
+expect = ["violation"]
+
+[[variants]]
+id = "INV"
+summary = "t0 inits a uniformly (SYNCS.EXCH.64: no state word in memory), invals it, then the discarded poll"
+marker = "@PRE"
+find = "// @PRE"
+replace = "@%p2 bra NOPRE; mbarrier.init.shared::cta.b64 [%r2], 1; mbarrier.inval.shared::cta.b64 [%r2]; NOPRE:"
+expect = ["violation"]
+
+[[variants]]
+id = "USED"
+summary = "control: good with the poll's result stored"
+marker = "@POLL"
+find = "mov.u32 %r9, 1;"
+replace = "selp.u32 %r9, 1, 2, %p6;"
+expect = ["violation"]

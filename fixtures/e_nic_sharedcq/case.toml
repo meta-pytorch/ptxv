@@ -1,0 +1,140 @@
+name = "e_nic_sharedcq"
+description = """
+MISS 194 (S-SCOPE, complete overlap with the NIC's accesses): two loopback QPs whose CQs are one
+buffer at one offset; each QP's first CQE lands in slot 0 of the same 64 bytes, unordered with the
+other QP's. overlap_with_nic takes two CQE writes of one CQE as one location (the NIC writes the
+64 bytes at once); bytes 0-55 are outside the modeled CQE fields, so without that rule the pair
+is not modeled (source mutant cqe-rule-off: unmodeled)."""
+ptx = "kernel.ptx"
+entry = "ibgda2"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["dst0", "dst1"]
+
+[[nic_qps]]
+name = "qp0"
+device = 0
+peer = 0
+qpn = 0x42
+sq = "sq0"
+sq_wqes = 1
+cq = "cq"
+cq_cqes = 2
+db = "uar0"
+
+[[nic_qps]]
+name = "qp1"
+device = 0
+peer = 0
+qpn = 0x43
+sq = "sq1"
+sq_wqes = 1
+cq = "cq"
+cq_cqes = 2
+db = "uar1"
+
+[[nic_mrs]]
+key = 0x100
+buffer = "src"
+
+[[nic_mrs]]
+key = 0x200
+buffer = "dst0"
+
+[[nic_mrs]]
+key = 0x201
+buffer = "dst1"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sq0"
+dtype = "u8"
+shape = [64]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sq1"
+dtype = "u8"
+shape = [64]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "cq"
+dtype = "u8"
+shape = [192]
+init = "zeros"
+values = [[63, 241], [127, 241], [191, 241]]
+device = 0
+
+[[buffers]]
+name = "uar0"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "uar1"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dst0"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dst1"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "sq0"
+
+[[params]]
+kind = "ptr"
+buffer = "sq1"
+
+[[params]]
+kind = "ptr"
+buffer = "cq"
+
+[[params]]
+kind = "ptr"
+buffer = "uar0"
+
+[[params]]
+kind = "ptr"
+buffer = "uar1"
+
+[[params]]
+kind = "ptr"
+buffer = "dst0"
+
+[[params]]
+kind = "ptr"
+buffer = "dst1"
+
+[[variants]]
+id = "good"
+summary = "both CQs at offset 0 of one buffer: the two CQE writes (two QPs, unordered) share slot 0; with the CQE-to-CQE rule they are one location, both strong .sys, morally strong: clean (unmodeled without the rule). SASS: overlap not decided: clean"
+expect = ["clean"]

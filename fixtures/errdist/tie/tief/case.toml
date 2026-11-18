@@ -1,0 +1,54 @@
+name = "tie_tief"
+description = """MISS 66 follow-up (the fifth review's rE_tief): entry rE_tief of ../tie.ptx (see its header), one FFMA, f32 output."""
+ptx = "../tie.ptx"
+entry = "rE_tief"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "normal"
+seed = 3
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [64]
+init = "normal"
+seed = 4
+
+[[buffers]]
+name = "z"
+dtype = "f32"
+shape = [64]
+init = "normal"
+seed = 5
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

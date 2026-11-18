@@ -1,0 +1,44 @@
+name = "e_clock_addr"
+description = """
+E-CLOCK: a clock-derived store address (clock.rs `clock_effects`). Thread 0 stores out[0] or
+out[1] as bit 2 of %clock says; the model reads the clock as 0, so one run stores out[0] only,
+while GB300 stores either. An instruction whose control operand (here the address) derives from
+the clock is not modeled: `unmodeled` on both fronts (a `clock-effect:` finding), so the verdict
+is never clean with one output. SELP: a select on a clock comparison picks the word (also a
+control operand). CONST: the same store at a constant offset: clean."""
+ptx = "kernel.ptx"
+entry = "e_clock_addr"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "bit 2 of %clock picks the stored word"
+expect = ["unmodeled"]
+
+[[variants]]
+id = "SELP"
+summary = "a select on a clock comparison picks the stored word"
+marker = "@OFF"
+find = "and.b32 %r3, %r2, 4;"
+replace = "setp.gt.u32 %p2, %r2, 1000; selp.u32 %r3, 4, 0, %p2;"
+expect = ["unmodeled"]
+
+[[variants]]
+id = "CONST"
+summary = "a constant offset (no clock-derived address)"
+marker = "@OFF"
+find = "and.b32 %r3, %r2, 4;"
+replace = "mov.u32 %r3, 4;"
+expect = ["clean"]

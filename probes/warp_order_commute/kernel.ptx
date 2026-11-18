@@ -1,0 +1,39 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-WARP-ORDER (MISS 220): two lanes of one converged warp update one word with atomics at two
+// instructions, with no bar.warp.sync between them. Every instruction is predicated on the
+// lane id, so the warp never branches and stays converged from launch.
+// good: lane 0 adds 1 (@A0), lane 1 adds 1 (@B1); both old values are dead. The two adds are
+// one update, so the word goes 0, 1, 2 in either order: no thread, not even one reading
+// between the adds, can tell the orders apart. Variants: DIFF (lane 1 adds 2: a reader between
+// the adds sees 1 or 2), REG (both add %r3 = lane + 1: one register, different values), RED /
+// REDDIFF (red, no result), SCOPE (lane 0's add at .cta scope), LIVE (lane 1's old value
+// stored: 0 or 1), REL (lane 0 stores data; both lanes add with acq_rel; lane 1 then reads
+// data: it synchronizes with lane 0 only in the order where lane 0 adds first), RED_REL (REL
+// with red.release by both lanes and fence.acq_rel after lane 1's), FENCED (relaxed adds,
+// fence.acq_rel before them and after lane 1's).
+// out[0] = the word, out[1] = lane 1's old value (LIVE), out[2] = data, out[3] = what lane 1
+// read of data.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 pout)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 0;
+    setp.eq.u32 %p2, %r1, 1;
+    add.u32 %r3, %r1, 1;
+    mov.u32 %r2, 42;                                    // @DATA
+    @%p1 atom.global.add.u32 %r5, [%rd1], 1;           // @A0
+    @%p2 atom.global.add.u32 %r6, [%rd1], 1;           // @B1
+    // @READ
+    ret;
+}

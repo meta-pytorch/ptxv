@@ -1,0 +1,97 @@
+name = "probe_xu_queue_rev"
+description = """
+Probe (L-OPCLASS, MISS 96) for the reverse of probes/xu_queue: MUFU covered by a later F2I's
+scoreboard, the order ptxas's radix sort relies on (`MUFU.RCP R17` with no scoreboard, read
+after a wait on a later `F2I.FTZ.U32.TRUNC`'s). ptxas (sm_103a) issues `MUFU.RCP R4, R8`
+(wr=SB0) at 0xa0, `F2I.TRUNC.NTZ R0, R0` (no scoreboard) at 0xb0, `F2I.TRUNC.NTZ R5, R10`
+(wr=SB1) at 0xc0 and `FMUL R11, R11, R4` (waits on SB0) at 0xd0. The variants cut the stalls of
+0xa0 and 0xb0 to 1 and take MUFU's write scoreboard away:
+- COVER: the FMUL waits on SB1 only, the later F2I's. Correct on GB300 if and only if MUFU
+  completes in issue order before the later F2I.
+- NOWAIT: the FMUL waits on nothing (positive control: R4 read before MUFU wrote it).
+- OWN: the stalls cut, MUFU keeps SB0 and the FMUL waits on it (control).
+GB300 (2026-11-11, `ptxv hw --scrub`, 1000 runs each): good and OWN correct; COVER and NOWAIT
+wrong in every run with the same outputs; with ptxas's stalls kept, COVER_ST wrong in 269 and
+NOWAIT_ST in 273 of 1000 runs. A later F2I's scoreboard does not cover MUFU either:
+the radix sort's reads are SCOREBOARD findings at both levels (results.txt)."""
+ptx = "kernel.ptx"
+entry = "xu_queue_rev"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [256, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [256, 4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "COVER"
+summary = "MUFU.RCP with no write scoreboard, the FMUL waits on the later F2I's SB1 only"
+patch = [
+    { at = "@0xa0", wbar = 7, stall = 1, expect = "MUFU.RCP R4, R8" },
+    { at = "@0xb0", stall = 1, expect = "F2I.TRUNC.NTZ R0, R0" },
+    { at = "@0xd0", wait = 2, expect = "FMUL R11, R11, R4" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "MUFU.RCP with no write scoreboard, the FMUL waits on nothing (positive control)"
+patch = [
+    { at = "@0xa0", wbar = 7, stall = 1, expect = "MUFU.RCP R4, R8" },
+    { at = "@0xb0", stall = 1, expect = "F2I.TRUNC.NTZ R0, R0" },
+    { at = "@0xd0", wait = 0, expect = "FMUL R11, R11, R4" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN"
+summary = "the stalls cut as in COVER, MUFU.RCP keeps SB0 and the FMUL waits on it (control)"
+patch = [
+    { at = "@0xa0", stall = 1, expect = "MUFU.RCP R4, R8" },
+    { at = "@0xb0", stall = 1, expect = "F2I.TRUNC.NTZ R0, R0" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "COVER_ST"
+summary = "COVER with ptxas's stalls kept (st=8 on MUFU and the first F2I): MUFU.RCP with no write scoreboard, the FMUL waits on the later F2I's SB1 only"
+patch = [
+    { at = "@0xa0", wbar = 7, expect = "MUFU.RCP R4, R8" },
+    { at = "@0xd0", wait = 2, expect = "FMUL R11, R11, R4" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_ST"
+summary = "NOWAIT with ptxas's stalls kept (control for COVER_ST)"
+patch = [
+    { at = "@0xa0", wbar = 7, expect = "MUFU.RCP R4, R8" },
+    { at = "@0xd0", wait = 0, expect = "FMUL R11, R11, R4" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]

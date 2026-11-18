@@ -1,0 +1,70 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CPASYNC-MBAR, prior copies still in flight: PTX ISA 9.5 8.9.1.1, "The asynchronous mbarrier
+// arrive-on operation performed by a cp.async.mbarrier.arrive instruction is ordered with respect
+// to the memory operations performed by all prior cp.async operations initiated by the same
+// thread, but not to those of any other instruction issued by the thread."
+// Thread 0 copies in[0..15] into slot A with cp.async and arrives on mbA with
+// cp.async.mbarrier.arrive.noinc, copies in[16..31] into slot B and arrives on mbB (both count
+// 1), then waits on mbA. Thread 32 waits on mbB only (acquire) and reads slot A. The arrive-on on
+// mbB is ordered after the copy into A, a prior cp.async of thread 0, which is still in flight
+// when the second arrive is issued and may complete after it.
+//   good:   clean, in either completion order of the two arrive operations.
+//   LATER:  the copy into B is retired by cp.async.wait_group instead of an arrive, and thread 32
+//           waits on mbA and reads slot B: mbA's arrive-on is not ordered after a copy issued
+//           after it, whether or not that copy has landed when the arrive completes: a race.
+//   WAITED: the copy into A is retired by cp.async.wait_group before the copy into B, and
+//           thread 0 waits on mbB: clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cpasync_arrive_inflight(.param .u64 out_p, .param .u64 in_p)
+{
+    .shared .align 16 .b8 slota[16];
+    .shared .align 16 .b8 slotb[16];
+    .shared .align 8 .b64 mba;
+    .shared .align 8 .b64 mbb;
+    .reg .b32 %r<20>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, slota;
+    mov.u32 %r3, slotb;
+    mov.u32 %r5, mba;
+    mov.u32 %r6, mbb;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    mbarrier.init.shared::cta.b64 [%r6], 1;
+INIT_DONE:
+    bar.sync 0;
+    setp.eq.u32 %p0, %r1, 0;
+    setp.eq.u32 %p1, %r1, 32;
+    @%p1 bra CONS;
+    @!%p0 bra DONE;
+    cp.async.cg.shared.global [%r2], [%rd2], 16;
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r5];     // @ARRA
+    add.u64 %rd3, %rd2, 16;
+    cp.async.cg.shared.global [%r3], [%rd3], 16;
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r6];     // @ARRB
+WA:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r5], 0;     // @WAITA
+    @!%p4 bra WA;
+    bra DONE;
+CONS:
+WB:
+    mbarrier.try_wait.parity.shared::cta.b64 %p5, [%r6], 0;     // @WAITB
+    @!%p5 bra WB;
+    ld.shared.u32 %r12, [%r2];     // @READ
+    st.global.u32 [%rd1], %r12;
+DONE:
+    ret;
+}

@@ -1,0 +1,124 @@
+name = "probe_sttm_busy"
+description = """
+Probe (L-OPREAD, E-HW-SB-QUEUE): an STTM's register read behind a busy TMEM store pipe, then
+a TMEM load into the same registers with no wait. ptxas (sm_103a, CUDA 13.0) issues eight
+`STTM.x32` (0x910..0x980), `STTM.x16 tmem[UR14], R68` (column 0, no read scoreboard) at 0x990
+and renames the load (`LDTM.x16 R52, tmem[UR15+0x10]`, column 16, at 0x9a0); the variants
+patch the load into R68 and the stores of its registers to R68..R83 (Q), or put an ALU write
+of R68 in its slot with no wait (CTL, positive control, same layout) or after a wait on the
+STTM's read scoreboard SB2 (REF). _S<n>: the STTM's stall. Only stalls of 2 or more count;
+CTL / REF compute something else than good: run with PTXV_HW_EXPECT=variant."""
+ptx = "kernel.ptx"
+entry = "sttm_busy"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128, 32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2654435761
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "Q_S1"
+patch = [
+    { at = "@0x0990", stall = 1, rbar = 7, expect = "STTM.x16 tmem[UR14], R68" },
+    { at = "@0x09a0", bits = [[0, 64, 0x0000100f004479ee], [64, 41, 0x8240000]], stall = 1, wbar = 0, rbar = 7, wait = 0, expect = "LDTM.x16 R68, tmem[UR15+0x10]" },
+    { at = "@0x0af0", bits = [[0, 64, 0x0000404404007986], [64, 41, 0xc101d0e]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR14][R4.64+0x40], R68" },
+    { at = "@0x0b00", bits = [[0, 64, 0x0000504804007986], [64, 41, 0xc101d10]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR16][R4.64+0x50], R72" },
+    { at = "@0x0b10", bits = [[0, 64, 0x0000604c04007986], [64, 41, 0xc101d12]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR18][R4.64+0x60], R76" },
+    { at = "@0x0b20", bits = [[0, 64, 0x0000705004007986], [64, 41, 0xc101d14]], stall = 1, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR20][R4.64+0x70], R80" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "CTL_S1"
+patch = [
+    { at = "@0x0990", stall = 1, rbar = 7, expect = "STTM.x16 tmem[UR14], R68" },
+    { at = "@0x09a0", bits = [[0, 64, 0x5a5a5a5a44447812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LOP3.LUT R68, R68, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+    { at = "@0x0af0", bits = [[0, 64, 0x0000404404007986], [64, 41, 0xc101d0e]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR14][R4.64+0x40], R68" },
+    { at = "@0x0b00", bits = [[0, 64, 0x0000504804007986], [64, 41, 0xc101d10]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR16][R4.64+0x50], R72" },
+    { at = "@0x0b10", bits = [[0, 64, 0x0000604c04007986], [64, 41, 0xc101d12]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR18][R4.64+0x60], R76" },
+    { at = "@0x0b20", bits = [[0, 64, 0x0000705004007986], [64, 41, 0xc101d14]], stall = 1, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR20][R4.64+0x70], R80" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "Q_S2"
+patch = [
+    { at = "@0x0990", stall = 2, rbar = 7, expect = "STTM.x16 tmem[UR14], R68" },
+    { at = "@0x09a0", bits = [[0, 64, 0x0000100f004479ee], [64, 41, 0x8240000]], stall = 1, wbar = 0, rbar = 7, wait = 0, expect = "LDTM.x16 R68, tmem[UR15+0x10]" },
+    { at = "@0x0af0", bits = [[0, 64, 0x0000404404007986], [64, 41, 0xc101d0e]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR14][R4.64+0x40], R68" },
+    { at = "@0x0b00", bits = [[0, 64, 0x0000504804007986], [64, 41, 0xc101d10]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR16][R4.64+0x50], R72" },
+    { at = "@0x0b10", bits = [[0, 64, 0x0000604c04007986], [64, 41, 0xc101d12]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR18][R4.64+0x60], R76" },
+    { at = "@0x0b20", bits = [[0, 64, 0x0000705004007986], [64, 41, 0xc101d14]], stall = 1, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR20][R4.64+0x70], R80" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "CTL_S2"
+patch = [
+    { at = "@0x0990", stall = 2, rbar = 7, expect = "STTM.x16 tmem[UR14], R68" },
+    { at = "@0x09a0", bits = [[0, 64, 0x5a5a5a5a44447812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LOP3.LUT R68, R68, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+    { at = "@0x0af0", bits = [[0, 64, 0x0000404404007986], [64, 41, 0xc101d0e]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR14][R4.64+0x40], R68" },
+    { at = "@0x0b00", bits = [[0, 64, 0x0000504804007986], [64, 41, 0xc101d10]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR16][R4.64+0x50], R72" },
+    { at = "@0x0b10", bits = [[0, 64, 0x0000604c04007986], [64, 41, 0xc101d12]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR18][R4.64+0x60], R76" },
+    { at = "@0x0b20", bits = [[0, 64, 0x0000705004007986], [64, 41, 0xc101d14]], stall = 1, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR20][R4.64+0x70], R80" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "Q_S4"
+patch = [
+    { at = "@0x0990", stall = 4, rbar = 7, expect = "STTM.x16 tmem[UR14], R68" },
+    { at = "@0x09a0", bits = [[0, 64, 0x0000100f004479ee], [64, 41, 0x8240000]], stall = 1, wbar = 0, rbar = 7, wait = 0, expect = "LDTM.x16 R68, tmem[UR15+0x10]" },
+    { at = "@0x0af0", bits = [[0, 64, 0x0000404404007986], [64, 41, 0xc101d0e]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR14][R4.64+0x40], R68" },
+    { at = "@0x0b00", bits = [[0, 64, 0x0000504804007986], [64, 41, 0xc101d10]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR16][R4.64+0x50], R72" },
+    { at = "@0x0b10", bits = [[0, 64, 0x0000604c04007986], [64, 41, 0xc101d12]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR18][R4.64+0x60], R76" },
+    { at = "@0x0b20", bits = [[0, 64, 0x0000705004007986], [64, 41, 0xc101d14]], stall = 1, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR20][R4.64+0x70], R80" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "CTL_S4"
+patch = [
+    { at = "@0x0990", stall = 4, rbar = 7, expect = "STTM.x16 tmem[UR14], R68" },
+    { at = "@0x09a0", bits = [[0, 64, 0x5a5a5a5a44447812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LOP3.LUT R68, R68, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+    { at = "@0x0af0", bits = [[0, 64, 0x0000404404007986], [64, 41, 0xc101d0e]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR14][R4.64+0x40], R68" },
+    { at = "@0x0b00", bits = [[0, 64, 0x0000504804007986], [64, 41, 0xc101d10]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR16][R4.64+0x50], R72" },
+    { at = "@0x0b10", bits = [[0, 64, 0x0000604c04007986], [64, 41, 0xc101d12]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR18][R4.64+0x60], R76" },
+    { at = "@0x0b20", bits = [[0, 64, 0x0000705004007986], [64, 41, 0xc101d14]], stall = 1, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR20][R4.64+0x70], R80" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "REF_S2"
+patch = [
+    { at = "@0x0990", stall = 2, rbar = 2, expect = "STTM.x16 tmem[UR14], R68" },
+    { at = "@0x09a0", bits = [[0, 64, 0x5a5a5a5a44447812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 4, expect = "LOP3.LUT R68, R68, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+    { at = "@0x0af0", bits = [[0, 64, 0x0000404404007986], [64, 41, 0xc101d0e]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR14][R4.64+0x40], R68" },
+    { at = "@0x0b00", bits = [[0, 64, 0x0000504804007986], [64, 41, 0xc101d10]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR16][R4.64+0x50], R72" },
+    { at = "@0x0b10", bits = [[0, 64, 0x0000604c04007986], [64, 41, 0xc101d12]], stall = 4, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR18][R4.64+0x60], R76" },
+    { at = "@0x0b20", bits = [[0, 64, 0x0000705004007986], [64, 41, 0xc101d14]], stall = 1, wbar = 7, rbar = 0, wait = 0, expect = "STG.E.128 desc[UR20][R4.64+0x70], R80" },
+]
+expect = ["clean"]

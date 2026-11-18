@@ -1,0 +1,25 @@
+# GB300 (one GPU, GPU 0), 2026-11-12, rev d2a4ee90 binary: PTXV_HW_EXPECT=variant ptxv hw --runs 1000 --scrub
+# (the patched image checked by --image-fnv). Grid 1 x 256. The repro of the MISS 181 review (RVS3 H2 / H3).
+# Summary (wrong runs of 1000):
+#   S256_R4..R11 (a MOV overwrites one of STG.E.ENL2.256's eight data registers right after it, no wait):
+#     1000 each (R5, R6, R7, R9, R10, R11: statically clean before the lift widths, MISS 181)
+#   S256_REF (the store's read scoreboard waited on): 0. good: 0.
+#   RED_R4..R7 (REDG.E.ADD.F32x4's four data registers): 0 each; RED_REF 0. GB300 does not tell the
+#     late read in this layout: REDG's data width is ISA evidence only (a null at this shape).
+# Static classes (fixtures.rs miss181_lift_width_repros): every S256 / RED overwrite a violation, REF / good clean.
+# Raw rows:
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw S256_R4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(771, 32), (228, 64), (1, 64)] first failing runs: [0, 1, 2, 3, 4
+hw S256_R5 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(745, 32), (255, 64)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7
+hw S256_R6 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(633, 32), (356, 64), (11, 64)] first failing runs: [0, 1, 2, 3, 
+hw S256_R7 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinct, first: [(757, 96), (145, 96), (53, 64), (27, 96)] firs
+hw S256_R8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1
+hw S256_R9 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1
+hw S256_R10 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
+hw S256_R11 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
+hw S256_REF [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw RED_R4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw RED_R5 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw RED_R6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw RED_R7 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw RED_REF [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]

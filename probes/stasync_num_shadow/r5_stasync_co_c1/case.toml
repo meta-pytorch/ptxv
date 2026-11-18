@@ -1,0 +1,49 @@
+name = "r5_stasync_co_c1"
+description = """
+(explicit 1-CTA cluster launch) num probe (MISS 205, a coincident st.async stale node): x[t] = rn(t + 0.1f) (input), S[t] = x[t]
+by st.shared, then st.async of s = add.rn(t, 0.1f), the same bits, into S[t]; out[t] = S[t]
+(exact t + 0.1f)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "r5_stasync_co_c1"
+grid = [1, 1, 1]
+cluster = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

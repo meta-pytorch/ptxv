@@ -1,0 +1,54 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 139 in the left-out share (the fifth review's D3, rE_lmix): outputs left out of P(differ)
+// together on rare inputs and in pairs on most. Thread g of 4096: s = (x0 + xg[g]) + xg[g ^ 1],
+// d = ex2(s) - ex2(s - 1) (2^(s-1) in the real arithmetic), y = RN_bf16(f32(RN_f16(d))). For
+// s >= 1024 the exact evaluation leaves f64's range: no determined exact value, left out (the
+// kernel's Inf - Inf = NaN differs from RN_bf16(2^(s-1)) = +Inf). x0 = 1100 (w.p. 0.002 per
+// input) leaves all 4096 outputs out; xg[g] = 1100 (w.p. 1.2e-4 per element) leaves g and g ^ 1
+// out. The share is 2.2395e-3 (computed; 2.2407e-3 on 2000 GB300 inputs), and P(differ) over
+// every output 0.06490. The share's bound q took the batch-means interval at 20 or more inputs
+// with a left-out output: about 2.9e-4 where no input drew x0, and the widened Tier 3 interval
+// excluded 0.06490 in 21 of 35 runs (the other 14 refused).
+.visible .entry rE_lmix(.param .u64 px0, .param .u64 pxg, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b16 %h<4>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px0];
+    ld.param.u64 %rd2, [pxg];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %ntid.x;
+    mad.lo.u32 %r4, %r2, %r3, %r1;
+    xor.b32 %r5, %r4, 1;
+    ld.global.f32 %f1, [%rd1];
+    mul.wide.u32 %rd4, %r4, 4;
+    add.s64 %rd5, %rd2, %rd4;
+    ld.global.f32 %f2, [%rd5];
+    mul.wide.u32 %rd6, %r5, 4;
+    add.s64 %rd7, %rd2, %rd6;
+    ld.global.f32 %f3, [%rd7];
+    add.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    ex2.approx.ftz.f32 %f6, %f5;
+    add.rn.f32 %f7, %f5, 0fBF800000;
+    ex2.approx.ftz.f32 %f8, %f7;
+    sub.rn.f32 %f9, %f6, %f8;
+    cvt.rn.f16.f32 %h1, %f9;
+    cvt.f32.f16 %f10, %h1;
+    cvt.rn.bf16.f32 %h2, %f10;
+    mul.wide.u32 %rd8, %r4, 2;
+    add.s64 %rd9, %rd3, %rd8;
+    st.global.b16 [%rd9], %h2;
+    ret;
+}

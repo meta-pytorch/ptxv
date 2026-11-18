@@ -1,0 +1,46 @@
+name = "e_mbar_double_sts_init"
+description = "RMK4 A7: two warps' lane 0 initialize the same mbarrier, unordered"
+ptx = "kernel.ptx"
+entry = "e_mbar_double_sts_init"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "t0 and t32 per-thread-address init of a (SASS: two STS.64 of the same word), unordered"
+expect = ["race"]
+
+[[variants]]
+id = "UNIF"
+summary = "control: uniform inits (SYNCS.EXCH.64) by t0 and t32, unordered"
+marker = "@INIT"
+find = "[%r22]"
+replace = "[%r2]"
+expect = ["race"]
+
+[[variants]]
+id = "PREINV"
+summary = "t0 inits a uniformly, bar.sync, invals, bar.sync; then the two per-thread inits, unordered"
+marker = "@PRE"
+find = "// @PRE"
+replace = "@%p2 bra NOPRE0; mbarrier.init.shared::cta.b64 [%r2], 1; NOPRE0: bar.sync 0; @%p2 bra NOPRE1; mbarrier.inval.shared::cta.b64 [%r2]; NOPRE1: bar.sync 0;"
+expect = ["race"]
+
+[[variants]]
+id = "ONE"
+summary = "control: only warp 0 inits (t32 skips): clean"
+marker = "@INIT"
+find = "mbarrier.init.shared::cta.b64 [%r22], 1;"
+replace = "@!%p2 mbarrier.init.shared::cta.b64 [%r22], 1;"
+expect = ["clean"]

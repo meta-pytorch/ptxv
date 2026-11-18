@@ -44,3 +44,5 @@ id = "rd_sb"
 summary = "the first F2F.F64.F32 with a read scoreboard (SB2) that is never waited on"
 patch = [{ at = "@0x140", rbar = 2, expect = "F2F.F64.F32 R24, R6" }]
 expect = ["clean"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract"]

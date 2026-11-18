@@ -1,0 +1,34 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_num_fold_ptxref_f32(.param .u64 px, .param .u64 pout, .param .u64 pjunk)
+{
+    .reg .b32 %r<8>;
+    .reg .f32 %f<8>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pout];
+    ld.param.u64 %rd6, [pjunk];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd6, %rd6;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    add.s64 %rd7, %rd6, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mul.rn.f32 %f2, 0f3DCCCCCD, 0f40400000;
+    add.rn.f32 %f3, %f1, %f2;
+    st.global.f32 [%rd5], %f3;
+    st.global.b32 [%rd7], 7;
+    atom.global.dec.u32 %r1, [%rd7], 5; // @DEC
+    st.global.b32 [%rd7+128], %r1;
+    ret;
+}

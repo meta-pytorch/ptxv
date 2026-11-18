@@ -1,0 +1,22 @@
+name = "probe_local_peek_arrival_k1_p1_d"
+description = "MISS 278 repro (RDP2 finding G): peek distance k=1 parity=1 data=1"
+ptx = "kernel.ptx"
+entry = "local_peek_arrival"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic", "race"]
+expect_sass = ["nondeterministic"]

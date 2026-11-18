@@ -1,0 +1,21 @@
+# run.sh, 2026-11-13, before the fix (agentDP with the MISS 273 under key, no cycle check): exit 1
+mbar_zero     upto0 ptx  stateful expected [violation]            observed [violation]            ok
+mbar_zero     upto0 ptx  dpor     expected [violation]            observed none                   MISMATCH
+mbar_zero     upto0 sass stateful expected [violation]            observed [violation]            ok
+mbar_zero     upto0 sass dpor     expected [violation]            observed none                   MISMATCH
+mbar_reserved upto0 ptx  stateful expected [violation]            observed [violation]            ok
+mbar_reserved upto0 ptx  dpor     expected [violation]            observed none                   MISMATCH
+mbar_reserved upto0 sass stateful expected [clean]                observed [clean]                ok
+mbar_reserved upto0 sass dpor     expected [clean]                observed [clean]                ok
+rc=1
+
+# After the fix (DPOR stops at a state on its stack): exit 0
+mbar_zero     upto0 ptx  stateful expected [violation]            observed [violation]            ok
+mbar_zero     upto0 ptx  dpor     expected [violation]            observed [violation]            ok
+mbar_zero     upto0 sass stateful expected [violation]            observed [violation]            ok
+mbar_zero     upto0 sass dpor     expected [violation]            observed [violation]            ok
+mbar_reserved upto0 ptx  stateful expected [violation]            observed [violation]            ok
+mbar_reserved upto0 ptx  dpor     expected [violation]            observed [violation]            ok
+mbar_reserved upto0 sass stateful expected [clean]                observed [clean]                ok
+mbar_reserved upto0 sass dpor     expected [clean]                observed [clean]                ok
+rc=0

@@ -1,0 +1,27 @@
+name = "e_elect_tid_brx"
+description = """
+E-ELECT (MISS 72, review): e_elect_tid_ctl with the lane-varying branch as an unguarded brx.idx.
+The PTX contract allows a middle-lane leader, which stores out[0] racing with t32.
+Now (2026-11-11): an indexed branch on a lane-varying index starts a lane-varying region, so
+the shift written in its target is lane-varying and every leader is explored: race."""
+ptx = "kernel.ptx"
+entry = "e_elect_tid_brx"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for middle-lane leaders"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]

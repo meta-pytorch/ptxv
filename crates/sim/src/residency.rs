@@ -734,15 +734,24 @@ pub fn analyze(m0: &Machine, max_states: usize, cap: usize) -> Report {
         // threads, its cluster (co-scheduled), its async operations, its SM's tensor memory or
         // an earlier grid that launched before it (E-PDL). A launch unit that becomes resident
         // therefore runs to completion as it does with every CTA resident.
-        let (_, _, ok) = crate::explore::run_once(m0.clone());
-        if !ok {
-            notes.push(
-                "the deterministic run does not terminate even with every CTA resident".into(),
-            );
-            for d in devs.iter_mut() {
-                d.deadlocks
-                    .insert(d.ctas, "deadlock with every CTA resident".into());
+        let (_, _, end) = crate::explore::run_once_ended(m0.clone(), &mut |_| false);
+        let ok = end == crate::explore::RunEnd::Terminal;
+        match end {
+            crate::explore::RunEnd::Deadlock => {
+                notes.push(
+                    "the deterministic run does not terminate even with every CTA resident".into(),
+                );
+                for d in devs.iter_mut() {
+                    d.deadlocks
+                        .insert(d.ctas, "deadlock with every CTA resident".into());
+                }
             }
+            // A run that stopped (a step that repeats without progress, RMK277 F1c) is no
+            // deadlock: it decides nothing, so the residency is not proven.
+            crate::explore::RunEnd::Stuck(why) => notes.push(format!(
+                "the deterministic run stopped ({why}): residency not decided"
+            )),
+            _ => {}
         }
         proven = ok;
         method =

@@ -1,0 +1,86 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-LOCKSTEP / S-TCGEN05 (MISS 163): warp 0 loads TMEM column 0 of its lanes (tcgen05.ld;
+// wait::ld), uses the value, tcgen05.fence::before_thread_sync, bar.warp.sync, and its lane 0
+// alone arrives on an mbarrier; warp 4 (the same TMEM lanes) waits on it,
+// tcgen05.fence::after_thread_sync, and overwrites column 0 (tcgen05.st).
+//   good: PTX: ordered (wait::ld, bar.warp.sync, the arrive). SASS: ptxas drops
+//         bar.warp.sync; the other lanes' LDTM reads reach lane 0's arrive only through the
+//         lockstep join (E-LOCKSTEP) after the instruction whose scoreboard wait completes
+//         them: clean (it raced before that join).
+//   WAITLATE: wait::ld (and the use) after the arrive: the reads are not complete at the
+//         arrive: race on both fronts (negative control of the join).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_ldtm_join(.param .u64 out_p)
+.maxntid 160, 1, 1
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .shared .align 8 .b64 mbar;
+    .shared .align 4 .b32 slot;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r0, %tid.x;
+    shr.u32 %r1, %r0, 5;
+    and.b32 %r2, %r0, 31;
+    mov.u32 %r3, slot;
+    mov.u32 %r4, mbar;
+    setp.ne.u32 %p0, %r1, 0;
+    @%p0 bra SKIP_ALLOC;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    setp.ne.u32 %p1, %r2, 0;
+    @%p1 bra SKIP_ALLOC;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    fence.mbarrier_init.release.cluster;
+SKIP_ALLOC:
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    ld.shared.u32 %r5, [%r3];
+    setp.eq.u32 %p2, %r1, 0;
+    setp.eq.u32 %p3, %r1, 4;
+    @!%p2 bra NOT_W0;
+    add.u32 %r6, %r0, 100;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r5], {%r6};
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%r7}, [%r5];
+    tcgen05.wait::ld.sync.aligned;       // @EARLY
+    mul.lo.u32 %r8, %r7, 3;              // @EARLY
+    tcgen05.fence::before_thread_sync;
+    bar.warp.sync -1;
+    setp.ne.u32 %p4, %r2, 0;
+    @%p4 bra W0_END;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r4];
+W0_END:
+    // @LATE
+    bra DONE;
+NOT_W0:
+    @!%p3 bra DONE;
+    mov.u32 %r8, 0;
+WAIT:
+    mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %p5, [%r4], 0;
+    @!%p5 bra WAIT;
+    tcgen05.fence::after_thread_sync;
+    add.u32 %r9, %r0, 200;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r5], {%r9};
+    tcgen05.wait::st.sync.aligned;
+DONE:
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    @!%p2 bra FIN;
+    mul.wide.u32 %rd2, %r0, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r8;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r5, 32;
+FIN:
+    ret;
+}

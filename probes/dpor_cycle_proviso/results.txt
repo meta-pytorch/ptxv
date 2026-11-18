@@ -1,0 +1,17 @@
+# run.sh, 2026-11-13, on agentDP 83f7344e (the stack proviso, MISS 274): exit 0
+good  ptx  unreduced expected [race,violation]           observed [race,violation]           ok
+good  ptx  stateful  expected [race,violation]           observed [race,violation]           ok
+good  ptx  dpor      expected [race,violation]           observed [race,violation]           ok
+good  sass unreduced expected [clean]                    observed [clean]                    ok
+good  sass stateful  expected [clean]                    observed [clean]                    ok
+good  sass dpor      expected [clean]                    observed [clean]                    ok
+rc=0
+
+# With the proviso left out (no process added on the cycle; srcmut dpor-no-proviso): exit 1
+good  ptx  unreduced expected [race,violation]           observed [race,violation]           ok
+good  ptx  stateful  expected [race,violation]           observed [race,violation]           ok
+good  ptx  dpor      expected [race,violation]           observed [violation]                MISMATCH
+good  sass unreduced expected [clean]                    observed [clean]                    ok
+good  sass stateful  expected [clean]                    observed [clean]                    ok
+good  sass dpor      expected [clean]                    observed [clean]                    ok
+rc=1

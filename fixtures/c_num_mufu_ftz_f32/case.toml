@@ -1,0 +1,74 @@
+name = "c_num_mufu_ftz_f32"
+description = """
+MISS 207: oute[t] = ex2.approx.ftz.f32(x[t]) and outs[t] = sqrt.approx.ftz.f32(x[t]) for
+probes/mufu_ftz_bound's 32 operands (24 subnormals, 128 - 2^-17, 128 - 2^-16, 127.99, 127.5,
+2^-126, 2^-127, 2^-128, 1), outr[t] = rcp.approx.ftz.f32(y[t]) for 32 normal operands
+(128 - 2^-17 .. 127.5, 2^-126, 1, edge and random values). Every result is finite; a subnormal
+operand is flushed to 0 (sqrt: 0 against sqrt(x) up to 2^-63). expected/: GB300."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "num_mufu_ftz"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["oute", "outr", "outs"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/y.bin"
+
+[[buffers]]
+name = "oute"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/oute.bin"
+
+[[buffers]]
+name = "outr"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/outr.bin"
+
+[[buffers]]
+name = "outs"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/outs.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[params]]
+kind = "ptr"
+buffer = "oute"
+
+[[params]]
+kind = "ptr"
+buffer = "outr"
+
+[[params]]
+kind = "ptr"
+buffer = "outs"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

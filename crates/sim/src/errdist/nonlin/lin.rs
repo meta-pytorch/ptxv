@@ -500,7 +500,9 @@ fn residues(q: f64, lat: i32) -> Option<u64> {
     if lat >= eq {
         return None;
     }
-    let d = (eq - lat) as u32;
+    // In i64: an unidentified slice's lattice, i32::MIN, overflowed i32 here (a panic in a
+    // debug build; release wrapped to the same count).
+    let d = eq as i64 - lat as i64;
     Some(if d > 12 { 0 } else { 1u64 << d })
 }
 
@@ -778,9 +780,9 @@ impl<'a> KModel<'a> {
                             s.podd[pick],
                         )
                     }
-                    NlOp::Max { a, b, min } => {
+                    NlOp::Max { a, b, min, kind } => {
                         let (x, y) = (*a as usize, *b as usize);
-                        let pick = if (s.v[x] >= s.v[y]) != *min || s.v[y].is_nan() {
+                        let pick = if kind.picks_a(*min, s.v[x], s.v[y]) {
                             x
                         } else {
                             y
@@ -1025,9 +1027,13 @@ impl<'a> KModel<'a> {
                 }) if f.func == Func::Max => {
                     i = args[f.maximum_arg(s.v[args[0] as usize], s.v[args[1] as usize])];
                 }
-                Op::Nl(NlOp::Max { a, b, min }) => {
+                Op::Nl(NlOp::Max { a, b, min, kind }) => {
                     let (x, y) = (*a as usize, *b as usize);
-                    i = if (s.v[x] >= s.v[y]) != *min { *a } else { *b };
+                    i = if kind.picks_a(*min, s.v[x], s.v[y]) {
+                        *a
+                    } else {
+                        *b
+                    };
                 }
                 // A selection passes on the child its predicate picks at the nominal values, as
                 // in the state and the adjoints. (Until 2026-11-10 the output's grid position was
@@ -1163,9 +1169,16 @@ impl<'a> KModel<'a> {
                         push(b, s.v[a as usize] * k);
                     }
                 }
-                Op::Nl(NlOp::Max { a, b, min }) => {
+                Op::Nl(NlOp::Max { a, b, min, kind }) => {
                     let (x, y) = (*a as usize, *b as usize);
-                    push(if (s.v[x] >= s.v[y]) != *min { *a } else { *b }, 1.0);
+                    push(
+                        if kind.picks_a(*min, s.v[x], s.v[y]) {
+                            *a
+                        } else {
+                            *b
+                        },
+                        1.0,
+                    );
                 }
                 Op::Nl(NlOp::Mufu {
                     arg,

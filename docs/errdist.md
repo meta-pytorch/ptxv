@@ -150,9 +150,10 @@ Guards (never report from bad data):
   Other roundings are no decisions: they depart from the fit by their error. An output whose
   exact value reads a slice on another pattern is unknown: Tier 3 leaves it out, notes how
   many inputs had one (the `out_of_domain` cause `exact value unknown: ...`), and refuses
-  when the 95% bound of their share exceeds 10% of P(differ). Otherwise every P(differ)
-  interval widens by that bound, also at 0 inputs (Tier 3's sample saw none of a share up to
-  the bound; until 2026-11-11 only the analytic tiers widened there, fixtures/errdist/k0).
+  when the one-sided bound of their share (`mc::level_share`) exceeds 10% of P(differ).
+  Otherwise every P(differ) interval widens by that bound, also at 0 inputs (Tier 3's sample
+  saw none of a share up to the bound; until 2026-11-11 only the analytic tiers widened
+  there, fixtures/errdist/k0).
   Until 2026-11-11 a value clamp was no decision: `FMUL.SAT` fitted as the unclamped x^2 / 32
   gave 0.331 where the kernel's is 0.0312 (fixtures/errdist/clamp); until MISS 99 an integer
   step the probes never crossed was none either: trunc(x / 1024) fitted as 0 gave 0.300 where
@@ -164,15 +165,58 @@ Guards (never report from bad data):
   0.29 (MISS 57, fixtures/errdist/miss57). A pair's P(differ) compares C with R and needs no
   exact value: Tier 3 and the elementwise law count those outputs (the law only since
   2026-11-11), and only the moments leave them out.
-- **NaN / Inf outputs are out of domain**, counted and reported: the `out_of_domain` cause
-  `non-finite output (NaN / Inf)` (fraction of inputs) and a note with the fraction of
-  outputs. A Tier 3 that compared no output (every output out of the domain, untracked or
-  without a nonzero term) has the interval [0, 1] at any input count: it is refused and
-  cross-checks no analytic estimate, so without a Tier 0 errdist prints the report without a
-  headline and refuses (MISS 64; until 2026-11-11 it headlined P(differ) 0 over [0, 1], e.g.
-  the f16 exp kernel at x ~ N(1000, 1), fixtures/errdist/exp_overflow_all.json). A validation
-  run whose outputs have NaN / Inf that Tier 3 does not, or with nothing to compare, does not
-  agree.
+- **NaN / Inf outputs are compared (N-ERRDIST-NONFINITE, MISS 66).** An output whose value is
+  NaN / Inf counts in P(differ) wherever its reference is known: a single kernel's against RN
+  of its finite exact value in the output format (equal only as the same infinity: +Inf where
+  RN of the exact value is +Inf too, an overflow both make; at the overflow tie, max plus half
+  its spacing, the exact value's low part decides, and below the tie RN is max), a pair's C
+  against R (equal only as the same infinity). It stays outside the error moments and the
+  PMF's lattice; one that differs from its reference is over the worst-case bound, and an
+  equal infinity (a correct overflow, outside the bound's premise) is not. Until MISS 66's
+  follow-up the tie gave the infinity whatever the low part (fixtures/errdist/tie: Tier 3 0
+  [0, 1.22e-2] where 1/6 of the bf16 and f16 outputs differ, GB300 measured, and a false alarm
+  of 0.0835 for one FFMA), and every correct overflow was flagged over the bound. Tiers 1 and 2
+  other than the elementwise law are refused
+  when Tier 3 has such an output that differs (their laws model rounding errors), and so is a
+  validation of them whose observed run has one; the elementwise law compares them itself. An
+  output whose exact value is not determined (non-finite in the exact arithmetic) is left out
+  of a single kernel's P(differ) (`out_of_domain` cause `non-finite exact value (NaN / Inf in the
+  exact arithmetic)`), and so is a pair's output where both kernels give NaN (the DAG does not
+  model NaN payloads; cause `NaN in both kernels`); a pair compares C with R where only the
+  exact value is not determined. `p_nonfinite`, P(output NaN / Inf), is reported apart from the
+  headline. Until 2026-11-11 every NaN / Inf output was out of the domain and left out: an
+  intermediate overflow at 0.5% of the elements (fixtures/errdist/nonfinite/ovf) headlined
+  P(differ) 0. A Tier 3 that compared no finite output (every output left out of P(differ),
+  NaN / Inf and equal to its reference, untracked or without a nonzero term) has said nothing
+  about rounding: it is refused and cross-checks no analytic estimate, so without a Tier 0 errdist
+  prints the report without a headline and refuses (MISS 64; the refusal names the slices
+  without an exact value). One whose NaN / Inf outputs differ from their reference stands
+  (fixtures/errdist/ident/ex2ovf on ex2ovf_all.json: every output overflows where its exact
+  value is 534 to 1066, Tier 3 1.0; refused until MISS 64's follow-up). Until 2026-11-11 it
+  headlined P(differ) 0 over [0, 1], e.g.
+  the f16 exp kernel at x ~ N(1000, 1) (fixtures/errdist/exp_overflow_all.json), and a case
+  whose outputs all overflow to +Inf, as RN of their exact values does, would have reported 0.
+  A validation run whose outputs are left out where Tier 3's are not, whose share left out lies
+  above Tier 3's bound q on it, or with no finite output to compare and no NaN / Inf output
+  that differs (equal infinities alone; until MISS 64's follow-up any run without a finite
+  output), does not agree.
+- **Outputs left out widen P(differ)'s interval (MISS 66, MISS 88).** An output without a
+  determined outcome (no determined exact value; an instruction slice without an identified
+  real function above it, cause `no exact value: a slice without an identified real function`,
+  or whose alternatives disagree there, cause `no exact value: forms that fit a slice's probes
+  equally well disagree there`, MISS 147; a pair's NaN in both kernels) is left out of
+  P(differ). Their share moves P(differ) over every output by at most itself: its one-sided
+  bound q, inputs as the unit (`mc::left_share`, with the input-level bound at any count since
+  MISS 139: fixtures/errdist/lmix), widens every estimate's interval, and an estimate, Tier 3
+  included, stands only while q is within 10% of its P. Tier 3's own interval and the bounds
+  that widen it share the 5% (`mc::level_share`: 97.5% each with one bound), so the widened
+  interval holds at 95% by the union bound (until MISS 66's follow-up about 92.5%). The
+  elementwise law measures its own share, and its exact form is
+  refused with any. An unidentified slice's exact value is unknown above it: a maximum or a
+  selection over it has no exact value either (until 2026-11-11 its NaN let a maximum pass on
+  the other child as the exact value, fixtures/errdist/nonfinite/unident_max). Until
+  2026-11-11 the outputs left out moved neither the point nor the interval: P(differ) was
+  conditional on the rest, and an unidentified slice's outputs were counted as NaN / Inf.
 
 Examples (the runs of §7):
 
@@ -224,8 +268,10 @@ The compile stage first checks each kernel's execution (race-free, one output pe
 `$PTXV_CACHE/check/<key>.json` (crates/cli/src/vcache.rs), and the compile stage reads it
 instead of exploring again; it stores its own check the same way. The key hashes every file
 under the case directory (inputs in `data/` included), the variant, the front-end, the ptxv
-binary (path, size, modification time) and the `PTXV_*` environment except thread counts,
-output and cache settings. A complete stored verdict serves any state cap; an incomplete one
+binary (path, size, modification time), the CUDA tools it runs (`$CUDA_HOME/bin` ptxas,
+nvdisasm and cuobjdump: path, size, modification time; they decide the lifted SASS) and the
+`PTXV_*` environment except thread counts, output and cache settings. A complete stored verdict
+serves any state cap; an incomplete one
 serves caps up to its own. The report notes a reused verdict. A check of a case changed in
 memory (`ptxv check --residency N`) is not stored, since the key covers the files.
 `PTXV_NO_VCACHE=1` turns the cache off.
@@ -526,7 +572,7 @@ avoid, so both are conservative.
      silumul's is Tier 1 0 [0, 0]) had intervals disjoint from GB300's 95% interval in 19
      cells and from its 99.9% interval in 15 (GB300 runs of 4,000 inputs per cell, 40,000 for
      one): the rmsnorm pairs' Tier 2 stood 5-12% above GB300 against an h of 13-15%, the
-     attention and softmax pairs' 0.5-3% above, inside their tolerance but outside their own
+     attention and softmax pairs' 0.35-3.0% above, inside their tolerance but outside their own
      ±0.2-0.8%, and r4_rmsnorm_triton's (6.3e-6 to 1.6e-5) against a Tier 3 of 0 at 200
      inputs, where no resolution rule applied. Tier 1 keeps the rules below.
    - **The check must have resolution.** With the default input count, Tier 3 grows until h
@@ -534,9 +580,13 @@ avoid, so both are conservative.
      (`PTXV_XCHECK_SECONDS`). It then keeps growing toward 2% for as long as the run is
      under 10 s. These seconds are work units (below), not the clock. At p3 = 0 Tier 3 takes
      the whole budget unless it compared no output (then it is refused, MISS 64): its
-     interval counts inputs below 20 differing inputs (`mc::input_bound`, Hoeffding's bound
-     on the per-input fractions, which holds however an input's outputs differ together),
-     and at 0 it is [0, 3.69 / inputs] at 95%. Until MISS 120 Tier 3 did not grow at p3 = 0,
+     interval counts inputs (`mc::input_bound`: Hoeffding's and an empirical Bernstein bound
+     on the per-input fractions, which hold however an input's outputs differ together;
+     below 20 differing inputs since MISS 120, at any count since MISS 139), and at 0 it is
+     [0, 4.38 / inputs] at 95%. Until MISS 139 the batch-means interval stood alone at 20 or
+     more differing inputs and missed a rare cluster it had not seen (fixtures/errdist/mix,
+     rE_mix: 25 of 40 seeds below P 2.346e-3 at 200 inputs). Until MISS 120 Tier 3 did not
+     grow at p3 = 0,
      and its interval there counted outputs only, [0, 3.69 / outputs], which takes them as
      independent: on fixtures/errdist/clus, whose 512 outputs per input differ together (P
      2.12e-3), 22 of 40 default runs said 0 [0, 2.5e-5]. A run that refutes a claim (a
@@ -545,10 +595,13 @@ avoid, so both are conservative.
    - **The flip bound grows Tier 3 too.** Where selections or maxima can flip, Tier 3 also
      grows until B is within 80% of the gate's margin at its own P (an analytic estimate the
      cross-check confirms is within 20% of Tier 3's P), within the same 30 s and 76,800
-     inputs. B counts inputs, not outputs, so with many outputs per input h is fine long
-     before B is (`flip_wide`: 300 inputs give h ±0.7% but B 1.2e-2 against a margin of
-     4.6e-3). It does not grow when the whole budget cannot reach the target at the observed
-     flip share; a note gives the inputs needed, and the gate refuses.
+     inputs. B counts inputs, not outputs. Until MISS 139 h counted outputs and was fine long
+     before B (`flip_wide`: 300 inputs gave h ±0.7% but B 1.2e-2 against a margin of 4.6e-3,
+     and Tier 3 grew to 809 inputs for B). Since MISS 139 h takes the input-level bound as
+     well (±35% at 300 inputs there), and Tier 3's growth for its own resolution usually
+     passes the bound's need at 0 flips (7518 inputs, B 4.9e-4); B drives the growth where
+     flips are observed. It does not grow when the whole budget cannot reach the target at the
+     observed flip share; a note gives the inputs needed, and the gate refuses.
    - **A wide tolerance confirms nothing.** An estimate whose tolerance is still above 20%
      of P(differ) is not confirmed, and so not applicable. `--mc N` fixes the input count.
    - **Nor does a wide estimate.** An analytic estimate whose own 95% interval (the linearized
@@ -795,7 +848,9 @@ MXF8 single kernel (`r3_cute_mxf8`), against a 20,000-input Tier 3:
 
 MXF4: codes 1.95x (kurtosis 36, refused); Student t: Tier 3 sees P(differ) = 0 at 20,000
 inputs and tier2bs gives 4e-12 (kurtosis 4e13, refused). The other MXF4 rows are Tier 0.
-Every refusal above is the gate's.
+Every refusal above is the gate's. At the default input count Tier 3 stops at 7033 inputs on
+MXF8 normal (the 30 s budget; half-width 1.9% of P under the input-level bound, MISS 139), and
+the cross-check's tolerance, 5% less that (3.1%), refuses tier2bs's 0.966 there.
 
 ### 5.4 Tier 3: Monte Carlo through the DAG
 
@@ -1510,7 +1565,26 @@ non-chain programs is now the elementwise law's f32 quadrature only.
     identified as log (`fixtures/c_lse_naive`, `c_lse_stable`).
 
   Constants snap to named values (log2 e, ln 2, 1/128, eps, √(2/π), 0.044715, powers of
-  two) when that keeps the fit.
+  two), the slice's own constants and products of two of them when that keeps the fit.
+
+  The identified form (`choose`, MISS 138) reads every argument the slice's output depends on
+  (`arg_dependence`: another probe's value of the argument changes the output bits), has exact
+  (snapped) constants, and is not fitted 4 times better (beyond 2^-23) by a form with fitted
+  constants; else the slice is unidentified. The acceptance bound (2^-11) is thousands of
+  output ulps: until MISS 138 a snapped y = u stood for y = RM(floor(x / 1024) + u), a FADD.RM
+  floor dropped, Tier 1 0.900 where the kernel's P is 0 or 0.505 (fixtures/errdist/ident fs3),
+  and a snapped exp2(1 + 3 2^-21 x) for y = RN(RN(x 2^100) C + 2) probed at x = 100, which
+  overflows with the kernel's x 2^100, every overflow an equal infinity: P 0 for 0.30
+  (ex2ovf2); the affine form, its slope a product of two slice constants, stands now.
+
+  A slice of FP adds, multiplies and FMAs only has a polynomial real function and takes
+  polynomial forms only (`polynomial`, MISS 147). Forms of another shape, with exact
+  constants, that fit the probes within that margin are the identified form's alternatives
+  (`alternatives`, MISS 147; a fitted form cannot be the exact reference and is none): where
+  one of them disagrees with it beyond the margin, the slice's exact value is not established,
+  and the outputs above it are left out. Until MISS 147 the first of equally good forms stood
+  alone: tanh(2^-64 x) for an exact scaling y = RN(x 2^-64), P 1 for 0 at large x
+  (fixtures/errdist/ident/ex2ovf.ptx; now affine, and with a MUFU inside the slice refused).
 
   The fit holds on the outcome patterns of the slice's data-dependent decisions that its
   probes took (`Outcomes`; the compile notes list them per slice, e.g. `1 of 2`): its

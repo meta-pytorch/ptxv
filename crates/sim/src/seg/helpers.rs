@@ -125,15 +125,21 @@ fn match_contract(instructions: &[Inst], target: usize, template: &Template) -> 
             }
         }
         match (want, &op) {
-            (Op::Bssy { b: a }, Op::Bssy { b }) | (Op::Bsync { b: a }, Op::Bsync { b }) => {
+            (Op::Bssy { b: a }, Op::Bssy { b }) | (Op::Bsync { b: a, .. }, Op::Bsync { b, .. }) => {
                 if barriers.get(a).is_some_and(|old| old != b)
                     || !barriers.contains_key(a) && barriers.values().any(|old| old == b)
                 {
                     return None;
                 }
                 barriers.insert(*a, *b);
-                if let Op::Bssy { b } | Op::Bsync { b } = &mut op {
-                    *b = *a;
+                // The barrier's number and the BSYNC's form do not change the result.
+                match (&mut op, want) {
+                    (Op::Bssy { b }, _) => *b = *a,
+                    (Op::Bsync { b, form }, Op::Bsync { form: f, .. }) => {
+                        *b = *a;
+                        *form = *f;
+                    }
+                    _ => {}
                 }
             }
             _ => {}

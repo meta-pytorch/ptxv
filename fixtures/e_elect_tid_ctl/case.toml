@@ -1,0 +1,48 @@
+name = "e_elect_tid_ctl"
+description = """
+E-ELECT (MISS 72): r2 = 7, then `shr.u32 %r2, %tid.x, 5` on lanes 1..30 only, so the end
+lanes keep 7 and the middle lanes hold 0. Warp 0's leader stores out[r2]; thread 32 reads
+out[0] with no barrier: a race for middle-lane leaders only. The leader-sensitivity taint
+took `%tid.x >> 5` as warp-uniform wherever it was written, the two end-lane policies stored
+out[7] and the PTX verdict was clean. Written under lane-varying control it is lane-varying
+now, the leader's address meets it and every leader is explored. GB300 elects the lowest lane
+(probes/elect): SASS clean. UNCOND: the shift on every lane, every leader races. VOTE: lanes
+1..30 set r2 by a ballot (warp-uniform under warp-uniform control) instead: the same race."""
+ptx = "kernel.ptx"
+entry = "e_elect_tid_ctl"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [8]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for middle-lane leaders"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "UNCOND"
+summary = "every lane computes r2 = tid >> 5"
+marker = "@SKIP"
+replace = "<delete>"
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "VOTE"
+summary = "lanes 1..30 set r2 by a ballot (of a false predicate, 0) instead of the shift"
+marker = "@SHR"
+find = "shr.u32 %r2, %r1, 5;"
+replace = "setp.ne.u32 %p6, %r1, %r1; vote.sync.ballot.b32 %r2, %p6, 0x7ffffffe;"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]

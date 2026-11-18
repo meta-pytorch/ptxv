@@ -10,3 +10,103 @@ inorder_ldg  0/1000 runs wrong; words wrong per failing run: 0..0
 rd_on_ldg    0/1000 runs wrong; words wrong per failing run: 0..0
 rd_on_a      200/200 runs wrong; words wrong per failing run: 35584..40128
 nowait       200/200 runs wrong; words wrong per failing run: 593856..605408
+# GB300 (sm_103a, CUDA 13.0), 2026-11-11, rev 676cfd47: VARIANTS="inorder rd_on_ldg rd_on_lds lds_nowait" run.sh 1000
+# (one GPU; 1184 CTAs x 256 threads per run, shared memory scrubbed before each run)
+inorder      0/1000 runs wrong; words wrong per failing run: 0..0
+rd_on_ldg    0/1000 runs wrong; words wrong per failing run: 0..0
+rd_on_lds    0/1000 runs wrong; words wrong per failing run: 0..0
+lds_nowait   200/200 runs wrong; words wrong per failing run: 300896..302752
+# GB300 (sm_103a, CUDA 13.0), 2026-11-11, rev 9d6a098a + these windows: VARIANTS="wcov wcov_nowait qwar_lds qwar_ldg qwar_ctl" run.sh 1000
+# (one GPU; 1184 CTAs x 256 threads per run, shared memory scrubbed before each run)
+wcov         0/1000 runs wrong; words wrong per failing run: 0..0
+wcov_nowait  200/200 runs wrong; words wrong per failing run: 300384..302368
+qwar_lds     0/1000 runs wrong; words wrong per failing run: 0..0
+qwar_ldg     0/1000 runs wrong; words wrong per failing run: 0..0
+qwar_ctl     200/200 runs wrong; words wrong per failing run: 303104..303104
+# wcov: an STS's address read (rd=SB1, never waited) is complete once a later LDS's write
+# scoreboard is (the memory-queue write cover across opcodes); qwar: a later LDS / LDG does not
+# write the STS's address register before the STS read it (loads after memory-queue reads,
+# across opcodes). Both controls fail in every run: measured nulls.
+# Adversarial review's runs (GB300, one GPU, 2026-11-11, rev 260c0450 + its windows, same layout
+# and run.sh; only stalls of 2 or more count):
+rvs_inorder_off 0/1000 runs wrong; words wrong per failing run: 0..0
+rvs_inorder_off_nowait 1000/1000 runs wrong; words wrong per failing run: 298624..302688
+rvs_shfl_retain 1000/1000 runs wrong; words wrong per failing run: 303040..303104
+rvs_shfl_retain_ctl 1000/1000 runs wrong; words wrong per failing run: 303104..303104
+rvs_qctl_8   1000/1000 runs wrong; words wrong per failing run: 303104..303104
+rvs_qctl_11  1000/1000 runs wrong; words wrong per failing run: 303104..303104
+rvs_qctl_22  1000/1000 runs wrong; words wrong per failing run: 303072..303104
+rvs_qctl_33  1000/1000 runs wrong; words wrong per failing run: 282144..283264
+# rvs_shfl_retain: a SHFL between A and the rewrite of A's address register orders nothing (as
+# the ALU MOV in its slot): MISS 128. rvs_qctl_<D>: the rewrite by an ALU MOV D (8 to 33)
+# cycles after A is wrong in every run, so A's read is still pending that long: these are the
+# discriminating controls for the wcov / qwar windows (whose shipped controls rewrite right after
+# A). rd_on_ldg has no control in its own layout (an LDG in the window with no cover).
+# R12 data register (SND3, MISS 170 item 5), GB300 GPU 0, 2026-11-12, rev d859b500 + these windows:
+# PTXV_GPUS=0 VARIANTS="qwar_lds qwar_ctl dq_*" run.sh 1000 (1184 CTAs x 256 threads per run, shared memory scrubbed)
+qwar_lds     0/1000 runs wrong; words wrong per failing run: 0..0
+qwar_ctl     200/200 runs wrong; words wrong per failing run: 303104..303104
+dq_lds       0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ldg       0/1000 runs wrong; words wrong per failing run: 0..0
+dq_shfl      0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ldsm      0/1000 runs wrong; words wrong per failing run: 0..0
+dq_atoms_lds 0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ctl       200/200 runs wrong; words wrong per failing run: 303104..303104
+dq_ctl_8     200/200 runs wrong; words wrong per failing run: 303104..303104
+dq_ctl_22    200/200 runs wrong; words wrong per failing run: 301888..302880
+dq_ctl_33    200/200 runs wrong; words wrong per failing run: 245344..250112
+dq_atoms_ctl 200/200 runs wrong; words wrong per failing run: 303104..303104
+dq_own       0/1000 runs wrong; words wrong per failing run: 0..0
+# dq_*: A stores Rg (a copy of the marker) with no read scoreboard, then a load writes Rg with no wait
+# (LDS, LDG, SHFL.BFLY, LDSM.16.M88; dq_atoms_lds: A is an ATOMS.EXCH): 0 / 1000. Controls: an ALU
+# write of Rg right after A and 8 / 22 / 33 stall cycles after it, wrong in every thread of every
+# run (dq_atoms_ctl after the ATOMS too): A's data read is still pending 33 cycles after it, longer
+# than a SHFL takes alone (24 stall cycles, probes/smem_queue_w1), so dq_shfl discriminates; the
+# loads in the queue's order. dq_own: A's read scoreboard waited on, 0. A measured null, a bound.
+# Gap windows (MISS 170, the R10 to R12 recovery), GB300, 2026-11-12, rev 810b4497 + these windows:
+# PTXV_GPUS=2 VARIANTS="<the _g8 / _g11 / _g22 windows> dq_ctl_11 dq_ctl_8 dq_ctl_22 rvs_qctl_8 rvs_qctl_11 rvs_qctl_22 rd_on_lds lds_nowait" run.sh 1000
+# (1184 CTAs x 256 threads per run, shared memory scrubbed)
+rd_on_lds_g8 0/1000 runs wrong; words wrong per failing run: 0..0
+lds_nowait_g8 200/200 runs wrong; words wrong per failing run: 300544..302464
+wcov_g8      0/1000 runs wrong; words wrong per failing run: 0..0
+wcov_nowait_g8 200/200 runs wrong; words wrong per failing run: 299456..302144
+qwar_lds_g8  0/1000 runs wrong; words wrong per failing run: 0..0
+qwar_ldg_g8  0/1000 runs wrong; words wrong per failing run: 0..0
+dq_lds_g8    0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ldg_g8    0/1000 runs wrong; words wrong per failing run: 0..0
+dq_shfl_g8   0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ldsm_g8   0/1000 runs wrong; words wrong per failing run: 0..0
+rd_on_lds_g11 0/1000 runs wrong; words wrong per failing run: 0..0
+lds_nowait_g11 200/200 runs wrong; words wrong per failing run: 290432..292352
+wcov_g11     0/1000 runs wrong; words wrong per failing run: 0..0
+wcov_nowait_g11 200/200 runs wrong; words wrong per failing run: 289664..291776
+qwar_lds_g11 0/1000 runs wrong; words wrong per failing run: 0..0
+qwar_ldg_g11 0/1000 runs wrong; words wrong per failing run: 0..0
+dq_lds_g11   0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ldg_g11   0/1000 runs wrong; words wrong per failing run: 0..0
+dq_shfl_g11  0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ldsm_g11  0/1000 runs wrong; words wrong per failing run: 0..0
+rd_on_lds_g22 0/1000 runs wrong; words wrong per failing run: 0..0
+lds_nowait_g22 200/200 runs wrong; words wrong per failing run: 247232..253504
+wcov_g22     0/1000 runs wrong; words wrong per failing run: 0..0
+wcov_nowait_g22 200/200 runs wrong; words wrong per failing run: 245408..251040
+qwar_lds_g22 0/1000 runs wrong; words wrong per failing run: 0..0
+qwar_ldg_g22 0/1000 runs wrong; words wrong per failing run: 0..0
+dq_lds_g22   0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ldg_g22   0/1000 runs wrong; words wrong per failing run: 0..0
+dq_shfl_g22  0/1000 runs wrong; words wrong per failing run: 0..0
+dq_ctl_11    200/200 runs wrong; words wrong per failing run: 302144..303040
+dq_ctl_8     200/200 runs wrong; words wrong per failing run: 303104..303104
+dq_ctl_22    200/200 runs wrong; words wrong per failing run: 301632..302880
+rvs_qctl_8   1000/1000 runs wrong; words wrong per failing run: 303104..303104
+rvs_qctl_11  1000/1000 runs wrong; words wrong per failing run: 303104..303104
+rvs_qctl_22  1000/1000 runs wrong; words wrong per failing run: 303072..303104
+rd_on_lds    0/1000 runs wrong; words wrong per failing run: 0..0
+lds_nowait   200/200 runs wrong; words wrong per failing run: 300992..302912
+# _g<G>: the later op (the covering LDS, or the load / SHFL / LDSM writing A's register) issued G
+# stall cycles after A (22: A's stall 11, then `MOV Rg, RZ` / `MOV Rx, RZ` with stall 11). Every
+# window 0 / 1000 at G = 8, 11, 22 (dq_ldsm at 8, 11: its LOP3 leaves no slot for 22); every
+# control in its own layout wrong in every run (lds_nowait_g*, wcov_nowait_g*: the LDC with no
+# wait; rvs_qctl_<G>, dq_ctl_<G>: an ALU write of A's address / data register at the same gap).
+# With the 4-cycle windows above: the covers and queued WARs hold over gaps 4 to 22, measured
+# nulls, bounds (scoreboard.rs `hw_mio_cover_measured`, `hw_load_war_measured`).

@@ -1,0 +1,41 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CLOCK (MISS 77): an indexed branch whose index derives from the clock. Every thread jumps to entry
+// (%clock & 1) of a two-entry .branchtargets list. T0 stores 1 to out[tid] (correct); T1 stores
+// tid to out[0] from every thread (a write-write race). The model read the clock as 0 and the
+// indexed branch was neither a clock choice nor a clock effect, so only T0 ran: clean. GB300
+// takes T1 whenever the clock is odd. Now a clock effect: unmodeled.
+//   good: index %clock & 1.
+//   CONST: index 0 (no clock): clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_brx(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r5, %clock;
+    and.b32 %r6, %r5, 1;                 // @IDX
+$L_brx_0: .branchtargets
+        T0,
+        T1;
+    brx.idx %r6, $L_brx_0;
+T0:
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    mov.u32 %r7, 1;
+    st.global.u32 [%rd3], %r7;
+    bra.uni J;
+T1:
+    st.global.u32 [%rd1], %r1;
+J:
+    ret;
+}

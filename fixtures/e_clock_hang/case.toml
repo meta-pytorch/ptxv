@@ -1,0 +1,37 @@
+name = "e_clock_hang"
+description = """
+E-CLOCK (MISS 78): a flag poll with a 2000-cycle clock64 timeout that traps. The producer
+sleeps 200 us, so GB300 traps: good 20 / 20 launches fail (unspecified launch failure); LONG
+(2^40 cycles) 20 / 20 equal the model (2026-11-11). The hang-guard exemption took any clock
+branch with a trap side to never fire, whatever the bound: clean and certified. A hang guard is
+exempt now only when re-executing its slice shows it keeps its non-trap side for every delay
+below 2^31 clock units (`Machine::hang_bound_holds`); good's 2000-cycle guard goes both ways:
+the trap and the read (nondeterministic). LONG stays clean on both fronts."""
+ptx = "kernel.ptx"
+entry = "e_clock_hang"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "2000-cycle timeout, then trap"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "LONG"
+summary = "2^40-cycle timeout"
+marker = "@BOUND"
+find = "setp.gt.s64 %p4, %rd4, 2000;"
+replace = "setp.gt.s64 %p4, %rd4, 1099511627776;"
+expect = ["clean"]

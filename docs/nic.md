@@ -86,10 +86,10 @@ buffer = "dst"            # on the buffer's GPU; optional offset / len
 | S-NIC-ORDER | a QP's WQEs execute one at a time in posting order; QPs are unordered; IBTA ordering only | IBTA RC; DOCA dp_ordering patch (off by default) | P2: signal on QP B seen before QP A's 1 MiB write in 1e5 / 1e5 |
 | S-NIC-SIGNAL | an atomic takes effect after the same QP's earlier writes are placed and releases them | DOCA `put_signal`, mscclpp `putWithSignal` (no fence bit) | P1: stale not observed, 15 configs x 1e5 |
 | S-NIC-WRITE | write data synchronizes with nothing; no placement order | conservative | P4: write order kept in 1e5 (model does not rely on it beyond S-NIC-FLAG) |
-| S-NIC-WORD | each aligned 8-byte word of write data is single-copy atomic (relaxed `.sys`) | PCIe qword writes | P2 / P6a: 1.9e10 words read mid-write, none torn |
+| S-NIC-WORD | each aligned 8-byte word of write data is single-copy atomic (relaxed `.sys`); at the strict PTX level each chunk is one location of its width, so a strong access of another width is a mixed-size race (S-SCOPE) | PCIe qword writes; PTX ISA 9.5 8.7, 8.7.2 | P2 / P6a: 1.9e10 words read mid-write, none torn |
 | S-NIC-FLAG | a lone aligned 4- or 8-byte write is one strong `.sys` write releasing the QP's earlier WQEs | mscclpp `PortChannelIbgda` signal (token write); IBTA RC write order | P4 (8 B) and P4b (4 B): flag after a 4 KiB / 1 MiB write, stale not observed, 8 configs x 1e5 |
-| S-NIC-ATOMIC | 8-byte strong RMW, little-endian value, atomic only with NIC atomics | IBV_ATOMIC_HCA | P0: little-endian; P7: 4.9M of 16.8M concurrent GPU adds lost |
-| S-NIC-CQE | a CQE follows the WQE's completion (write: placed at the peer) and releases it | IBTA RC acks; DOCA `poll_cq_at` | P5: stale not observed (3 x 1e5); P6: reuse before the poll delivered new bytes 1e5 / 1e5, after the poll never |
+| S-NIC-ATOMIC | 8-byte strong RMW, little-endian value, atomic only with NIC atomics; one location with 8-byte accesses only (strict PTX); continues a release sequence only when morally strong with the write it reads, keeping that write's pattern apart (its thread and scope) | IBV_ATOMIC_HCA; PTX ISA 9.5 8.7, 8.9.2, 8.9.4 | P0: little-endian; P7: 4.9M of 16.8M concurrent GPU adds lost |
+| S-NIC-CQE | a CQE follows the WQE's completion (write: placed at the peer) and releases it; at the strict PTX level its fields (bytes 56-59, 60-61, 62, 63) are its locations, and an access that spans or splits one, or covers another byte, is `unmodeled` | IBTA RC acks; DOCA `poll_cq_at` | P5: stale not observed (3 x 1e5); P6: reuse before the poll delivered new bytes 1e5 / 1e5, after the poll never |
 | S-NIC-DOMAIN | another NVLink domain's memory is reachable only through the NIC | configuration | n/a |
 
 ## Fixture
@@ -102,6 +102,29 @@ segment written after the doorbell, N6 a wrong rkey, N7 a relaxed signal poll wi
 acquire, N8 a direct load from the other domain.
 Variant T signals with an 8-byte RDMA write of a token (mscclpp's form, S-NIC-FLAG) and is
 clean; N9 posts that token before the data write (race).
+
+`fixtures/e_nic_rseq` (from r5a_ibgda_putsig, both GPUs in one NVLink domain): a write W on the
+signal word that the fetch-add continues (S-NIC-ATOMIC release sequences). A `.gpu` release on
+the receiver's GPU (good) or a `.cta` fence heading the pattern (FREL) does not reach the receiver
+in the other CTA: its read of d2 races; a `.sys` release or fence (SYSREL, FREL_SYS) does. W is not
+ordered before the NIC atomic in these, so they are also unmodeled; with a go hand-off (GOREL,
+FREL_GOREL) everything reaches the receiver through rank 0's doorbell (clean). NICHEAD (MISS 166):
+the fetch-add heads the sequence and a second one, rung on rank 1's loopback QP after the first
+landed, continues it; the receiver's relaxed poll and `.gpu` acquire fence leave out rank 0's
+doorbell thread, so its read of dst races on the PTX front (the SASS front's CCTL.IVALL takes
+every pending release: clean).
+
+`fixtures/e_nic_cta` (one GPU, a loopback QP; MISS 193): the NIC is in no CTA or cluster. A
+reader in the doorbell thread's CTA that polls the fetch-add with `ld.acquire.cta` (CTA) or
+`ld.acquire.cluster` (CLUSTER) races with it on the PTX front; `.gpu` and `.sys` acquires (GPU,
+SYS) synchronize, since the NIC takes the doorbell thread's GPU; a reader in another CTA races
+(OTHERCTA). Complete overlap (MISS 194, PTX front; repro `probes/nic_overlap`): a 4-byte poll of
+the fetch-add's 8-byte word races and acquires nothing (PART, PART_OTHERCTA, PART_SRC), as does a
+4-byte poll of a lone 8-byte flag write (FLAGHALF, the shape of DeepEP's notify); a 4-byte poll
+of an RDMA write's 8-byte chunk races (WORDPART); polls at the element's width are clean
+(WORDFULL, WORD4: a 4-byte edge chunk, FLAGFULL); a 4-byte read of CQE bytes 60-63 is
+`unmodeled` (CQEPART; at `.cta` scope a race, CQECTA). In `fixtures/e_nic_rseq` SYSREL_PART a
+4-byte head write is not continued by the fetch-add (d2 races).
 
 ## Captured kernels (2026-11-06)
 

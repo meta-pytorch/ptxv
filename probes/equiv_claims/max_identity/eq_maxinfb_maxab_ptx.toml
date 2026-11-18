@@ -1,0 +1,9 @@
+# max.f32(max.f32(a, -inf), b) vs max.f32(a, b) (ptx front). The model's claim, run without captures (check.py).
+max_states = 200000
+reference = { case = "maxinfb_f", variant = "good", front = "ptx", certify = true }
+
+[[candidates]]
+case = "maxab_f"
+variant = "good"
+front = "ptx"
+certify = true

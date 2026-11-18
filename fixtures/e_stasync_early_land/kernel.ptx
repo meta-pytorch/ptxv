@@ -1,0 +1,70 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-REMOTE-INFLIGHT: one thread's in-flight st.async, then a cluster release of that thread;
+// the peer acquires the release and reads the word. The release drains (orders) the store, so
+// the read is ordered whether the store landed early (as its own step) or at the drain.
+//   FEN:   fence.acq_rel.cluster + remote .release.cluster arrive on M2; rank 1 waits on M2,
+//          reads x, then waits on M1 (the st.async's mbarrier).
+//   FENLD: a volatile shared load between the st.async and the fence ends the step, so the
+//          store can land on its own before the fence. Its async actor still joins the
+//          issuer at the fence (`Thread::remote_landed`): same verdict as FEN.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_stasync_early_land(.param .u64 out_p)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b64 m1;
+    .shared .align 8 .b64 m2;
+    .shared .align 4 .b32 x;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r3, %cluster_ctarank;
+    mov.u32 %r4, m1;
+    mov.u32 %r5, m2;
+    mov.u32 %r8, x;
+    setp.ne.u32 %p0, %r3, 1;
+    setp.ne.u32 %p1, %r1, 0;
+    or.pred %p2, %p0, %p1;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    fence.mbarrier_init.release.cluster;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 4;
+INIT_DONE:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    @%p1 bra END;
+    @!%p0 bra RANK1;
+    mapa.shared::cluster.u32 %r9, %r4, 1;
+    mapa.shared::cluster.u32 %r10, %r5, 1;
+    mapa.shared::cluster.u32 %r13, %r8, 1;
+    mov.u32 %r14, 42;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r13], %r14, [%r9];
+    // (step break)    // @BRK
+    fence.acq_rel.cluster;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r10];
+    bra END;
+RANK1:
+WAIT2:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p5, [%r5], 0;
+    @!%p5 bra WAIT2;
+    ld.shared.u32 %r15, [%r8];
+    st.global.u32 [%rd1], %r15;
+WAIT:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p4, [%r4], 0;
+    @!%p4 bra WAIT;
+END:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

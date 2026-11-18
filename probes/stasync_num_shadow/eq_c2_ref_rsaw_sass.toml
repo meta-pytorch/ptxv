@@ -1,0 +1,9 @@
+# MISS 205: c2_ref_rsaw against c2_cand_copy (w = x = 1.5 + (g + 1)/128), sass front.
+max_states = 200000
+reference = { case = "c2_ref_rsaw", variant = "good", front = "sass" }
+
+[[candidates]]
+case = "c2_cand_copy"
+variant = "good"
+front = "sass"
+expect = "none"

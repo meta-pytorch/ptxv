@@ -1,0 +1,178 @@
+name = "probe_i2f8_queue"
+description = """
+Probe (L-OPCLASS, E-HW-SB-QUEUE): an I2F.S8 and a later I2F.S16, two full opcodes of the base
+opcode I2F (the order of the captured Triton dequantize_kv kernel, whose I2F.S8 result is read
+after a wait on a later I2F.S16's scoreboard only). ptxas (sm_103a, CUDA 13.0): `I2F.S8 R5, R0`
+(wr=SB0, shared with an LDCU) at 0x70, `SHF.R.U32.HI` (stall 7), `I2F.S16 R7, R4` (wr=SB1) at
+0x90, `STG.E [R2.64], R5` (waits on SB0) at 0xa0, `STG.E [R2.64+0x4], R7` (waits on SB1).
+COVER_S<n>: the I2F.S8 with no write scoreboard and stall n, its store waiting on SB0 (the
+LDCU) and SB1 (the I2F.S16) only; NOWAIT_S<n>: on SB0 only (positive control, same layout);
+OWN_S<n>: its own SB2 (reference, same layout). _G<d>: the I2F.S8 at stall 8 and the SHF at
+stall d - 8, the I2F.S16 d stall cycles after the I2F.S8. Only stalls of 2 or more count.
+GB300 (results.txt): COVER wrong up to a gap of 15 stall cycles, 0/2000 at 19 and 22; NOWAIT
+wrong at 10 to 14 cycles to the read, 1/7000 at 16, 0/2000 at 20 and 23. An I2F.S8 is not
+covered by a later I2F.S16 (they are not one queue); its result latency exceeds 14 cycles. SASS: COVER / NOWAIT sooner than 50 stall cycles
+(CONV_LAT_CYC, MISS 186: probes/i2f8_lat_sat wrong up to 33) a violation; from 50, a SCOREBOARD
+LATENCY contract (`sb:lat:`, the I2F's latency, which no level bounds)."""
+ptx = "kernel.ptx"
+entry = "i2f8q"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2654435761
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "COVER_S2"
+patch = [
+    { at = "@0x0070", stall = 2, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_S2"
+patch = [
+    { at = "@0x0070", stall = 2, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN_S2"
+patch = [
+    { at = "@0x0070", stall = 2, wbar = 2, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "COVER_S4"
+patch = [
+    { at = "@0x0070", stall = 4, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_S4"
+patch = [
+    { at = "@0x0070", stall = 4, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN_S4"
+patch = [
+    { at = "@0x0070", stall = 4, wbar = 2, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "COVER_S8"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_S8"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN_S8"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 2, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "COVER_S6"
+patch = [
+    { at = "@0x0070", stall = 6, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_S6"
+patch = [
+    { at = "@0x0070", stall = 6, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "COVER_G19"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 11, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_G19"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 11, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "COVER_G22"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 14, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_G22"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 14, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]

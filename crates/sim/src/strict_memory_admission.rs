@@ -163,6 +163,7 @@ pub fn validate_launch(kernel: &Kernel, launch: &Launch) -> Result<usize, Refusa
         || kernel.ldtm_sb.len() != 0
         || kernel.ldtm_waits.len() != 0
         || kernel.static_image.is_some()
+        || kernel.cluster.is_some()
         || kernel.code.len() == 0
     {
         return Err(Refusal::Kernel);
@@ -187,6 +188,9 @@ pub fn validate_launch(kernel: &Kernel, launch: &Launch) -> Result<usize, Refusa
         || launch.read_done
         || launch.remote_fifo
         || launch.hw_bsync_coll
+        || launch.hw_bsync_yield
+        || launch.hw_sts_lowest
+        || launch.hw_stg_lowest
         || launch.hw_split_ur
         || launch.hw_order
         || launch.tc_fence_implied

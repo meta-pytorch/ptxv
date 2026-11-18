@@ -1,0 +1,49 @@
+name = "e_clock_lanes_brx"
+description = """
+E-CLOCK (MISS 76, review; SASS): a lane-varying brx.idx (lane & 1) sends the odd lanes through
+a clock read (ptxas: BRX, S2UR UR5 SR_CLOCKLO, IMAD.U32 R3, UR5; BSYNC) while the even lanes keep
+v = v0 = 2; the warp reconverges and branches on v & 1 (taken: out[lane] = 1, else out[lane ^ 1] = 1).
+On hardware the warp splits whenever the odd lanes' clock is odd: out = 0,1,0,1,... An unguarded BRX starts no lane-varying region in
+lane_varying_choices and the SASS clock read is not lane-varying by itself, so the clock choice
+fixes one side for all 32 lanes: out all 1.
+Now (2026-11-11, review of MISS 76): an indexed branch on a lane-varying index starts a
+lane-varying region (elect_lanes::Cfg follows BRX targets), so v is lane-varying and the choice
+unmodeled. The SASS fault and violation are the per-instruction clock choices of ptxas's
+if-converted code (independent choices at each guarded instruction: a known precision gap)."""
+ptx = "kernel.ptx"
+entry = "e_clock_lanes_brx"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "aux"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "aux"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[params]]
+kind = "ptr"
+buffer = "aux"
+
+
+
+[[variants]]
+id = "good"
+summary = "odd lanes read the clock in a BRX target; branch on v & 1 after the join"
+expect = ["unmodeled"]
+expect_sass = ["fault", "nondeterministic", "unmodeled", "violation"]

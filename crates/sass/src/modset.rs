@@ -23,7 +23,10 @@
 // combiner, register / uniform / immediate operands, Pc / !Pc / PT): probes/dsetp_ltu_le,
 // 2026-11-10; DSETP.EQU / .NUM stay refused. FSET.NAN (FSET.BF.NAN.AND only: FSET has no .OR,
 // .XOR or .FTZ here; set.nan[.and].f32.f32, setp.nan.f32 + selp.f32 1.0, 0.0):
-// probes/fset_nan, 2026-11-10.
+// probes/fset_nan, 2026-11-10. ATOM .ADD.F16x2.RN / .BF16x2.RN (generic half2 atomic adds) and
+// ATOMG / REDG .ADD.F16x2.RN: probes/half_add, 2026-11-12. LDS.S8 / LDS.S16 (ld.shared.s8 / .s16
+// into .b32 and .b64, register and register + uniform addresses; sign-extended, as LDS.U8 / .U16
+// zero-extend): fb/probes/lds_signed (internal tree), 2026-11-12.
 // ASSUME(L-ROSETTA)
 
 pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
@@ -32,16 +35,16 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "ATOM",
         &[
-            "64", "ADD", "CAS", "CAST", "E", "F32", "FTZ", "GPU", "MAX", "MIN", "RN", "S32", "SM",
-            "SPIN", "STRONG", "SYS",
+            "64", "ADD", "BF16x2", "CAS", "CAST", "E", "F16x2", "F32", "FTZ", "GPU", "MAX", "MIN",
+            "RN", "S32", "SM", "SPIN", "STRONG", "SYS",
         ],
     ),
     (
         "ATOMG",
         &[
-            "64", "ADD", "BF16x2", "BF16x4", "CAS", "DEC", "E", "EXCH", "F32", "F32x2", "F32x4",
-            "F64", "FTZ", "GPU", "INC", "MAX", "MIN", "OR", "RN", "S32", "S64", "SM", "STRONG",
-            "SYS",
+            "64", "ADD", "BF16x2", "BF16x4", "CAS", "DEC", "E", "EXCH", "F16x2", "F32", "F32x2",
+            "F32x4", "F64", "FTZ", "GPU", "INC", "MAX", "MIN", "OR", "RN", "S32", "S64", "SM",
+            "STRONG", "SYS",
         ],
     ),
     (
@@ -222,7 +225,7 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     ),
     ("LDGSTS", &["128", "64", "BYPASS", "E", "LTC128B", "ZFILL"]),
     ("LDL", &["128", "64", "LU", "U16", "U8"]),
-    ("LDS", &["128", "64", "U16", "U8"]),
+    ("LDS", &["128", "64", "S16", "S8", "U16", "U8"]),
     ("LDSM", &["16", "2", "4", "8", "M88", "MT1616", "MT88"]),
     (
         "LDTM",
@@ -277,8 +280,8 @@ pub(crate) const AUDITED_MODS: &[(&str, &[&str])] = &[
     (
         "REDG",
         &[
-            "64", "ADD", "AND", "BF16x2", "BF16x4", "E", "F32", "F32x2", "F32x4", "F64", "FTZ",
-            "GPU", "MAX", "MIN", "OR", "RN", "S32", "S64", "SM", "STRONG", "SYS", "XOR",
+            "64", "ADD", "AND", "BF16x2", "BF16x4", "E", "F16x2", "F32", "F32x2", "F32x4", "F64",
+            "FTZ", "GPU", "MAX", "MIN", "OR", "RN", "S32", "S64", "SM", "STRONG", "SYS", "XOR",
         ],
     ),
     ("REDUX", &["OR", "S32", "SUM", "XOR"]),

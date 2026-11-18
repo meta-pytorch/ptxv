@@ -1,0 +1,30 @@
+# MISS 177 (the node check, defense in depth): ref_exch64's output is the word a 64-bit exchange
+# zeroed (0 for every input); until MISS 177's fix its node was the x stored there before, and
+# cand_copy's output is x. That node does not hold the output's bits at the captured inputs, so
+# the output counts as untracked and no level holds, on both fronts (before the check: L0 PROVEN).
+# The self pair, cand_copy on both fronts, stays L0. GB300: 0 against x in all 32 outputs.
+reference = { case = "cand_copy", variant = "good", front = "ptx" }
+
+[[candidates]]
+case = "ref_exch64"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_exch64"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "cand_copy"
+variant = "good"
+front = "ptx"
+expect = "L0"
+
+[[candidates]]
+case = "cand_copy"
+variant = "good"
+front = "sass"
+expect = "L0"

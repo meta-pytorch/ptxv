@@ -1,0 +1,71 @@
+name = "probe_bsync_block"
+description = """
+Probe (E-HW-BSYNC-YIELD, E-BSYNC gap G1): does a BSYNC hold the lanes waiting at it while
+another lane of its mask is blocked, with no lane yielding? probes/mbar_init_diverge with lanes 0
+and 1 on the divergent path (kernel.ptx): ptxas 13.0 joins it with a plain `BSSY B1` (0x450) /
+`BSYNC B1` (0x620); inside, `BSSY.RECONVERGENT B2` (0x4d0) / `BSYNC.RECONVERGENT B2` (0x5f0) join
+lane 0's path, then `WARPSYNC R4` (R4 = 3, 0x610) is the `bar.warp.sync 3`. Lane 0 spins 20,000
+cycles on the clock (no YIELD), inits the round's mbarrier slot, stores the data word and
+arrives; lane 1 waits for it at `BSYNC.RECONVERGENT B2`; lanes 2-31 wait at `BSYNC B1`, then on
+the slot (parity 0), and read the word. Each slot first holds a planted stale word a parity-0
+wait accepts at once, so a lane that passes `BSYNC B1` before lane 0's init reads a stale word.
+out[t] = rounds in which thread t read a stale word; expected/ is all zeros. Variants: good
+(lane 1 blocked at another barrier's BSYNC), WARPSYNC (BSSY B2 / BSYNC B2 NOPed: lane 1 blocked
+at the WARPSYNC), NOBLOCK (BSYNC B2 and the WARPSYNC NOPed: lane 1 waits at BSYNC B1 with lanes
+2-31; nobody blocks elsewhere), RECONV (good with BSSY B1 / BSYNC B1 set to the .RECONVERGENT
+form). Launch 264 CTAs x 128 threads (4 warps), 256 rounds per warp. ptxas 13.0
+(-arch=sm_103a). results.txt, GB300."""
+ptx = "kernel.ptx"
+entry = "bsync_block"
+ptxas_toolkit = "13.0"
+grid = [264, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [33792]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000080"
+
+[[params]]
+kind = "u32"
+value = 256
+
+[[variants]]
+expect = ["race"]
+hw_note = "GB300 10,000/10,000 runs: 0 wrong (lane 0's split runs first: not evidence about the blocks clause)"
+id = "good"
+summary = "lane 1 waits at BSYNC.RECONVERGENT B2 for lane 0's clock spin while lanes 2-31 wait at the plain BSYNC B1"
+
+[[variants]]
+expect = ["race"]
+hw_note = "GB300 10,000/10,000 runs: 0 wrong (as good)"
+id = "WARPSYNC"
+summary = "good with BSSY B2 at 0x4d0 and BSYNC B2 at 0x5f0 NOPed: lane 1 waits at the WARPSYNC for lane 0"
+patch = [{ at = "@0x4d0", nop = true }, { at = "@0x5f0", nop = true }]
+
+[[variants]]
+expect = ["race"]
+expect_sass = ["race"]
+hw_note = "GB300 10,000/10,000 runs: 0 wrong"
+id = "NOBLOCK"
+summary = "good with BSYNC B2 at 0x5f0 and the WARPSYNC at 0x610 NOPed: lane 1 waits at BSYNC B1 with lanes 2-31, no lane blocks elsewhere or yields"
+patch = [{ at = "@0x5f0", nop = true }, { at = "@0x610", nop = true }]
+
+[[variants]]
+expect = ["race"]
+expect_sass = ["clean"]
+hw_note = "GB300 10,000/10,000 runs: 0 wrong"
+id = "RECONV"
+summary = "good with BSSY B1 at 0x450 and BSYNC B1 at 0x620 set to the .RECONVERGENT form (bits 72-73 = 2): no yield, no collective in its region"
+patch = [{ at = "@0x450", bits = [[72, 2, 2]], expect = "BSSY.RECONVERGENT B1, `(.L_x_6)" }, { at = "@0x620", bits = [[72, 2, 2]], expect = "BSYNC.RECONVERGENT B1" }]

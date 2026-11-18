@@ -37,4 +37,19 @@ buffer = "out"
 [[variants]]
 id = "good"
 expect = ["contract"]
-expect_sass = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (memory-queue order across opcodes); clean at gb300.
+expect_sass = ["contract"]
+
+# MISS 131: the first UBLKCP's read scoreboard removed (and its wait), then UR12 (its
+# destination address) rewritten: UBLKCP reads its operands late like the other bulk / TMA ops,
+# so the rewrite is a SCOREBOARD WAR (before: unseen, UBLKCP was not an asynchronous reader).
+# An edited binary: no hardware claim.
+[[variants]]
+id = "NORB"
+summary = "UBLKCP with no read scoreboard, UR12 rewritten with no wait"
+patch = [
+    { at = "@0x740", rbar = 7, expect = "UBLKCP.S.S [UR12], [UR9], UR6" },
+    { at = "@0x770", wait = 0, expect = "@P0 BRA.U.ANY `(.L_x_6)" },
+]
+expect = ["contract"]
+expect_sass = ["contract", "violation"]

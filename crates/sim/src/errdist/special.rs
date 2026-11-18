@@ -289,6 +289,39 @@ pub fn kl_mean_bounds(m: f64, n: usize, alpha: f64) -> (f64, f64) {
     (lo, hi)
 }
 
+/// The predictable plug-in empirical Bernstein interval for the mean of independent variables
+/// in [0, 1] at level 1 - alpha, at a fixed sample size (Waudby-Smith and Ramdas 2023,
+/// "Estimating means of bounded random variables by betting", Theorem 2 with lambda tuned to
+/// n): (sum l_i x_i / sum l_i) +- (ln(2 / alpha) + sum v_i psi(l_i)) / sum l_i, with
+/// l_i = min(sqrt(2 ln(2 / alpha) / (n s_{i-1}^2)), 3/4), v_i = 4 (x_i - m_{i-1})^2,
+/// psi(l) = (-ln(1 - l) - l) / 4, m_i = (1/2 + sum_{j<=i} x_j) / (i + 1) and
+/// s_i^2 = (1/4 + sum_{j<=i} (x_j - m_j)^2) / (i + 1). Like Hoeffding's bound it holds for any
+/// distribution on [0, 1]; it narrows with the observed variance, so where the variables
+/// concentrate it is far narrower (64 independent outputs per input at P 0.3 over 200 inputs:
+/// +-9% of P against Hoeffding's +-29%).
+pub fn eb_mean_bounds(x: &[f64], alpha: f64) -> (f64, f64) {
+    let n = x.len();
+    if n == 0 {
+        return (0.0, 1.0);
+    }
+    let l = (2.0 / alpha).ln();
+    let (mut m, mut s2, mut sum, mut sq) = (0.5f64, 0.25f64, 0.5f64, 0.25f64);
+    let (mut num, mut den, mut pen) = (0.0f64, 0.0f64, 0.0f64);
+    for (i, &v) in x.iter().enumerate() {
+        let v = v.clamp(0.0, 1.0);
+        let lam = (2.0 * l / (n as f64 * s2)).sqrt().min(0.75);
+        num += lam * v;
+        den += lam;
+        pen += 4.0 * (v - m).powi(2) * ((-(1.0 - lam).ln() - lam) / 4.0);
+        sum += v;
+        m = sum / (i as f64 + 2.0);
+        sq += (v - m).powi(2);
+        s2 = sq / (i as f64 + 2.0);
+    }
+    let (c, w) = (num / den, (l + pen) / den);
+    ((c - w).max(0.0), (c + w).min(1.0))
+}
+
 pub fn clopper_pearson(k: u64, n: u64, alpha: f64) -> (f64, f64) {
     if n == 0 {
         return (0.0, 1.0);

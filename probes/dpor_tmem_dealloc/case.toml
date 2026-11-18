@@ -1,0 +1,45 @@
+name = "probe_dpor_tmem_dealloc"
+# The reporters' case (2026-11-05), written for GB200 (arch
+# sm_100a there); run here on the default sm_103a.
+description = """
+DPOR repro (MISS 233): a copy of fixtures/e_fa4_warp_roles (good and its ctl_nofreewait control,
+here NOFREEWAIT). run.sh pins every explorer's classes (expected/classes.txt); fixtures.rs
+`dpor_orders_tmem_dealloc_against_tmem_access` cross-checks DPOR against the stateful search.
+The original description:
+An FA4 forward bug (flash_fwd_sm100.py): compute-sanitizer synccheck reported divergent aligned
+named barriers. Pre-fix, the TmemPtr barrier (bar.sync from tmem.wait_for_alloc() in the MMA,
+softmax and correction branches; bar.arrive at the end of softmax/correction; bar.sync before
+tmem.free in MMA) and the SoftmaxStatsW0+stage*4+w barrier (bar.arrive in softmax, bar.sync in
+correction, 64 threads) are aligned barriers reached from different pcs. The fix moves both
+handoffs to mbarriers: pipeline_tmem_sync (one stage, every TMEM user arrives, waits parity 0;
+MMA waits parity 1 before free) and pipeline_sm_stats with sp_stage*4 stages of one warp each.
+1 CTA, 2 softmax + 2 correction + 1 MMA warp, 2 stats rounds per pair."""
+ptx = "kernel.ptx"
+entry = "d117107863"
+grid = [1, 1, 1]
+block = [160, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [192]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "post-fix: TMEM lifetime and softmax-stats handoffs through mbarriers"
+expect = ["clean"]
+
+[[variants]]
+id = "NOFREEWAIT"
+summary = "MMA frees TMEM without waiting phase 1 (no rendezvous with the TMEM users before tcgen05.dealloc)"
+marker = "@XMTMW1"
+replace = "<delete>"
+expect = ["race", "violation"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-unmeasured:), as fixtures/e_fa4_warp_roles.
+expect_sass = ["contract", "race", "violation"]

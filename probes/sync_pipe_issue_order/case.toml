@@ -1,0 +1,31 @@
+name = "probe_sync_pipe_issue_order"
+description = """
+Stateful-explorer repro (MISS 232; also the SASS case of MISS 222): two lanes of rank 0's warp
+issue remote arrivals into one pipe (rank 1's M1) in either order, and the draining lane's
+fence lands the pipe prefix up to its own op, so only the order Y,X leaves X in flight at its
+release; rank 1 test_waits M1 after acquiring that release. Lane 0's one-trip loop keeps the
+warp diverged on SASS. run.sh pins the classes of the default explorer, of the explorer
+without the synchronization reduction (PTXV_NO_SYNC_POR) and of --certify
+(expected/classes.txt).
+"""
+ptx = "kernel.ptx"
+entry = "sync_pipe_issue_order"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "out = rank 1's test_wait of M1: 1 or 0 (issue order Y,X only)"
+expect = ["nondeterministic"]

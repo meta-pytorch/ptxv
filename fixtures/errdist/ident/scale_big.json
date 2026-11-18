@@ -1,0 +1,1 @@
+{"version": 1, "seed": 1, "name": "x uniform [2^63, 2^66) (2^-64 x in [0.5, 4], where tanh is not the line it matches near 0)", "default": {"dist": {"kind": "uniform", "lo": 9.223372036854776e+18, "hi": 7.378697629483821e+19}}}

@@ -1,0 +1,154 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 224 repro: an RDMA write and the numerics shadow (probes/README.md).
+//
+//   The put-with-signal of fixtures/r5a_ibgda_putsig on one GPU, over a loopback IBGDA queue
+//   pair (the NIC writes into this GPU's own memory). Thread 0 copies the input c into dst
+//   (c[i] holds the f32 value x[i] + y[i] rounds to), writes src[i] = x[i] + y[i] (one
+//   rounding), posts an RDMA write of src into dst and an atomic fetch-add of 1 on sig (mlx5
+//   WQEs as DOCA GPUNetIO builds them, CQ update), releases (fence.release.gpu), rings the
+//   doorbell, polls the second completion (ld.relaxed.sys + fence.acquire.sys) and copies dst
+//   to out. Exact: out[i] = x[i] + y[i]; out[i] holds its rounding (the bits c[i] held: the RDMA
+//   write replaced them with the same bits).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry loop(
+    .param .u64 src,
+    .param .u64 sq,
+    .param .u64 cq,
+    .param .u64 uar,
+    .param .u64 dbr,
+    .param .u64 sink,
+    .param .u64 dst,
+    .param .u64 sig,
+    .param .u64 out,
+    .param .u64 x,
+    .param .u64 y,
+    .param .u64 c
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<64>;
+    .reg .f32   %f<8>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    ld.param.u64    %rd1, [dst];
+    ld.param.u64    %rd2, [sig];
+    ld.param.u64    %rd3, [src];
+    ld.param.u64    %rd4, [sq];
+    ld.param.u64    %rd5, [cq];
+    ld.param.u64    %rd6, [uar];
+    ld.param.u64    %rd7, [dbr];
+    ld.param.u64    %rd8, [sink];
+    // dst[i] = c[i] (a copy of an input: c[i] holds the f32 value x[i] + y[i] rounds to).
+    ld.param.u64    %rd15, [c];
+    ld.global.v4.f32 {%f4, %f5, %f6, %f7}, [%rd15];
+    st.global.v4.f32 [%rd1], {%f4, %f5, %f6, %f7};
+    // The payload: src[i] = x[i] + y[i] (one rounding).
+    ld.param.u64    %rd9, [x];
+    ld.param.u64    %rd14, [y];
+    ld.global.v4.f32 {%f0, %f1, %f2, %f3}, [%rd9];
+    ld.global.v4.f32 {%f4, %f5, %f6, %f7}, [%rd14];
+    add.rn.f32      %f0, %f0, %f4;
+    add.rn.f32      %f1, %f1, %f5;
+    add.rn.f32      %f2, %f2, %f6;
+    add.rn.f32      %f3, %f3, %f7;
+    st.global.v4.f32 [%rd3], {%f0, %f1, %f2, %f3};
+
+    // Big-endian images of the four addresses the WQEs carry (bswap64).
+    mov.u64         %rd40, %rd1;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd10, %rd50, %rd51;         // BE(dst)
+    mov.u64         %rd40, %rd3;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd11, %rd50, %rd51;         // BE(src)
+    mov.u64         %rd40, %rd2;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd12, %rd50, %rd51;         // BE(sig)
+    mov.u64         %rd40, %rd8;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd13, %rd50, %rd51;         // BE(sink)
+
+    // WQE slots: the data write in slot 0 (index 0), the signal in slot 1 (index 1).
+    add.u64         %rd20, %rd4, 0;
+    add.u64         %rd21, %rd4, 64;
+    // RDMA write (opcode 0x08, 3 segments, CQ update): ctrl, raddr/rkey, data.
+    mov.u64         %rd30, 0x0342000008000000;
+    mov.u64         %rd31, 0x0000000008000000;
+    st.global.v2.b64 [%rd20], {%rd30, %rd31};
+    mov.u64         %rd32, 0x0000000000020000;
+    st.global.v2.b64 [%rd20+16], {%rd10, %rd32};
+    mov.u64         %rd33, 0x0001000010000000;
+    st.global.v2.b64 [%rd20+32], {%rd33, %rd11};
+    // Atomic fetch-add of 1 (opcode 0x12, 4 segments, CQ update): ctrl, raddr/rkey, add/compare, data.
+    mov.u64         %rd34, 0x0442000012010000;
+    st.global.v2.b64 [%rd21], {%rd34, %rd31};
+    mov.u64         %rd35, 0x0000000001020000;
+    st.global.v2.b64 [%rd21+16], {%rd12, %rd35};
+    mov.u64         %rd36, 0x0100000000000000;
+    mov.u64         %rd37, 0;
+    st.global.v2.b64 [%rd21+32], {%rd36, %rd37};
+    mov.u64         %rd38, 0x0101000008000000;
+    st.global.v2.b64 [%rd21+48], {%rd38, %rd13};
+    // DOCA mark_wqes_ready / submit_db: release, doorbell, doorbell record, doorbell again.
+    // (token source)
+    fence.release.gpu;
+    mov.u64         %rd39, 0x0042000000020000;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+    // (late WQE slot)
+    mov.u32         %r3, 0x02000000;
+    st.relaxed.sys.global.b32 [%rd7], %r3;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+    // DOCA poll_cq_at for the last WQE (CQE 1): owner bit 0 on the first pass.
+CQPOLL:
+    ld.relaxed.sys.global.u8 %r4, [%rd5+127];
+    and.b32         %r5, %r4, 1;
+    setp.ne.u32     %p2, %r5, 0;
+    @%p2 bra        CQPOLL;
+    fence.acquire.sys;
+    // out = dst (what the RDMA write placed: CQE 1 completes after WQE 0).
+    ld.param.u64    %rd42, [out];
+    ld.global.u32   %r10, [%rd1];
+    ld.global.u32   %r11, [%rd1+4];
+    ld.global.u32   %r12, [%rd1+8];
+    ld.global.u32   %r13, [%rd1+12];
+    st.global.u32   [%rd42], %r10;
+    st.global.u32   [%rd42+4], %r11;
+    st.global.u32   [%rd42+8], %r12;
+    st.global.u32   [%rd42+12], %r13;
+DONE:
+    ret;
+}

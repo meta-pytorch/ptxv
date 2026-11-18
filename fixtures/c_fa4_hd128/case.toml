@@ -127,3 +127,5 @@ value = 1
 id = "good"
 summary = "as captured"
 expect = ["clean"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract"]

@@ -1,0 +1,30 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (measured by the RVS2 review): I2F.F64.S16 and I2F.F64 (S32): same gb300 queue "I2F.F64", conv_cover skipped.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry i2f64s16(.param .u64 out_p, .param .u32 seed)
+{
+    .reg .b32 %r<16>;
+    .reg .b16 %h<4>;
+    .reg .f64 %fd<16>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r2, [seed];
+    mov.u32 %r1, %tid.x;
+    mul.lo.u32 %r3, %r1, %r2;
+    shr.u32 %r4, %r3, 7;
+    cvt.u16.u32 %h1, %r3;
+    cvt.rn.f64.s16 %fd1, %h1;        // I2F.F64.S16
+    cvt.rn.f64.s32 %fd2, %r4;        // I2F.F64
+    mul.wide.u32 %rd2, %r1, 16;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.f64 [%rd3], %fd1;
+    st.global.f64 [%rd3+8], %fd2;
+    ret;
+}

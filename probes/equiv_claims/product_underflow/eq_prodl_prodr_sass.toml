@@ -1,0 +1,11 @@
+# (a * b) * c vs a * (b * c) (sass front). The model's claim, run without captures (check.py).
+max_states = 200000
+segments = true
+tau_k = 8.0
+reference = { case = "prodl_u", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "prodr_u"
+variant = "good"
+front = "sass"
+certify = true

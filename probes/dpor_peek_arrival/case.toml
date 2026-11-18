@@ -1,0 +1,27 @@
+name = "probe_dpor_peek_arrival"
+description = """
+DPOR repro (MISS 275): a non-completing arrival against a test of its phase. Two arrivals
+complete M's phase 0; the second arriver test_waits phase 0 and stores the result. DPOR ran the
+first arrival first, where it does not complete the phase and records no key the test reads, so
+it never ran the test before that arrival (out = 0).
+"""
+ptx = "kernel.ptx"
+entry = "dpor_peek_arrival"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "out = the second arriver's test_wait of phase 0: 1 or 0"
+expect = ["nondeterministic"]

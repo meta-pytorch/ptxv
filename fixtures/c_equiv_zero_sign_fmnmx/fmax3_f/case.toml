@@ -1,0 +1,58 @@
+name = "c_equiv_zero_sign_fmnmx_fmax3_f"
+description = """
+MISS 135 (fixtures/c_equiv_zero_sign_fmnmx/gen.py): out[i] = max.f32(max.f32(a[i], b[i]), c[i]); input set f. expected/
+is GB300's output (ptxas 13.0 -arch=sm_103a)."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/a_f.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/b_f.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/c_f.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

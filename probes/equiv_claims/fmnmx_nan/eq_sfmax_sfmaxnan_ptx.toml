@@ -1,0 +1,9 @@
+# max.f32(s, b) vs max.NaN.f32(s, b), s = sqrt.approx(a) (NaN for finite a < 0) (ptx front). The model's claim, run without captures (check.py).
+max_states = 200000
+reference = { case = "sfmax_p", variant = "good", front = "ptx", certify = true }
+
+[[candidates]]
+case = "sfmaxnan_p"
+variant = "good"
+front = "ptx"
+certify = true

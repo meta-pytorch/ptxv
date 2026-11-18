@@ -233,21 +233,47 @@ pub struct Manifest {
 /// Byte ranges (buffer index, first byte, end) of one ticket's rows (C-TICKET-ADDR).
 pub type RowRanges = Vec<(usize, u64, u64)>;
 
-/// The format of an f16 / bf16 `multimem.ld_reduce` lane whose rounding direction rests on the
-/// calibrated rule (N-MULTIMEM-ROUND16), for each byte of a simulated output that holds one
-/// (`Case::expect_compare_tol`): GB300 may return the other neighbour of the sum.
+/// An f16 / bf16 `multimem.ld_reduce` lane whose rounding direction rests on the calibrated rule
+/// (N-MULTIMEM-ROUND16), for each byte of a simulated output that holds one
+/// (`Case::expect_compare_tol`): its format, and where the other neighbour of the lane's exact
+/// sum lies, the next encoding after the simulated one (`*Next`, one step away from zero) or
+/// the previous one (`*Prev`). GB300 may return that other rounding of the sum, and no other value
+/// (MISS 162: until then either neighbour of the simulated value passed, one of which no rounding
+/// of the sum gives).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Round16 {
-    F16,
-    Bf16,
+    F16Next,
+    F16Prev,
+    Bf16Next,
+    Bf16Prev,
 }
 
 impl Round16 {
+    /// The mark of a lane of format f16 (`f16`) or bf16 whose other rounding is the next
+    /// encoding (`next`) or the previous one.
+    pub fn new(f16: bool, next: bool) -> Self {
+        match (f16, next) {
+            (true, true) => Round16::F16Next,
+            (true, false) => Round16::F16Prev,
+            (false, true) => Round16::Bf16Next,
+            (false, false) => Round16::Bf16Prev,
+        }
+    }
+
     /// The buffer dtype of this format.
     pub fn dtype(self) -> &'static str {
         match self {
-            Round16::F16 => "f16",
-            Round16::Bf16 => "bf16",
+            Round16::F16Next | Round16::F16Prev => "f16",
+            Round16::Bf16Next | Round16::Bf16Prev => "bf16",
+        }
+    }
+
+    /// The other rounding of the lane's exact sum, as an encoding, where the simulator gave
+    /// `sim`.
+    pub fn other(self, sim: u64) -> u64 {
+        match self {
+            Round16::F16Next | Round16::Bf16Next => sim.wrapping_add(1),
+            Round16::F16Prev | Round16::Bf16Prev => sim.wrapping_sub(1),
         }
     }
 }
@@ -1174,9 +1200,10 @@ impl Case {
                 String::new()
             };
             let es = b.elem_bytes();
-            // The differing elements, when every one is one unit in the last place off and
-            // every byte of it holds a calibrated lane of the buffer's dtype (`round16`, the
-            // bytes of this buffer at `start`); None when any is not.
+            // The differing elements, when every one is the other rounding of its lane's exact
+            // sum, one unit in the last place off (`ulp_class`), and every byte of it holds the
+            // same calibrated lane mark of the buffer's dtype (`round16`, the bytes of this
+            // buffer at `start`); None when any is not.
             let within = round16
                 .filter(|_| {
                     off.is_multiple_of(es) && want.len().is_multiple_of(es) && !diff.is_empty()
@@ -1184,15 +1211,17 @@ impl Case {
                 .and_then(|r16| {
                     let elems: BTreeSet<usize> = diff.iter().map(|i| i / es * es).collect();
                     let v = |x: &[u8]| x.iter().rev().fold(0u64, |a, &y| a << 8 | y as u64);
-                    let marked = |e: usize| {
-                        (0..es)
-                            .all(|k| r16[start + off + e + k].is_some_and(|f| f.dtype() == b.dtype))
+                    let mark = |e: usize| {
+                        let m = r16[start + off + e].filter(|f| f.dtype() == b.dtype)?;
+                        (1..es)
+                            .all(|k| r16[start + off + e + k] == Some(m))
+                            .then_some(m)
                     };
                     elems
                         .iter()
                         .all(|&e| {
-                            marked(e)
-                                && ulp_class(&b.dtype, v(&got[e..e + es]), v(&want[e..e + es]))
+                            let (g, w) = (v(&got[e..e + es]), v(&want[e..e + es]));
+                            mark(e).is_some_and(|m| w == m.other(g)) && ulp_class(&b.dtype, g, w)
                         })
                         .then_some(elems.len())
                 });
@@ -1541,8 +1570,9 @@ mod tests {
     }
 
     /// `expect_report_tol` with every byte marked as a calibrated lane of `mark` (MISS 67, MISS
-    /// 110): an element one encoding off in a finite value of the marked dtype is within one
-    /// ulp; an overflow to inf where the GPU kept the largest finite value (either sign), a NaN
+    /// 110, MISS 162): an element one encoding off in a finite value of the marked dtype, on the
+    /// side the mark gives for the other rounding, is within one ulp; the encoding on the other
+    /// side, an overflow to inf where the GPU kept the largest finite value (either sign), a NaN
     /// where the GPU has inf, NaN against a NaN with another payload, an unmarked byte, a byte
     /// of the other 16-bit format and every f32 element are mismatches.
     #[test]
@@ -1581,7 +1611,7 @@ mod tests {
                 "f32",
                 &[s | 0x7f7f_ffff, s | 0x7f80_0000, two, four],
                 &[s | 0x7f80_0000, s | 0x7f80_0001, two, four],
-                Some(Round16::Bf16),
+                Some(Round16::Bf16Next),
             );
             assert!(r.contains("MISMATCH"), "{r}");
             // f32 elements hold no f16 / bf16 lane: one ulp off is a mismatch.
@@ -1589,22 +1619,51 @@ mod tests {
                 "f32",
                 &[s | 0x3f80_0001, two],
                 &[s | 0x3f80_0000, two],
-                Some(Round16::Bf16),
+                Some(Round16::Bf16Prev),
             );
             assert!(r.contains("MISMATCH"), "{r}");
         }
-        for (dt, f, other, max, inf, qnan) in [
-            ("bf16", Round16::Bf16, Round16::F16, 0x7f7f, 0x7f80, 0x7fc0),
-            ("f16", Round16::F16, Round16::Bf16, 0x7bff, 0x7c00, 0x7e00),
+        for (dt, f, next, other, max, inf, qnan) in [
+            (
+                "bf16",
+                Round16::Bf16Prev,
+                Round16::Bf16Next,
+                Round16::F16Prev,
+                0x7f7f,
+                0x7f80,
+                0x7fc0,
+            ),
+            (
+                "f16",
+                Round16::F16Prev,
+                Round16::F16Next,
+                Round16::Bf16Prev,
+                0x7bff,
+                0x7c00,
+                0x7e00,
+            ),
         ] {
             for s in [0, 0x8000u64] {
-                let r = report(dt, &[s | max, 0x3c00], &[s | inf, 0x3c00], Some(f));
-                assert!(r.contains("MISMATCH"), "{dt}: {r}");
+                for m in [f, next] {
+                    let r = report(dt, &[s | max, 0x3c00], &[s | inf, 0x3c00], Some(m));
+                    assert!(r.contains("MISMATCH"), "{dt}, {m:?}: {r}");
+                }
                 let r = report(dt, &[s | max, 0x3c00], &[s | (max - 1), 0x3c00], Some(f));
                 assert!(
                     r.contains("within one ulp") && r.contains("1 of 2"),
                     "{dt}: {r}"
                 );
+                // The encoding on the other side of the simulated value is no rounding of the
+                // lane's sum (MISS 162).
+                let r = report(
+                    dt,
+                    &[s | (max - 1), 0x3c00],
+                    &[s | (max - 2), 0x3c00],
+                    Some(next),
+                );
+                assert!(r.contains("MISMATCH"), "{dt}, {next:?}: {r}");
+                let r = report(dt, &[s | (max - 1), 0x3c00], &[s | max, 0x3c00], Some(next));
+                assert!(r.contains("within one ulp"), "{dt}, {next:?}: {r}");
                 let r = report(
                     dt,
                     &[s | max, 0x3c00],

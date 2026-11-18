@@ -1,0 +1,69 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-LAUNCH-ORDER, MISS 189: miss189_order_hang's kernels, launched so that every order hangs.
+//
+//   set_flag (1 CTA x 32, launch 0, flag_ptr = other): thread 0 writes data[0] = 41, then
+//     other = 1 (st.release.gpu).
+//   wait_flag (1 CTA x 32, launch 1, flag_ptr = flag): thread 0 spins (ld.acquire.gpu) until
+//     flag != 0, then every thread writes out[tid] = data[0] + tid after a bar.sync.
+//
+// No grid sets flag: wait_flag never completes, whether the grids overlap (the strict reading
+// of the unknown order) or run in the list's order, and it blocks at the same place in both.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry wait_flag(.param .u64 flag_ptr, .param .u64 data_ptr, .param .u64 out_ptr)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        $L_sync;
+    ld.param.u64    %rd0, [flag_ptr];
+    cvta.to.global.u64 %rd1, %rd0;
+$L_spin:
+    ld.acquire.gpu.global.u32 %r1, [%rd1];
+    setp.eq.u32     %p2, %r1, 0;
+    @%p2 bra        $L_spin;
+$L_sync:
+    bar.sync        0;
+    ld.param.u64    %rd2, [data_ptr];
+    cvta.to.global.u64 %rd3, %rd2;
+    ld.relaxed.gpu.global.u32 %r2, [%rd3];
+    add.u32         %r3, %r2, %r0;
+    ld.param.u64    %rd4, [out_ptr];
+    cvta.to.global.u64 %rd5, %rd4;
+    mul.wide.u32    %rd6, %r0, 4;
+    add.u64         %rd7, %rd5, %rd6;
+    st.global.u32   [%rd7], %r3;
+    ret;
+}
+
+.visible .entry set_flag(.param .u64 flag_ptr, .param .u64 data_ptr)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<16>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p1, %r0, 0;
+    @%p1 bra        $L_done;
+    ld.param.u64    %rd0, [data_ptr];
+    cvta.to.global.u64 %rd1, %rd0;
+    mov.u32         %r1, 41;
+    st.relaxed.gpu.global.u32 [%rd1], %r1;
+    ld.param.u64    %rd2, [flag_ptr];
+    cvta.to.global.u64 %rd3, %rd2;
+    mov.u32         %r2, 1;
+    st.release.gpu.global.u32 [%rd3], %r2;
+$L_done:
+    ret;
+}

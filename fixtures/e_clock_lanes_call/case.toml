@@ -1,0 +1,40 @@
+name = "e_clock_lanes_call"
+description = """
+E-CLOCK (MISS 76 follow-up): the odd lanes read the clock in a `__noinline__` callee
+(`CALL.REL`), the even lanes keep v = 0; after reconvergence the warp branches on v & 1 and,
+on GB300, splits whenever the odd lanes' clock is odd. The lane-varying regions did not follow
+the call into the callee (elect_lanes::Cfg had no call or return edges), so the clock choice
+fixed one side for all 32 lanes. A call under lane-varying control now puts its callee in the
+region: the value is lane-varying and the choice of several lanes is unmodeled (the violation:
+per-instruction choices of if-converted code, a known precision gap). Binary only:
+k.cu built with `nvcc -cubin -arch=sm_103a`."""
+cubin = "kernel.cubin"
+entry = "lanes_call"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "n"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "n"
+
+[[variants]]
+id = "good"
+summary = "a branch on a clock value read by the odd lanes only"
+expect = ["nondeterministic", "unmodeled", "violation"]

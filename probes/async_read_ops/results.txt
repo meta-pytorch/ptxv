@@ -1,0 +1,2 @@
+# Static only (no GB300 run: a hardware run needs a cluster kernel with a remote mbarrier).
+# The evidence class is ptxas's own read scoreboard on each op, as for MISS 131.

@@ -1,0 +1,54 @@
+name = "probe_ldcu_pair"
+description = """Probe (MISS 181, the review repro): `LDCU.64 UR6` (patched to wr=SB3) then `LOP3 R5, R7, UR7` reading only the
+high register of the uniform pair. HI_NOWAIT: no wait on SB3 at the LOP3 (the IADD3 reading UR6
+waits SB3). LO_NOWAIT (control): neither waits SB3, so UR6 is read early too. OWN: the LOP3 waits SB3. GB300 (first launch of each process) in results.txt."""
+ptx = "kernel.ptx"
+entry = "ldcu_hi"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u64"
+value = 6066930334832433271
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "HI_NOWAIT"
+expect = ["violation"]
+patch = [
+  { at = "@0x0030", wbar = 3, expect = "LDCU.64 UR6, c[0x0][0x388]" },
+  { at = "@0x0050", wait = 1, expect = "LOP3.LUT R5, R7.reuse, UR7, RZ, 0x3c, !PT" },
+  { at = "@0x0070", wait = 8, expect = "IADD3 R7, PT, PT, R7, UR6, RZ" },
+]
+
+[[variants]]
+id = "LO_NOWAIT"
+expect = ["violation"]
+patch = [
+  { at = "@0x0030", wbar = 3, expect = "LDCU.64 UR6, c[0x0][0x388]" },
+  { at = "@0x0050", wait = 1, expect = "LOP3.LUT R5, R7.reuse, UR7, RZ, 0x3c, !PT" },
+  { at = "@0x0070", wait = 0, expect = "IADD3 R7, PT, PT, R7, UR6, RZ" },
+]
+
+[[variants]]
+id = "OWN"
+expect = ["clean"]
+patch = [
+  { at = "@0x0030", wbar = 3, expect = "LDCU.64 UR6, c[0x0][0x388]" },
+  { at = "@0x0050", wait = 9, expect = "LOP3.LUT R5, R7.reuse, UR7, RZ, 0x3c, !PT" },
+  { at = "@0x0070", wait = 0, expect = "IADD3 R7, PT, PT, R7, UR6, RZ" },
+]

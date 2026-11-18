@@ -1,0 +1,42 @@
+name = "probe_dpor_tx_level"
+description = """
+DPOR repro (MISS 273, RDP2 finding E): the deficit a decrement leaves depends on the decrements
+run before it, and decrements read only while an arrival is pending, so the i < d rule of the
+last-arrival levels held in the state DPOR recorded and not in the other order. D2 then A
+completes phase 0 before D1 lands (race on b). fixtures.rs
+`dpor_orders_tx_increments_against_decrements` checks the stateful classes and DPOR against
+them; probes/txfuzz/run.sh compares both with the unreduced search.
+"""
+ptx = "kernel.ptx"
+entry = "tx_level"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+# PTX: the unreduced search also has nondeterministic, which the reductions may lose past the
+# race (E-DRF); probes/txfuzz/run.sh compares against the unreduced classes.
+[[variants]]
+id = "good"
+summary = "warps D1, A, D2: D2 then A completes phase 0 before D1 lands"
+expect = ["deadlock", "race"]
+expect_sass = ["deadlock", "nondeterministic"]
+
+[[variants]]
+id = "D1D2A"
+summary = "warps D1, D2, A"
+edits = [
+    { marker = "@W1", find = "mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 _, [%r4], 8;", replace = "mbarrier.complete_tx.relaxed.cta.shared::cta.b64 [%r4], 8;" },
+    { marker = "@W2", find = "mbarrier.complete_tx.relaxed.cta.shared::cta.b64 [%r4], 8;", replace = "mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 _, [%r4], 8;" },
+]
+expect = ["deadlock", "race"]
+expect_sass = ["deadlock", "nondeterministic"]

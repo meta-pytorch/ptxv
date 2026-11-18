@@ -1,0 +1,35 @@
+name = "r6n_arith"
+description = """
+MISS 257 repro, the payload of cas_fail/, fa0/, fa1/: dst[i] = rn(A_i + B_i) (constants); out = dst."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "r6n_arith"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "dst"]
+
+[[buffers]]
+name = "dst"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

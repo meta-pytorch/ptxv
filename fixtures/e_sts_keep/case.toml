@@ -1,0 +1,51 @@
+name = "e_sts_keep"
+description = """
+MISS 75, strict SASS level (review repro; grid 1, block 32): the lanes of one shared store
+(`st.volatile.shared`, one `STS` by all lanes) write their tid to one word; every lane reads it
+after `bar.warp.sync` and traps if lane 0's value remains. GB300 keeps the lowest lane's
+value: good traps in 20 of 20 launches, HIGH (trap on lane 31's value) and OUT (the word to
+out[tid], no trap) write all zeros in 500 of 500 runs each. Before the strict fix the strict
+SASS level kept lane order (lane 31's value): good clean, and the gb300 profile, which keeps
+the lowest lane's bytes (E-HW-STS-LOWEST), runs only after a strict finding. Both fronts now
+take one order per distinct value (MISS 74 on PTX, MISS 75 on SASS): good and HIGH reach the
+trap and the other values' outputs, OUT has 32 outputs. The gb300 profile: good traps, HIGH and
+OUT are clean with GB300's all-zero output."""
+ptx = "kernel.ptx"
+entry = "sts_keep"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "trap if lane 0's value remains (GB300's outcome)"
+hw_note = "GB300: 20 of 20 launches trap (unspecified launch failure; ptxv hw --scrub, one run per launch)"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "HIGH"
+summary = "trap if lane 31's value remains (lane order's outcome)"
+marker = "@CMP"
+find = "setp.eq.u32 %p1, %r3, 0;"
+replace = "setp.eq.u32 %p1, %r3, 31;"
+hw_note = "GB300: 500 of 500 runs without a trap, out all zeros (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "OUT"
+summary = "no trap: out[tid] = the word"
+marker = "@TRAP"
+find = "@%p1 trap;"
+replace = "// no trap"
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]

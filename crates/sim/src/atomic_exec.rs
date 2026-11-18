@@ -20,12 +20,23 @@ impl FloatingArithmetic for Arithmetic {
         fp::f32_fma(old, 0x3f80_0000, Some(value), Rnd::Rn, true)
     }
 
+    // ASSUME(N-ATOMIC): `FAddFtz` in shared memory keeps subnormals (MISS 142).
+    fn add_f32(old: u32, value: u32) -> u32 {
+        fp::f32_fma(old, 0x3f80_0000, Some(value), Rnd::Rn, false)
+    }
+
     fn add_f64(old: u64, value: u64) -> u64 {
         fp::f64_fma(old, 1f64.to_bits(), Some(value), Rnd::Rn)
     }
 
     fn add_bf16(old: u16, value: u16) -> u16 {
         fp::bf16_fma(old, 0x3f80, value)
+    }
+
+    // ASSUME(N-F16X2): f16 a*1 + b, one rounding to nearest even, subnormals kept, NaN 0x7fff
+    // (probes/half_add).
+    fn add_f16(old: u16, value: u16) -> u16 {
+        fp::f16_fma_rn(old, 0x3c00, value)
     }
 }
 
@@ -48,5 +59,7 @@ pub(crate) fn operation(op: AtomOp) -> Operation {
         AtomOp::FAdd64 => Operation::AddF64,
         AtomOp::AddBf16 => Operation::AddBf16,
         AtomOp::AddBf16x2 => Operation::AddBf16x2,
+        AtomOp::AddF16 => Operation::AddF16,
+        AtomOp::AddF16x2 => Operation::AddF16x2,
     }
 }

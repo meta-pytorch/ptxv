@@ -1,0 +1,91 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 138 and MISS 147 (the fifth review's ex2ovf probes and D2): y = RN(t C + 2),
+// t = RN(x 2^100), C = f32(3 ln2 2^-120). In the real arithmetic y = 2 + B x with B = 2^100 C
+// (affine); for |x| >= 2^28 t overflows and so does y, while 2 + B x is 534 to 1066. Probed
+// around the captured x = 100 (case ex2ovf2), the curvature of exp2(1 + 3 2^-21 x), sqrt(4 + c x)
+// and rcp(1/2 - c x) is below a rounding, so they fit about as well as the affine form. Until
+// MISS 138 the snapped exp2 form outranked the affine one (its slope B fitted), overflowed where
+// the kernel's t does, and every overflow counted as an equal infinity: Tier 3 0 [0, 1.22e-2]
+// where GB300 differs on 3831 of 12800 outputs (0.2993) against RN(2 + B x). Since MISS 138 the
+// closest form with exact constants stands, the affine one (B a product of two of the slice's
+// constants; 5.93e-8 on the probes against exp2's 1.45e-7). The slice is an FMUL and an FFMA,
+// whose real function is a polynomial: since MISS 147 it takes polynomial forms only, so the
+// affine form does not rest on deviations a rounding apart (as an alternative within the
+// margin, exp2 would leave out the outputs where the two part). Probed around x = 1000 (case
+// ex2ovf) the curves do not fit anyway.
+.visible .entry rE_ex2ovf(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mul.rn.f32 %f2, %f1, 0f71800000;
+    fma.rn.f32 %f3, %f2, 0f04051592, 0f40000000;
+    st.global.f32 [%rd5], %f3;
+    ret;
+}
+
+// MISS 147, the tanh case: y = RN(x 2^-64), exact for normal results. Probed around a captured
+// x ~ N(0, 1), tanh(2^-64 x) and 2^-64 x take the same values; until MISS 147 tanh came first
+// in the candidates' order and stood alone, so at x in [2^63, 2^66) (2^-64 x in [0.5, 4]) every
+// output differed from RN(tanh(2^-64 x)): P(differ) 1 for 0. A slice of FP multiplies has a
+// polynomial real function, so it takes the affine form alone now.
+.visible .entry scale(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<4>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mul.rn.f32 %f3, %f1, 0f1F800000;
+    st.global.f32 [%rd5], %f3;
+    ret;
+}
+
+// MISS 147: the same scaling with a MUFU inside the slice, y = RN(x 2^-64) e with
+// e = ex2.approx(x 0) = 1 for finite x. The slice is no longer a polynomial, so tanh(2^-64 x)
+// and 2^-64 x both fit its probes exactly; they disagree at x in [2^63, 2^66), where the exact
+// value is not established: every output is left out, and errdist refuses (until MISS 147,
+// P(differ) 1 for 0).
+.visible .entry scale_mufu(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mul.rn.f32 %f2, %f1, 0f00000000;
+    ex2.approx.f32 %f3, %f2;
+    mul.rn.f32 %f4, %f1, 0f1F800000;
+    mul.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd5], %f5;
+    ret;
+}

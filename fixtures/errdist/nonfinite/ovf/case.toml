@@ -1,0 +1,33 @@
+name = "ovf"
+description = """entry ovf of ../ovf.ptx (an intermediate overflow on part of the domain: the
+kernel stores +Inf where the exact value is finite)."""
+ptx = "../ovf.ptx"
+entry = "ovf"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "normal"
+seed = 7
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

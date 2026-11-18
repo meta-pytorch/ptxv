@@ -1,0 +1,150 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 257 repro (cas_fail): probes/nic_num_shadow/loop with a NIC atomic in slot 1.
+.visible .entry r6n_cas_fail(
+    .param .u64 src,
+    .param .u64 sq,
+    .param .u64 cq,
+    .param .u64 uar,
+    .param .u64 dbr,
+    .param .u64 sink,
+    .param .u64 dst,
+    .param .u64 dst2,
+    .param .u64 src2,
+    .param .u64 out
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<64>;
+    .reg .f32   %f<8>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    ld.param.u64    %rd1, [dst];
+    ld.param.u64    %rd3, [src];
+    ld.param.u64    %rd4, [sq];
+    ld.param.u64    %rd5, [cq];
+    ld.param.u64    %rd6, [uar];
+    ld.param.u64    %rd7, [dbr];
+    ld.param.u64    %rd8, [sink];
+    ld.param.u64    %rd15, [dst2];
+    ld.param.u64    %rd16, [src2];
+    add.rn.f32      %f0, 0f3DCCCCCD, 0f3E4CCCCD;
+    add.rn.f32      %f1, 0f3F800000, 0f322BCC77;
+    add.rn.f32      %f2, 0f40400000, 0f3DCCCCCD;
+    add.rn.f32      %f3, 0f4CBEBC20, 0f3F800000;
+    st.global.v4.f32 [%rd1], {%f0, %f1, %f2, %f3};
+    st.global.v4.f32 [%rd3], {%f0, %f1, %f2, %f3};
+    st.global.v2.f32 [%rd3+16], {%f0, %f1};
+    st.global.v4.f32 [%rd16], {%f2, %f3, %f0, %f1};
+    mov.u64         %rd40, %rd1;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd10, %rd50, %rd51;
+    mov.u64         %rd40, %rd3;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd11, %rd50, %rd51;
+    mov.u64         %rd40, %rd1;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd12, %rd50, %rd51;
+    mov.u64         %rd40, %rd8;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd13, %rd50, %rd51;
+    mov.u64         %rd40, %rd16;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd18, %rd50, %rd51;
+    add.u64         %rd20, %rd4, 0;
+    add.u64         %rd21, %rd4, 64;
+    mov.u64         %rd30, 0x0342000008000000;
+    mov.u64         %rd31, 0x0000000008000000;
+    st.global.v2.b64 [%rd20], {%rd30, %rd31};
+    mov.u64         %rd40, %rd15;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd17, %rd50, %rd51;
+    mov.u64         %rd32, 0x0000000002020000;
+    st.global.v2.b64 [%rd20+16], {%rd17, %rd32};
+    mov.u64         %rd33, 0x0001000010000000;
+    st.global.v2.b64 [%rd20+32], {%rd33, %rd11};
+    mov.u64         %rd34, 0x0442000011010000;
+    mov.u64         %rd31, 0x0000000008000000;
+    st.global.v2.b64 [%rd21], {%rd34, %rd31};
+    mov.u64         %rd35, 0x0000000000020000;
+    st.global.v2.b64 [%rd21+16], {%rd12, %rd35};
+    mov.u64         %rd36, 0x3412000000000000;
+    mov.u64         %rd37, 0xefbeaddeefbeadde;
+    st.global.v2.b64 [%rd21+32], {%rd36, %rd37};
+    mov.u64         %rd38, 0x0101000008000000;
+    st.global.v2.b64 [%rd21+48], {%rd38, %rd13};
+    fence.release.gpu;
+    mov.u64         %rd39, 0x0042000000020000;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+    mov.u32         %r3, 0x02000000;
+    st.relaxed.sys.global.b32 [%rd7], %r3;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+CQPOLL:
+    ld.relaxed.sys.global.u8 %r4, [%rd5+127];
+    and.b32         %r5, %r4, 1;
+    setp.ne.u32     %p2, %r5, 0;
+    @%p2 bra        CQPOLL;
+    fence.acquire.sys;
+    ld.param.u64    %rd42, [out];
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd1];
+    st.global.v4.u32 [%rd42], {%r10, %r11, %r12, %r13};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd15];
+    st.global.v4.u32 [%rd42+16], {%r10, %r11, %r12, %r13};
+    ld.global.v2.u32 {%r14, %r15}, [%rd15+16];
+    st.global.v2.u32 [%rd42+32], {%r14, %r15};
+    ld.global.v2.u32 {%r14, %r15}, [%rd8];
+    st.global.v2.u32 [%rd42+40], {%r14, %r15};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd3];
+    st.global.v4.u32 [%rd42+48], {%r10, %r11, %r12, %r13};
+    ld.global.v2.u32 {%r14, %r15}, [%rd3+16];
+    st.global.v2.u32 [%rd42+64], {%r14, %r15};
+DONE:
+    ret;
+}

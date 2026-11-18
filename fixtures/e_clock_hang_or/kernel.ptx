@@ -1,0 +1,60 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CLOCK hang guard through an OR combine. Thread 32 polls a flag that thread 0 sets after a
+// 200 us sleep. The timeout predicate p4 = (now - start > x) || (now - start > 2^32), where
+// x = 1000 is loaded from memory (no slice reaches it).
+//   good: trap when p4. The trap side needs p4 true, which the first compare alone gives:
+//         the trap comes after x cycles; the long compare bounds nothing.
+//   ANDF: trap when !((now - start <= x) && (now - start <= 2^32)): the short compare alone.
+//   AND:  trap when (x != 0) && (now - start > 2^32): the trap needs the long compare.
+//   PEEL: the DeepEP shape: keep polling while (x == 0) || (now - start <= 2^32), else trap.
+//         The trap side needs !p5 false, the long compare true: a 2^32 bound.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_hang_or(.param .u64 out_p, .param .u64 in_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra READER;
+    nanosleep.u32 200000;
+    mov.u32 %r2, 7;
+    st.global.u32 [%rd1+4], %r2;
+    mov.u32 %r3, 1;
+    st.release.gpu.global.u32 [%rd1+8], %r3;
+    bra DONE;
+READER:
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    ld.global.u32 %r6, [%rd2];
+    cvt.u64.u32 %rd6, %r6;
+    mov.u64 %rd10, %clock64;
+POLL:
+    ld.acquire.gpu.global.u32 %r4, [%rd1+8];
+    setp.ne.u32 %p3, %r4, 0;
+    @%p3 bra READ;
+    mov.u64 %rd12, %clock64;
+    sub.u64 %rd13, %rd12, %rd10;
+    setp.gt.u64 %p5, %rd13, 0x100000000;
+    setp.gt.or.u64 %p4, %rd13, %rd6, %p5;   // @CMP
+    @%p4 bra TIMEOUT;   // @BR
+    bra POLL;
+TIMEOUT:
+    trap;
+READ:
+    ld.global.u32 %r5, [%rd1+4];
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

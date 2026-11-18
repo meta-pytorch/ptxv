@@ -1,0 +1,29 @@
+# run.sh, 2026-11-12, on agentDP with the over-decrement fix: exit 0 (the srcmut mutant tx-underflow-nolast is what it catches)
+good  ptx  stateful  expected [deadlock,nondeterministic,race] observed [deadlock,nondeterministic,race] ok
+good  ptx  dpor      expected [deadlock,nondeterministic,race] observed [deadlock,nondeterministic,race] ok
+good  ptx  certify   expected [deadlock,nondeterministic,race] observed [deadlock,nondeterministic,race] ok
+good  sass stateful  expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+good  sass dpor      expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+good  sass certify   expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+BAL   ptx  stateful  expected [clean]                    observed [clean]                    ok
+BAL   ptx  dpor      expected [clean]                    observed [clean]                    ok
+BAL   ptx  certify   expected [clean]                    observed [clean]                    ok
+BAL   sass stateful  expected [clean]                    observed [clean]                    ok
+BAL   sass dpor      expected [clean]                    observed [clean]                    ok
+BAL   sass certify   expected [clean]                    observed [clean]                    ok
+rc=0
+
+# On agentDP after merging int7 05eb1a04 (2cd6794f): exit 0
+good  ptx  stateful  expected [deadlock,nondeterministic,race] observed [deadlock,nondeterministic,race] ok
+good  ptx  dpor      expected [deadlock,nondeterministic,race] observed [deadlock,nondeterministic,race] ok
+good  ptx  certify   expected [deadlock,nondeterministic,race] observed [deadlock,nondeterministic,race] ok
+good  sass stateful  expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+good  sass dpor      expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+good  sass certify   expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+BAL   ptx  stateful  expected [clean]                    observed [clean]                    ok
+BAL   ptx  dpor      expected [clean]                    observed [clean]                    ok
+BAL   ptx  certify   expected [clean]                    observed [clean]                    ok
+BAL   sass stateful  expected [clean]                    observed [clean]                    ok
+BAL   sass dpor      expected [clean]                    observed [clean]                    ok
+BAL   sass certify   expected [clean]                    observed [clean]                    ok
+rc=0

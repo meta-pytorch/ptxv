@@ -1,0 +1,44 @@
+name = "e_ldtm_join"
+description = """
+E-LOCKSTEP / S-TCGEN05 (MISS 163): a SASS LDTM's TMEM read enters the thread's clock at the
+scoreboard wait that completes it, so a converged warp's lanes are joined after that
+instruction, as after a memory instruction. Warp 0 reads TMEM column 0 (tcgen05.ld, wait::ld),
+bar.warp.sync, lane 0 alone arrives; warp 4 waits and overwrites the column. good: clean on
+both fronts (SASS raced: the other lanes' reads never reached lane 0's arrive). WAITLATE:
+wait::ld after the arrive: race on both fronts."""
+ptx = "kernel.ptx"
+entry = "e_ldtm_join"
+grid = [1, 1, 1]
+block = [160, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "wait::ld before the warp sync and the elected arrive"
+expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-unmeasured:).
+expect_sass = ["contract"]
+
+[[variants]]
+id = "WAITLATE"
+summary = "wait::ld after the arrive"
+marker = "@EARLY"
+replace = "<delete>"
+expect = ["race"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-unmeasured:).
+expect_sass = ["contract", "race"]
+
+[[variants.edits]]
+marker = "@LATE"
+find = "// @LATE"
+replace = "tcgen05.wait::ld.sync.aligned; mul.lo.u32 %r8, %r7, 3;"

@@ -1,0 +1,69 @@
+name = "probe_uninit_mbar_landing"
+description = """
+Repro (MISS 279 widened, RDP2 finding J): an asynchronous mbarrier update (bulk copy, thread
+complete_tx, cp.async.mbarrier.arrive, tcgen05.commit, CLC response) issued before the
+mbarrier's init. Every landing reads the object's (re)initialization key, initialized or not.
+"""
+ptx = "kernel.ptx"
+entry = "uninit_mbar_landing"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [8]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "TMA"
+expect = ["deadlock", "race", "violation"]
+
+[[variants]]
+id = "CTX"
+summary = "a thread complete_tx 16"
+expect = ["deadlock", "race", "violation"]
+marker = "@U"
+find = "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r5], [%rd2], 16, [%r4];"
+replace = "mov.u32 %r9, 7;\n    st.shared.u32 [%r5], %r9;\n    mbarrier.complete_tx.relaxed.cta.shared::cta.b64 [%r4], 16;"
+
+[[variants]]
+id = "CPA"
+summary = "cp.async 4 bytes then cp.async.mbarrier.arrive.noinc (count 1: the arrive is phase 0's second arrival)"
+expect = ["deadlock", "fault", "race", "violation"]
+marker = "@U"
+find = "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r5], [%rd2], 16, [%r4];"
+replace = "cp.async.ca.shared.global [%r5], [%rd2], 4;\n    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r4];"
+
+[[variants]]
+id = "COMMIT"
+summary = "st t; tcgen05.commit arriving on M (count 2: the init's warp arrives once)"
+expect = ["deadlock", "race", "violation"]
+edits = [
+    { marker = "@U", find = "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r5], [%rd2], 16, [%r4];", replace = "mov.u32 %r9, 7;\n    st.shared.u32 [%r5], %r9;\n    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];" },
+    { marker = "@N", find = "mbarrier.init.shared::cta.b64 [%r4], 1;", replace = "mbarrier.init.shared::cta.b64 [%r4], 2;" },
+    { marker = "@I", find = "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;", replace = "mbarrier.arrive.shared::cta.b64 _, [%r4];" },
+]
+
+[[variants]]
+id = "CLC"
+summary = "a clusterlaunchcontrol.try_cancel response into t with complete_tx on M"
+expect = ["deadlock", "race", "violation"]
+marker = "@U"
+find = "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r5], [%rd2], 16, [%r4];"
+replace = "clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r5], [%r4];"

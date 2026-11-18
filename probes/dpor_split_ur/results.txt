@@ -1,0 +1,7 @@
+# run.sh, 2026-11-13, on agentDP-290 9b5dbf1b (before the fix): exit 1
+probes/syncwarp_fast   good  sass unreduced expected [fault,nondeterministic]     observed [fault,nondeterministic]     ok
+probes/syncwarp_fast   good  sass stateful  expected [fault,nondeterministic]     observed [fault,nondeterministic]     ok
+probes/syncwarp_fast   good  sass dpor      expected [fault,nondeterministic]     observed [clean]                      MISMATCH
+fixtures/e_split_ur    good  sass unreduced expected [nondeterministic]           observed [nondeterministic]           ok
+fixtures/e_split_ur    good  sass stateful  expected [nondeterministic]           observed [nondeterministic]           ok
+fixtures/e_split_ur    good  sass dpor      expected [nondeterministic]           observed [clean]                      MISMATCH

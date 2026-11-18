@@ -1,0 +1,45 @@
+name = "equiv_claims_select_max_mz_selsw_y"
+description = "setp.gt + selp.f32: y > x ? y : x, x = a + b, y = a - b (set y: x = a + b, y = a - b with zeros of both signs, infinities and NaNs); expected/: GB300's output (ptxas 13.0)"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/a_y.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/b_y.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

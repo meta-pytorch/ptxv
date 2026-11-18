@@ -1,0 +1,52 @@
+name = "e_warp_order_partial"
+description = """
+E-WARP-ORDER for lanes that stay together while the rest of the warp branches away (MISS 73,
+soundness review): the lower and upper half-warps take the two sides of a branch and each
+syncs its half (bar.warp.sync 0x0000ffff / 0xffff0000); on the lower side lane 0 stores the
+word twice with st.volatile and lane 1 loads it after each store (e_warp_order_div CONV's
+pair), no bar.warp.sync between them. Under the PTX model the lanes are threads, so lane 1
+may see any coherent pair; the model runs lanes 0..15 as one split and shows the
+program-order outcome only. good was PTX clean while the report needed the whole warp
+converged; it is nondeterministic now, as NODIV (no branch). NOHALF: no sync on the lower
+side, so lanes 0..15 stay one lockstep group from the branch on (not gathered again):
+nondeterministic. SASS: the converged half's program order, clean."""
+ptx = "kernel.ptx"
+entry = "e_warp_order_partial"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "half-warp branch, partial syncs, strong pairs on the lower side"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "NODIV"
+summary = "no branch before the strong pairs, full-warp sync"
+edits = [
+  { marker = "@DIV", find = "@%p3 bra UPPER;", replace = "mov.u32 %r20, 0;" },
+  { marker = "@HALF", find = "bar.warp.sync 0x0000ffff;", replace = "bar.warp.sync -1;" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "NOHALF"
+summary = "no bar.warp.sync on the lower side: lanes 0..15 stay together from the branch on"
+marker = "@HALF"
+find = "bar.warp.sync 0x0000ffff;"
+replace = "mov.u32 %r21, 0;"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

@@ -1,0 +1,74 @@
+name = "miss189_order_hang"
+description = """
+E-LAUNCH-ORDER, MISS 189: a grid that spins on a flag a later grid of its list sets. wait_flag
+(launch 0) spins until set_flag (launch 1) releases the flag, then reads data. The launch order
+is unknown (no `launch_order`): under the strict reading the two grids may run at the same time,
+and every schedule finishes; a GPU that runs the list in its order (one stream) never starts
+set_flag, and wait_flag hangs (run.sh). Since MISS 189 the strict reading
+also checks the list's order for deadlocks: good is deadlock (before: clean). DECLARED declares
+the list's order: deadlock with or without the fix. CONCURRENT gives set_flag no predecessor
+under a declared order (after = -1, the grids overlap): clean."""
+ptx = "kernel.ptx"
+entry = "wait_flag"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+# A run that finishes (the grids overlapped): out[i] = 41 + i.
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[launches]]
+entry = "set_flag"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+params = [
+    { kind = "ptr", buffer = "flag" },
+    { kind = "ptr", buffer = "data" },
+]
+
+[[variants]]
+id = "good"
+summary = "the order unknown: the list's order hangs (wait_flag never sees the flag), the strict reading's overlap finishes"
+expect = ["deadlock"]
+
+[[variants]]
+id = "DECLARED"
+summary = "the list's order declared: set_flag starts after wait_flag ends, a hang"
+launch_order = "declared"
+expect = ["deadlock"]
+
+[[variants]]
+id = "CONCURRENT"
+summary = "declared order, but set_flag after nothing (after = -1): the grids overlap and every schedule finishes"
+launch_order = "declared"
+after = [[1, -1]]
+expect = ["clean"]

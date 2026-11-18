@@ -1,0 +1,48 @@
+name = "r5e_c2_cand_zero"
+description = """
+cluster equiv probe (MISS 205): out[g] = 0. Input: w = x = 1.5 + (g + 1)/128."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "r5e_c2_cand_zero"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "../data_c2cap/x.bin"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "../data_c2cap/w.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -1,0 +1,37 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPCLASS, E-HW-SB-QUEUE): F2I and MUFU in one conversion queue. ptxas issues two
+// F2I.TRUNC.NTZ then MUFU.RCP (wr=SB1); the variants take the second F2I's write scoreboard away
+// and let its reader wait on MUFU's SB1 only (COVER) or on nothing (NOWAIT, positive control).
+// The _I2F / _F2F variants put an I2F.U16 / F2F.F16.F32 (wr=SB1) in MUFU's place.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry xu_queue(.param .u64 in_p, .param .u64 out_p)
+{
+    .reg .b32 %r<32>;
+    .reg .f32 %f<64>;
+    .reg .b64 %rd<8>;
+    .reg .b16 %rs<4>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 16;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.v4.f32 {%f1, %f2, %f3, %f4}, [%rd4];
+    rcp.approx.ftz.f32 %f5, %f1;   // @XU
+    cvt.rzi.s32.f32 %r6, %f2;
+    cvt.rzi.s32.f32 %r7, %f3;
+    mul.f32 %f8, %f5, %f4;
+    add.s32 %r9, %r6, %r7;
+    cvt.rn.f32.s32 %f9, %r9;
+    add.f32 %f10, %f9, %f5;
+    st.global.v4.f32 [%rd5], {%f5, %f8, %f9, %f10};
+    ret;
+}

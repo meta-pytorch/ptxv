@@ -38,25 +38,25 @@ expect = ["fault"]
 id = "NODIVLO"
 summary = "only the low half's BRA.DIV NOPed"
 patch = [{ at = "@0xf0", nop = true }]
-expect = ["deadlock", "fault"]
+expect = ["fault"]
 
 [[variants]]
 id = "HISKIP"
-summary = "high half skips its SHFL (NOP at 0xc0, BRA.DIV at 0xb0 NOPed) and parks at BSYNC; low half runs fast SHFL"
+summary = "high half skips its SHFL (NOP at 0xc0, BRA.DIV at 0xb0 NOPed) and passes the BSYNC (no .RECONVERGENT, MISS 81; it parked there before, a deadlock beside the low half's collective); low half runs fast SHFL"
 patch = [{ at = "@0xb0", nop = true }, { at = "@0xc0", nop = true }, { at = "@0xf0", nop = true }]
-expect = ["deadlock", "fault"]
+expect = ["fault"]
 
 [[variants]]
 id = "COLLMASK"
 summary = "high half's WARPSYNC.COLLECTIVE mask 0xffff0000: its SHFL reads low lanes outside the group"
 patch = [{ at = "@0x180", bits = [[32, 32, 0xffff0000]], expect = "MOV R2, 0xffff0000" }]
-expect = ["deadlock", "fault"]
+expect = ["fault"]
 
 [[variants]]
 id = "COLLSELF"
 summary = "high half's WARPSYNC.COLLECTIVE mask 0x0000ffff does not contain the executing lanes"
 patch = [{ at = "@0x180", bits = [[32, 32, 0x0000ffff]], expect = "MOV R2, 0xffff" }]
-expect = ["deadlock", "fault"]
+expect = ["fault"]
 
 [[variants]]
 id = "NOENDCOLL"

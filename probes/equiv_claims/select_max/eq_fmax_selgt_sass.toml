@@ -1,0 +1,10 @@
+# max.f32(a, b) vs a > b ? a : b (sass front). The model's claim, taken on set g (finite, no zeros or ties) without captures (check.py).
+max_states = 200000
+segments = true
+reference = { case = "fmax_g", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "selgt_g"
+variant = "good"
+front = "sass"
+certify = true

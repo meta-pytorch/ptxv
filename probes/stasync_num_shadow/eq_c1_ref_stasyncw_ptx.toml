@@ -1,0 +1,9 @@
+# MISS 205: c1_ref_stasyncw (explicit 1-CTA cluster) against cand_copy, ptx front.
+max_states = 200000
+reference = { case = "c1_ref_stasyncw", variant = "good", front = "ptx" }
+
+[[candidates]]
+case = "cand_copy"
+variant = "good"
+front = "ptx"
+expect = "none"

@@ -11,7 +11,9 @@
 //! this test fails and names the mutant. A mutant whose find text is gone can no longer be
 //! applied, and srcmut reports it as an error only when the mutant is run. The mutation tools'
 //! own tests (`pytest tools/mutate`) run here too: they check that --check-anchors finds a
-//! broken anchor on the path the check takes (no --root, several mutants, the whole list).
+//! broken anchor on the path the check takes (no --root, several mutants, the whole list). The
+//! open-source export has no fb/: srcmut skips the mutants of fb/ files there and prints how
+//! many (`SrcMutant.fb_only`); the internal tree checks every mutant.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -26,12 +28,18 @@ fn repo() -> PathBuf {
 }
 
 /// `$PTXV_PYTHON -I -B -m pytest -q ... ARGS tools/mutate` (default `python3`) in the repository
-/// root, and pytest's closing line (`summary`). Neither the environment nor a parent directory
-/// changes what runs: -I (no PYTHONPATH, user site or other PYTHON* variable, no current
+/// root, and pytest's closing line (`summary`). The environment and parent directories do not
+/// change what runs: -I (no PYTHONPATH, user site or other PYTHON* variable, no current
 /// directory on sys.path), PYTEST_ADDOPTS and PYTEST_PLUGINS removed, plugin autoload off, the
 /// in-tree tools/mutate/pytest.ini pinned (-c: no parent pytest.ini, tox.ini, setup.cfg or
-/// pyproject.toml) and conftest.py files read only from tools/mutate down (--confcutdir). -B and
-/// no cache provider write nothing into the tree.
+/// pyproject.toml), and no conftest.py read (--noconftest: tools/mutate tracks none, and an
+/// untracked one, which the suite's rsync copies, could stand in for a test's call;
+/// --confcutdir also stops the search at tools/mutate). PTXV_PYTHON and its site-packages are
+/// trusted: -I keeps `site`, so a .pth file or sitecustomize.py there runs before pytest (and
+/// could set PYTEST_PLUGINS after the scrub). So are the test modules under tools/mutate:
+/// pytest collects untracked ones too, and one that patches pytest itself (say
+/// `_pytest.python.Function.runtest`) makes every test pass. -B and no cache provider write
+/// nothing into the tree.
 fn pytest(args: &[&str]) -> (Output, String) {
     let python = std::env::var("PTXV_PYTHON").unwrap_or_else(|_| "python3".to_string());
     let out = Command::new(&python)
@@ -50,6 +58,7 @@ fn pytest(args: &[&str]) -> (Output, String) {
             "tools/mutate/pytest.ini",
             "--confcutdir",
             "tools/mutate",
+            "--noconftest",
         ])
         .args(args)
         .arg("tools/mutate")

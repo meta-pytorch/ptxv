@@ -1,0 +1,10 @@
+# MISS 142 (gen.py): red.shared.add.f32 (shared memory) against red.global.add.f32 of the same value into +0, sass front.
+max_states = 200000
+reference = { case = "ref_shm", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "cand_glb"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (unproven)"

@@ -1,0 +1,5 @@
+# GB300 (one GPU), 2026-11-11: ptxv hw --runs 1000 --scrub
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER  [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(999, 512), (1, 512)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw OWN    [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]

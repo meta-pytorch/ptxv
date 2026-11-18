@@ -137,7 +137,9 @@ fn softmax_stable_exp_slice_is_opened() {
 
 /// The f32-accumulator dot product with a bf16 output at N(0, 1): P(differ) about 7e-5. The
 /// linearized tier's own interval over its inputs is about +-22%, so its point value is not
-/// confirmed even where it falls inside Tier 3's tolerance.
+/// confirmed even where it falls inside Tier 3's tolerance. Since MISS 139 Tier 3's interval
+/// (the input-level bound at any count) is about +-43% after 400,000 inputs, and the
+/// cross-check's resolution refuses it first.
 #[test]
 fn rare_event_estimate_needs_its_own_resolution() {
     let j = run(
@@ -149,11 +151,10 @@ fn rare_event_estimate_needs_its_own_resolution() {
     let t2 = estimate(&j, "linearized");
     assert_eq!(t2["applicable"], false, "{}", t2["applicability"]);
     assert!(
-        t2["applicability"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|a| a.as_str().unwrap().starts_with("estimate resolution")),
+        t2["applicability"].as_array().unwrap().iter().any(|a| {
+            let a = a.as_str().unwrap();
+            a.starts_with("estimate resolution") || a.starts_with("Tier 3 cross-check resolution")
+        }),
         "{}",
         t2["applicability"]
     );

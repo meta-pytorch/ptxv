@@ -1,0 +1,46 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 139 (the third review's rE_mix): outputs that differ together on rare inputs plus outputs
+// that differ alone on most inputs (MISS 120 took the input-level bound below 20 differing
+// inputs only). 4096 bf16 outputs y_g = RN_bf16(f32(RN_f16(s_g))), exact value RN_bf16(s_g):
+// s_g = x0 (one scalar per input) for g < 4032, s_g = xs[g - 4032] for the last 64. The double
+// rounding differs on about 1/16 of continuous values and never on small integers: the 4032
+// outputs of x0 differ together or not at all; each of the 64 others alone. With s2.json-s4.json
+// (x0 N(0, 1) w.p. 0.032, else an integer in -8..8; xs N(0, 1) w.p. 0.25) the exact P(differ)
+// per compared output is 2.346110e-3 (clusters 2.0873e-3, single outputs 2.5884e-4).
+.visible .entry rE_mix(.param .u64 px0, .param .u64 pxs, .param .u64 py)
+{
+    .reg .pred %p1;
+    .reg .f32 %f<4>;
+    .reg .b16 %h<4>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px0];
+    ld.param.u64 %rd2, [pxs];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %ntid.x;
+    mad.lo.u32 %r4, %r2, %r3, %r1;
+    setp.lt.u32 %p1, %r4, 4032;
+    sub.u32 %r5, %r4, 4032;
+    selp.b32 %r6, 0, %r5, %p1;
+    mul.wide.u32 %rd4, %r6, 4;
+    selp.b64 %rd5, %rd1, %rd2, %p1;
+    add.s64 %rd6, %rd5, %rd4;
+    ld.global.f32 %f1, [%rd6];
+    cvt.rn.f16.f32 %h1, %f1;
+    cvt.f32.f16 %f2, %h1;
+    cvt.rn.bf16.f32 %h2, %f2;
+    mul.wide.u32 %rd7, %r4, 2;
+    add.s64 %rd8, %rd3, %rd7;
+    st.global.b16 [%rd8], %h2;
+    ret;
+}

@@ -1,0 +1,192 @@
+name = "e_sts_shapes"
+description = """
+E-HW-STS-LOWEST width rule (MISS 75): which lane's bytes one shared store by several lanes of a
+warp leaves on GB300, by width and active lanes (grid 1, block 32; lane 0 copies the 16-byte area
+to out after bar.warp.sync). GB300, 500 of 500 runs of each variant, one distinct output: the
+lowest active lane of the last lane phase that has an active lane, with phases of 32 / (bytes / 4)
+lanes in lane order (one phase up to 4 bytes, 16-lane phases for STS.64, 8-lane phases for
+STS.128). The gb300 profile runs that order; the strict SASS level and the PTX contract take one
+order per distinct value (nondeterministic)."""
+ptx = "kernel.ptx"
+entry = "e_sts_shapes"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "STS.64 {tid, tid + 100} by every lane to one 8-byte location"
+hw_note = "GB300: lane 16's bytes remain, out = 16 116 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "U8"
+summary = "STS.U8 of tid + 1 by every lane to one byte"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "add.u32 %r6, %r1, 1; st.volatile.shared.u8 [%r2], %r6;"
+hw_note = "GB300: lane 0's bytes remain, out = 1 0 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "V4"
+summary = "STS.128 {tid, tid+100, tid+200, tid+300} by every lane to one 16-byte location"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "st.volatile.shared.v4.u32 [%r2], {%r1, %r3, %r4, %r5};"
+hw_note = "GB300: lane 24's bytes remain, out = 24 124 224 324 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "HALF"
+summary = "u32 tid stored by lanes 8..23 only"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "sub.u32 %r6, %r1, 8; setp.lt.u32 %p3, %r6, 16; @%p3 st.volatile.shared.u32 [%r2], %r1;"
+hw_note = "GB300: lane 8's bytes remain, out = 8 0 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "U16"
+summary = "STS.U16 of tid + 1 by every lane to one halfword"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "add.u32 %r6, %r1, 1; st.volatile.shared.u16 [%r2], %r6;"
+hw_note = "GB300: lane 0's bytes remain, out = 1 0 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "H64"
+summary = "STS.64 {tid, tid + 100} by lanes 4..27 only"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "sub.u32 %r6, %r1, 4; setp.lt.u32 %p3, %r6, 24; @%p3 st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+hw_note = "GB300: lane 16's bytes remain, out = 16 116 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "H128"
+summary = "STS.128 {tid, tid+100, tid+200, tid+300} by lanes 0..15 only"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "setp.lt.u32 %p3, %r1, 16; @%p3 st.volatile.shared.v4.u32 [%r2], {%r1, %r3, %r4, %r5};"
+hw_note = "GB300: lane 8's bytes remain, out = 8 108 208 308 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L64_0_15"
+summary = "STS.64 by lanes 0..15 (phase rule: lane 0)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "setp.lt.u32 %p3, %r1, 16; @%p3 st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+hw_note = "GB300: lane 0's bytes remain, out = 0 100 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L64_3_20"
+summary = "STS.64 by lanes 3 and 20 (phase rule: lane 20)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "setp.eq.u32 %p3, %r1, 3; setp.eq.or.u32 %p3, %r1, 20, %p3; @%p3 st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+hw_note = "GB300: lane 20's bytes remain, out = 20 120 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L128_9_14"
+summary = "STS.128 by lanes 9..14 (phase rule: lane 9)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "sub.u32 %r6, %r1, 9; setp.lt.u32 %p3, %r6, 6; @%p3 st.volatile.shared.v4.u32 [%r2], {%r1, %r3, %r4, %r5};"
+hw_note = "GB300: lane 9's bytes remain, out = 9 109 209 309 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L128_5_17"
+summary = "STS.128 by lanes 5 and 17 (phase rule: lane 17)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "setp.eq.u32 %p3, %r1, 5; setp.eq.or.u32 %p3, %r1, 17, %p3; @%p3 st.volatile.shared.v4.u32 [%r2], {%r1, %r3, %r4, %r5};"
+hw_note = "GB300: lane 17's bytes remain, out = 17 117 217 317 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L128_0_7_24_31"
+summary = "STS.128 by lanes 0..7 and 24..31 (phase rule: lane 24)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "and.b32 %r6, %r1, 24; setp.eq.u32 %p3, %r6, 0; setp.eq.or.u32 %p3, %r6, 24, %p3; @%p3 st.volatile.shared.v4.u32 [%r2], {%r1, %r3, %r4, %r5};"
+hw_note = "GB300: lane 24's bytes remain, out = 24 124 224 324 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L64_16_31"
+summary = "STS.64 by lanes 16..31 (phase rule: lane 16)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "setp.ge.u32 %p3, %r1, 16; @%p3 st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+hw_note = "GB300: lane 16's bytes remain, out = 16 116 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L64_15_16"
+summary = "STS.64 by lanes 15 and 16 (phase rule: lane 16)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "sub.u32 %r6, %r1, 15; setp.lt.u32 %p3, %r6, 2; @%p3 st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+hw_note = "GB300: lane 16's bytes remain, out = 16 116 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L128_7_8"
+summary = "STS.128 by lanes 7 and 8 (phase rule: lane 8)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "sub.u32 %r6, %r1, 7; setp.lt.u32 %p3, %r6, 2; @%p3 st.volatile.shared.v4.u32 [%r2], {%r1, %r3, %r4, %r5};"
+hw_note = "GB300: lane 8's bytes remain, out = 8 108 208 308 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L64_ODD"
+summary = "STS.64 by the odd lanes (phase rule: lane 17)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "and.b32 %r6, %r1, 1; setp.eq.u32 %p3, %r6, 1; @%p3 st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+hw_note = "GB300: lane 17's bytes remain, out = 17 117 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "L128_ODD"
+summary = "STS.128 by the odd lanes (phase rule: lane 25)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "and.b32 %r6, %r1, 1; setp.eq.u32 %p3, %r6, 1; @%p3 st.volatile.shared.v4.u32 [%r2], {%r1, %r3, %r4, %r5};"
+hw_note = "GB300: lane 25's bytes remain, out = 25 125 225 325 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "U8_ODD"
+summary = "STS.U8 of tid + 1 by the odd lanes (one phase: lane 1)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "and.b32 %r6, %r1, 1; setp.eq.u32 %p3, %r6, 1; add.u32 %r7, %r1, 1; @%p3 st.volatile.shared.u8 [%r2], %r7;"
+hw_note = "GB300: lane 1's bytes remain, out = 2 0 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "U16_HALF"
+summary = "STS.U16 of tid + 1 by lanes 8..23 (one phase: lane 8)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "sub.u32 %r6, %r1, 8; setp.lt.u32 %p3, %r6, 16; add.u32 %r7, %r1, 1; @%p3 st.volatile.shared.u16 [%r2], %r7;"
+hw_note = "GB300: lane 8's bytes remain, out = 9 0 0 0 in 500 of 500 runs (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]

@@ -149,6 +149,7 @@ pub fn boundary(
     let mut fin = fin.with_statics(full);
     fin.sink = 0;
     fin.weak_stop = 0;
+    fin.race_stop = false;
     fold_completed(&mut fin);
     fin.wlog = Default::default();
     fin.ring = None;
@@ -512,8 +513,10 @@ impl Meet {
     }
 }
 
-/// Explore `m` (both shared-memory models, `smem::two_pass`), folding every terminal state
-/// into a `Meet`.
+/// Explore `m` (both shared-memory models: `explore` runs `smem::two_pass`), folding every
+/// terminal state into a `Meet`. Not inside a second `two_pass`: on a group whose weak
+/// verdict goes to the strong pass, the weak pass would run again inside the strong pass's
+/// `explore`.
 pub(crate) fn explore_meet(mut m: Machine, max_states: usize) -> (Verdict, Meet) {
     let id = SINK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     SINK.lock()
@@ -521,7 +524,7 @@ pub(crate) fn explore_meet(mut m: Machine, max_states: usize) -> (Verdict, Meet)
         .get_or_insert_with(Default::default)
         .insert(id, Meet::default());
     m.sink = id;
-    let v = crate::smem::two_pass(m, |m| crate::explore::explore(m, max_states));
+    let v = crate::explore::explore(m, max_states);
     let meet = SINK
         .lock()
         .unwrap()
@@ -664,8 +667,8 @@ pub fn check_groups(
 pub static SLICES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Debugging and bounded-run options of `check_groups_opts` (the CLI reads them from
-/// `PTXV_GROUPS_RUN`, `PTXV_GROUPS_UPTO`, `PTXV_GROUPS_BOUNDED`). Each makes the verdict
-/// incomplete.
+/// `PTXV_GROUPS_RUN`, `PTXV_GROUPS_UPTO`, `PTXV_GROUPS_BOUNDED`, `PTXV_GROUPS_FIRST_RACE`).
+/// Each makes the verdict incomplete.
 #[derive(Clone, Debug, Default)]
 pub struct Opts {
     /// Groups 1..run_first are one deterministic run each (explore::run_once), not checked.
@@ -676,6 +679,10 @@ pub struct Opts {
     pub bounded: bool,
     /// Explore a group one thread slice at a time when it splits (E-SLICE, slices.rs).
     pub slices: bool,
+    /// Opt-in, for tests and quick checks, never a default: each search of an explored group
+    /// stops at its first race, with no race rerun and no depth run (`Machine::race_stop`);
+    /// the group's verdict is then incomplete.
+    pub first_race: bool,
 }
 
 impl Opts {
@@ -687,6 +694,7 @@ impl Opts {
             bounded: std::env::var("PTXV_GROUPS_BOUNDED").is_ok(),
             slices: std::env::var("PTXV_SLICES").is_ok_and(|x| x != "0")
                 || SLICES.load(std::sync::atomic::Ordering::Relaxed),
+            first_race: std::env::var("PTXV_GROUPS_FIRST_RACE").is_ok_and(|x| x != "0"),
         }
     }
 }
@@ -811,10 +819,12 @@ fn check_groups_pre(
                 // the ranks check that they continue from the same state (`agree`).
                 let local = !last && crate::dist::get().is_some();
                 crate::dist::set_local(local);
+                let mut start = cur.clone();
+                start.race_stop = opts.first_race;
                 // E-SLICE (`PTXV_SLICES=1`, `ptxv check --groups ... --slices`): one thread
                 // slice at a time when the group splits.
                 let (mut v, meet) = if opts.slices {
-                    crate::slices::explore_meet_sliced(&cur, max_states, &mut |k, name, v| {
+                    crate::slices::explore_meet_sliced(&start, max_states, &mut |k, name, v| {
                         eprintln!(
                             "  group {} slice {k} ({name}): {:?} states={} terminal={}{} {:.1}s",
                             i + 1,
@@ -826,9 +836,15 @@ fn check_groups_pre(
                         )
                     })
                 } else {
-                    explore_meet(cur.clone(), max_states)
+                    explore_meet(start, max_states)
                 };
                 crate::dist::set_local(false);
+                if opts.first_race {
+                    v.notes.push(format!(
+                        "launch group {}: explored with the first-race option (each search stops at its first race, with no race rerun and no depth run)",
+                        i + 1
+                    ));
+                }
                 v.notes.push(format!(
                     "launch group {}: certificate failed ({}), explored",
                     i + 1,

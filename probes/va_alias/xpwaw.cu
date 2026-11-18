@@ -12,6 +12,14 @@
 //   same-thread: the red and the unicast op come from one thread (rank 0 / GPU 0, own replica).
 //   other-rank: rank 1 does the red and then a multimem.st.release flag; rank 0 acquires the flag
 //   through its unicast replica, optionally fences, does the unicast op and checks.
+// Store-poll-restore (ops "st-poll" / "st-nopoll", 2026-11-12): a lamport slot's reuse. The
+// writer stores k through the multicast VA (multimem.st.relaxed.sys); the restorer polls the
+// word through the unicast VA of its replica (ld.relaxed.sys) until it reads k ("st-poll"), then
+// restores the empty mark with a weak st.global of 0 through the unicast VA; after a settle the
+// word must read 0 (k: the multicast store landed after the restore). same-thread: one thread
+// stores and restores its own replica; other-rank: rank 1 stores, rank 0 polls and restores, then
+// acks. "st-nopoll" (same-thread only) restores right after the store, without the poll: the
+// detector's positive control.
 // Controls: fence.proxy.alias (writer between red and op / flag, reader before the op), private
 // (XP_PRIV=1 XP_SINGLE=1: plain red and atom on an unbound buffer, no alias), one-process
 // (XP_SINGLE=1: one process drives both GPUs). Stress: co-reader warps refilling the counter line
@@ -74,6 +82,9 @@ struct Cfg {
     int dmask;      // delay mask (clock cycles) between the multicast red and what follows
     int priv;       // control: plain red/atom on a private buffer (no multicast object)
 };
+// ops: 0 exch, 1 add (after a multimem.red), 2 st-poll, 3 st-nopoll (after a multimem.st)
+#define OP_STPOLL 2
+#define OP_STNOPOLL 3
 
 __device__ __forceinline__ u32 smid() {
     u32 r;
@@ -114,6 +125,31 @@ __device__ __forceinline__ u32 ld_ack(const u32 *p) {
     return v;
 }
 __device__ __forceinline__ void alias_fence() { asm volatile("fence.proxy.alias;" ::: "memory"); }
+__device__ __forceinline__ void mc_st(u32 *p, u32 v, int priv) {
+    if (priv) asm volatile("st.relaxed.sys.global.u32 [%0], %1;" ::"l"(p), "r"(v) : "memory");
+    else asm volatile("multimem.st.relaxed.sys.global.u32 [%0], %1;" ::"l"(p), "r"(v) : "memory");
+}
+__device__ __forceinline__ u32 ld_rlx_sys(const u32 *p) {
+    u32 v;
+    asm volatile("ld.relaxed.sys.global.u32 %0, [%1];" : "=r"(v) : "l"(p) : "memory");
+    return v;
+}
+__device__ __forceinline__ void st_weak0(u32 *p) { asm volatile("st.global.u32 [%0], 0;" ::"l"(p) : "memory"); }
+// store-poll-restore check after iteration k: 0 ok (the restore is the last write), k stale (the
+// multicast store landed after it)
+__device__ __forceinline__ void classify_restore(u32 v, u32 k, u64 &ok, u64 &stale, u64 &other) {
+    if (v == 0) ok++;
+    else if (v == k) stale++;
+    else other++;
+}
+// poll the unicast word until it reads k (the restorer's observation); false on timeout / abort
+__device__ __forceinline__ bool poll_eq(const u32 *p, u32 k, u32 *abort_) {
+    u64 t0 = clock64();
+    while (ld_rlx_sys(p) != k) {
+        if (clock64() - t0 > TIMEOUT || *(volatile u32 *)abort_) return false;
+    }
+    return true;
+}
 
 
 
@@ -199,9 +235,21 @@ __global__ void k_writer(u32 *MC, u32 *U, int iters, Cfg c, u64 *cnt, u32 *abort
             }
         }
         delay(seed, c.dmask);
-        mc_red(cmc, c.ws, c.sys, c.priv);
+        if (c.op >= OP_STPOLL) mc_st(cmc, k, c.priv);
+        else mc_red(cmc, c.ws, c.sys, c.priv);
         if (c.wf) alias_fence();
-        if (c.mode == 0) {
+        if (c.mode == 0 && c.op >= OP_STPOLL) {
+            if (c.op == OP_STPOLL && !poll_eq(cu, k, abort_)) {
+                tmo++;
+                atomicExch(abort_, 1u);
+                goto out;
+            }
+            st_weak0(cu);
+            settle();
+            classify_restore(ld_ack(cu), k, ok, stale, other);
+        } else if (c.op >= OP_STPOLL) {
+            // other-rank: the stored word is the signal (the reader polls it); no flag
+        } else if (c.mode == 0) {
             uc_op(cu, k << 8, c.op, c.ws, c.sys);
             settle();
             u32 v = ld_ack(cu);
@@ -236,20 +284,32 @@ __global__ void k_reader(u32 *MC, u32 *U, int iters, Cfg c, u64 *cnt, u32 *abort
     u32 prev = 0;
     u64 ok = 0, stale = 0, other = 0, tmo = 0;
     for (u32 k = 1; k <= (u32)iters; k++) {
-        u64 t0 = clock64();
-        while (ld_ack(flag) < k) {
-            if (clock64() - t0 > TIMEOUT || *(volatile u32 *)abort_) {
+        if (c.op >= OP_STPOLL) {
+            if (!poll_eq(cu, k, abort_)) {
                 tmo++;
                 atomicExch(abort_, 1u);
                 goto out;
             }
+            if (c.rf) alias_fence();
+            st_weak0(cu);
+            settle();
+            classify_restore(ld_ack(cu), k, ok, stale, other);
+        } else {
+            u64 t0 = clock64();
+            while (ld_ack(flag) < k) {
+                if (clock64() - t0 > TIMEOUT || *(volatile u32 *)abort_) {
+                    tmo++;
+                    atomicExch(abort_, 1u);
+                    goto out;
+                }
+            }
+            if (c.rf) alias_fence();
+            uc_op(cu, k << 8, c.op, c.ws, c.sys);
+            settle();
+            u32 v = ld_ack(cu);
+            classify(v, prev, k, c.op, ok, stale, other);
+            prev = v;
         }
-        if (c.rf) alias_fence();
-        uc_op(cu, k << 8, c.op, c.ws, c.sys);
-        settle();
-        u32 v = ld_ack(cu);
-        classify(v, prev, k, c.op, ok, stale, other);
-        prev = v;
         if (c.priv) asm volatile("st.release.sys.global.u32 [%0], %1;" ::"l"(ack), "r"(k) : "memory");
         else asm volatile("multimem.st.release.sys.global.u32 [%0], %1;" ::"l"(ack), "r"(k) : "memory");
     }
@@ -437,17 +497,19 @@ int main(int argc, char **argv) {
         RK(cudaStreamCreateWithFlags(&st[i], cudaStreamNonBlocking));
     }
     FILE *fo = (single || rank_ == 0) ? fopen(out, "a") : nullptr;
-    const char *wsn[] = {"relaxed", "release"}, *opn[] = {"exch", "add"}, *modn[] = {"same-thread", "other-rank"};
+    const char *wsn[] = {"relaxed", "release"}, *opn[] = {"exch", "add", "st-poll", "st-nopoll"}, *modn[] = {"same-thread", "other-rank"};
     int run = 0;
     // S: actor = rank 0 / GPU index 0 (red, unicast op, check on its own replica).
     // O: writer = rank 1 / GPU index 1 (red, release flag); reader = rank 0 / GPU index 0 (unicast op, check).
     for (int stress = 0; stress < 2; stress++)
     for (int mode = 0; mode < 2; mode++)
-    for (int op = 0; op < 2; op++)
+    for (int op = 0; op < 4; op++)
     for (int sys = 1; sys >= 0; sys--)
     for (int ws = 0; ws < 2; ws++)
     for (int fen = 0; fen < 4; fen++) {
         if (mode == 0 && fen >= 2) continue;  // S has one fence slot (between red and unicast op)
+        // store-poll-restore rows: relaxed.sys stores and polls only; st-nopoll is same-thread only
+        if (op >= OP_STPOLL && (ws || !sys || (op == OP_STNOPOLL && mode == 1))) continue;
         Cfg c{mode, op, ws, sys, fen & 1, (fen >> 1) & 1, stress, 0, priv};
         char name[256];
         snprintf(name, sizeof name, "%s waw-%s %s %s.%s wf%d rf%d stress%d", priv ? "private" : "multicast", modn[mode],

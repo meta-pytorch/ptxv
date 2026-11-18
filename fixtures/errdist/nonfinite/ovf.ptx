@@ -1,0 +1,57 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// errdist: NaN / Inf outputs against a finite exact value (N-ERRDIST-NONFINITE, MISS 66).
+//   ovf:    an intermediate overflow. y[i] = RN(RN(x[i] x[i]) 2^-64): the scaling is exact, so
+//           the output equals RN(x^2 2^-64) unless x^2 overflows f32 (|x| >= 2^64), where the
+//           kernel stores +Inf while the exact value x^2 2^-64 is finite: every such output
+//           differs.
+//   ovf_sq: y[i] = RN(x[i] x[i]): where x^2 overflows, RN of the exact value is +Inf too, so
+//           the output equals it.
+// spec_mix.json: x ~ N(0, 1) w.p. 0.995, uniform [2^64.5, 2^65) w.p. 0.005, so P(differ) of
+// ovf is 0.005 (plus subnormal double roundings for |x| < 2^-31, about 4e-10).
+
+.visible .entry ovf(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<4>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mul.rn.f32 %f2, %f1, %f1;
+    mul.rn.f32 %f3, %f2, 0f1F800000;
+    st.global.f32 [%rd5], %f3;
+    ret;
+}
+
+.visible .entry ovf_sq(.param .u64 px, .param .u64 py)
+{
+    .reg .f32 %f<4>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mul.rn.f32 %f2, %f1, %f1;
+    st.global.f32 [%rd5], %f2;
+    ret;
+}

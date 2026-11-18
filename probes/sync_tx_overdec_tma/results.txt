@@ -1,0 +1,80 @@
+# run.sh, 2026-11-12, on agentDP 7264932c (before the fix): exit 1
+good  ptx  unreduced expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  ptx  stateful  expected [deadlock,race,violation]  observed [deadlock]                 MISMATCH
+good  ptx  dpor      expected [deadlock,race,violation]  observed [deadlock]                 MISMATCH
+good  ptx  certify   expected [deadlock,race,violation]  observed [deadlock]                 MISMATCH
+good  sass unreduced expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass stateful  expected [deadlock,race,violation]  observed [deadlock]                 MISMATCH
+good  sass dpor      expected [deadlock,race,violation]  observed [deadlock]                 MISMATCH
+good  sass certify   expected [deadlock,race,violation]  observed [deadlock]                 MISMATCH
+BAL   ptx  unreduced expected [clean]                    observed [clean]                    ok
+BAL   ptx  stateful  expected [clean]                    observed [clean]                    ok
+BAL   ptx  dpor      expected [clean]                    observed [clean]                    ok
+BAL   ptx  certify   expected [clean]                    observed [clean]                    ok
+BAL   sass unreduced expected [clean]                    observed [clean]                    ok
+BAL   sass stateful  expected [clean]                    observed [clean]                    ok
+BAL   sass dpor      expected [clean]                    observed [clean]                    ok
+BAL   sass certify   expected [clean]                    observed [clean]                    ok
+LATE  ptx  unreduced expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  stateful  expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  dpor      expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  certify   expected [race,violation]           observed [race,violation]           ok
+LATE  sass unreduced expected [race,violation]           observed [race,violation]           ok
+LATE  sass stateful  expected [race,violation]           observed [race,violation]           ok
+LATE  sass dpor      expected [race,violation]           observed [race,violation]           ok
+LATE  sass certify   expected [race,violation]           observed [race,violation]           ok
+rc=1
+
+# After the fix (count-key write of an over-decrement with no arrival pending): exit 0
+good  ptx  unreduced expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  ptx  stateful  expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  ptx  dpor      expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  ptx  certify   expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass unreduced expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass stateful  expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass dpor      expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass certify   expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+BAL   ptx  unreduced expected [clean]                    observed [clean]                    ok
+BAL   ptx  stateful  expected [clean]                    observed [clean]                    ok
+BAL   ptx  dpor      expected [clean]                    observed [clean]                    ok
+BAL   ptx  certify   expected [clean]                    observed [clean]                    ok
+BAL   sass unreduced expected [clean]                    observed [clean]                    ok
+BAL   sass stateful  expected [clean]                    observed [clean]                    ok
+BAL   sass dpor      expected [clean]                    observed [clean]                    ok
+BAL   sass certify   expected [clean]                    observed [clean]                    ok
+LATE  ptx  unreduced expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  stateful  expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  dpor      expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  certify   expected [race,violation]           observed [race,violation]           ok
+LATE  sass unreduced expected [race,violation]           observed [race,violation]           ok
+LATE  sass stateful  expected [race,violation]           observed [race,violation]           ok
+LATE  sass dpor      expected [race,violation]           observed [race,violation]           ok
+LATE  sass certify   expected [race,violation]           observed [race,violation]           ok
+rc=0
+
+# On agentDP after merging int7 05eb1a04 (2cd6794f): exit 0
+good  ptx  unreduced expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  ptx  stateful  expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  ptx  dpor      expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  ptx  certify   expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass unreduced expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass stateful  expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass dpor      expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+good  sass certify   expected [deadlock,race,violation]  observed [deadlock,race,violation]  ok
+BAL   ptx  unreduced expected [clean]                    observed [clean]                    ok
+BAL   ptx  stateful  expected [clean]                    observed [clean]                    ok
+BAL   ptx  dpor      expected [clean]                    observed [clean]                    ok
+BAL   ptx  certify   expected [clean]                    observed [clean]                    ok
+BAL   sass unreduced expected [clean]                    observed [clean]                    ok
+BAL   sass stateful  expected [clean]                    observed [clean]                    ok
+BAL   sass dpor      expected [clean]                    observed [clean]                    ok
+BAL   sass certify   expected [clean]                    observed [clean]                    ok
+LATE  ptx  unreduced expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  stateful  expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  dpor      expected [race,violation]           observed [race,violation]           ok
+LATE  ptx  certify   expected [race,violation]           observed [race,violation]           ok
+LATE  sass unreduced expected [race,violation]           observed [race,violation]           ok
+LATE  sass stateful  expected [race,violation]           observed [race,violation]           ok
+LATE  sass dpor      expected [race,violation]           observed [race,violation]           ok
+LATE  sass certify   expected [race,violation]           observed [race,violation]           ok
+rc=0

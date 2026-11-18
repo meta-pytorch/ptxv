@@ -31,7 +31,7 @@ find = "mov.u32 %r5, %r1;"
 replace = "mov.u32 %r5, %r1;\n    st.shared.u32 [%r9], %r1;"
 # Which value the waiting lanes read is an outcome of the race. Reductions are exact for
 # race-free kernels only (E-DRF): the race is reported, the second outcome need not be.
-expect = ["race"]
+expect = ["nondeterministic", "race"]
 expect_sass = ["nondeterministic"]
 
 [[variants]]

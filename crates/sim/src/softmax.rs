@@ -40,6 +40,7 @@ use ptxv_ir::*;
 use serde::Serialize;
 
 use crate::equiv::Leaf;
+use crate::num::MaxKind;
 use crate::num::NodeKind;
 use crate::num::NumState;
 use crate::num::U32;
@@ -1038,6 +1039,13 @@ pub struct Ctx<'a> {
     term_rounded: HashMap<u64, bool>,
     /// The exp slices are base-2 (`exp2` contracts; arguments in log2 units).
     pub base2: Option<bool>,
+    /// Some maximum of a form is a select, a comparison-selection segment or an FMNMX.NAN of
+    /// operands non-NaN for every admissible input (`NodeKind::Max::fin`, N-FINITE), read as
+    /// the maximum of the values (MISS 197, 202). Other maxima of such kinds are not maxima of
+    /// the form.
+    pub finite_max: bool,
+    /// `NumState::fin` per node (`max_inputs`).
+    fin_memo: HashMap<u32, bool>,
 }
 
 /// Validity limit of the shifted form: every |c s_j| <= SHIFT_X (so the shift is <= u 2^16
@@ -1078,6 +1086,8 @@ impl<'a> Ctx<'a> {
             score_alias: HashMap::new(),
             term_rounded: HashMap::new(),
             base2: None,
+            finite_max: false,
+            fin_memo: HashMap::new(),
         }
     }
 
@@ -1234,12 +1244,37 @@ impl<'a> Ctx<'a> {
         &self.ns.nodes[n as usize].kind
     }
 
-    fn max_inputs(&self, n: u32) -> Option<(u32, u32)> {
-        match self.kind(n) {
-            NodeKind::Max { a, b, min: false } => Some((*a, *b)),
-            NodeKind::Seg(p) => crate::seg::real_maximum(&p.0),
+    /// The operands of a maximum node: an FMNMX maximum; another kind, or an FSETP + SEL
+    /// comparison-selection segment that is a real maximum, only where both operands are
+    /// non-NaN for every admissible input (`fin`, MISS 197, 202).
+    fn max_inputs(&mut self, n: u32) -> Option<(u32, u32)> {
+        let ns = self.ns;
+        match &ns.nodes[n as usize].kind {
+            NodeKind::Max {
+                a,
+                b,
+                min: false,
+                kind,
+                fin,
+            } if *kind == MaxKind::FMNMX || *fin => Some((*a, *b)),
+            NodeKind::Seg(p) => crate::seg::real_maximum(&p.0).filter(|&(a, b)| {
+                ns.non_nan_with(&mut self.fin_memo, a) && ns.non_nan_with(&mut self.fin_memo, b)
+            }),
             _ => None,
         }
+    }
+
+    /// Reading maximum node `n` (`max_inputs`) as the maximum of reals relies on N-FINITE
+    /// (`finite_max`): every kind but FMNMX, including a comparison-selection segment, picks
+    /// an operand where FMNMX would not at a NaN.
+    fn note_finite_max(&mut self, n: u32) {
+        self.finite_max |= !matches!(
+            self.kind(n),
+            NodeKind::Max {
+                kind: MaxKind::FMNMX,
+                ..
+            }
+        );
     }
 
     fn konst(&self, n: u32) -> Option<f64> {
@@ -1281,6 +1316,7 @@ impl<'a> Ctx<'a> {
                 let mut stack = vec![n];
                 while let Some(x) = stack.pop() {
                     if let Some((a, b)) = self.max_inputs(x) {
+                        self.note_finite_max(x);
                         stack.push(a);
                         stack.push(b);
                         continue;
@@ -1358,6 +1394,7 @@ impl<'a> Ctx<'a> {
                 let mut stack = vec![p.0.args[0]];
                 while let Some(x) = stack.pop() {
                     if let Some((a, b)) = self.max_inputs(x) {
+                        self.note_finite_max(x);
                         stack.push(a);
                         stack.push(b);
                         continue;
@@ -2168,10 +2205,26 @@ impl<'a> Ctx<'a> {
                 let hc = c.map(|c| self.shash(c));
                 ("fma", ab, hc, neg_ab, neg_c).hash(&mut st)
             }
-            NodeKind::Max { a, b, min } => {
-                let mut c = [self.shash(a), self.shash(b)];
-                c.sort();
-                ("max", min, c).hash(&mut st)
+            // FMNMX is symmetric; a select returns an operand by the comparison's outcome, so its
+            // operands keep their order (normalized with the mask; MISS 197, 202).
+            NodeKind::Max {
+                a, b, min, kind, ..
+            } => {
+                let (ha, hb) = (self.shash(a), self.shash(b));
+                match kind {
+                    MaxKind::Fmnmx { .. } => {
+                        ("max", min, kind, [ha.min(hb), ha.max(hb)]).hash(&mut st)
+                    }
+                    MaxKind::Select(_) => {
+                        let sw = kind.swapped();
+                        let (k, c) = match ha.cmp(&hb) {
+                            std::cmp::Ordering::Greater => (sw, [hb, ha]),
+                            std::cmp::Ordering::Equal => (kind.min(sw), [ha, hb]),
+                            std::cmp::Ordering::Less => (kind, [ha, hb]),
+                        };
+                        ("select-max", k, c).hash(&mut st)
+                    }
+                }
             }
             NodeKind::Seg(p) => {
                 (
@@ -2867,6 +2920,57 @@ impl AttnEval {
 }
 
 #[cfg(test)]
+mod max_kind_tests {
+    use super::*;
+    use crate::num::Node;
+
+    fn push(ns: &mut NumState, kind: NodeKind) -> u32 {
+        ns.nodes.push(Node {
+            kind,
+            hw: 0,
+            exact: vec![],
+            err: vec![],
+            pc: 0,
+        });
+        (ns.nodes.len() - 1) as u32
+    }
+
+    /// MISS 197, 202: a row maximum of the softmax form reads FMNMX maxima, and other kinds
+    /// only where both operands are non-NaN for every admissible input (`fin`), which relies
+    /// on N-FINITE (`Ctx::finite_max`).
+    #[test]
+    fn row_maxima_read_other_kinds_only_where_finite() {
+        let mut ns = NumState::default();
+        ns.segments = true;
+        let x = push(&mut ns, NodeKind::Input((0, 0)));
+        let y = push(&mut ns, NodeKind::Input((0, 1)));
+        let max = |ns: &mut NumState, kind, fin| {
+            push(
+                ns,
+                NodeKind::Max {
+                    a: x,
+                    b: y,
+                    min: false,
+                    kind,
+                    fin,
+                },
+            )
+        };
+        let f = max(&mut ns, MaxKind::FMNMX, true);
+        let sel = max(&mut ns, MaxKind::Select(0b1110), true);
+        let sel_nan = max(&mut ns, MaxKind::Select(0b1110), false);
+        let buf = [0u16];
+        let mut cx = Ctx::new(&ns, &buf);
+        let lf = cx.lin(f).unwrap();
+        assert!(!cx.finite_max);
+        let ls = cx.lin(sel).unwrap();
+        assert!(cx.finite_max);
+        assert_eq!(lf.0, ls.0);
+        assert!(Ctx::new(&ns, &buf).lin(sel_nan).is_err());
+    }
+}
+
+#[cfg(test)]
 mod comparison_maximum_projection_tests {
     use super::*;
     use crate::num::Node;
@@ -2897,12 +3001,17 @@ mod comparison_maximum_projection_tests {
             err: vec![],
             pc: 0,
         };
+        let constant = matches!(right, NodeKind::Leaf);
         let mut state = NumState::default();
         state.nodes = vec![
             node(NodeKind::Input((0, 0)), 0),
             node(right, right_bits),
             node(NodeKind::Seg(SegRef(std::sync::Arc::new(program))), 0),
         ];
+        // A leaf operand is a constant of the kernel, as an immediate is at execution.
+        if constant {
+            state.mark_constant(1);
+        }
         state
     }
 
@@ -3039,5 +3148,77 @@ mod comparison_maximum_projection_tests {
         let (linear, rounded) = Ctx::new(&state, &[0]).lin(2).unwrap();
         assert!(!rounded);
         assert_eq!(linear.terms, [(Atom::In((0, 0)), 1.0)].into());
+    }
+
+    /// MISS 202: a real maximum (the segment `comparison_selection_node` builds) of an input and
+    /// an input polynomial holding a non-finite constant leaf (`input_poly` takes a leaf of any
+    /// value) is not a maximum of the form: the polynomial may be NaN (x + NaN for every x),
+    /// where the selection picks an operand FMNMX would not. As for the other kinds, both
+    /// operands must be non-NaN for every admissible input (`fin`); a finite constant keeps
+    /// the reading.
+    #[test]
+    fn real_projection_rejects_polynomial_operands_with_non_finite_constants() {
+        let plan = ptxv_ir::comparison_select::Plan {
+            comparison: FCmp::Gt,
+            negate: false,
+            swap: false,
+        };
+        let (args, ops, out) =
+            crate::seg::comparison_program_parts(crate::seg::ComparisonContext {
+                plan,
+                left: 0,
+                right: 3,
+                comparison_pc: 3,
+                selection_pc: 5,
+            });
+        let program = SProg {
+            args,
+            ops,
+            out,
+            extra_pcs: Default::default(),
+        };
+        assert_eq!(crate::seg::real_maximum(&program), Some((0, 3)));
+        let node = |kind, hw| Node {
+            kind,
+            hw,
+            exact: vec![],
+            err: vec![],
+            pc: 0,
+        };
+        for (bits, maximum) in [
+            (0x3f80_0000, true),
+            (0x7fc0_0000, false),
+            (0x7f80_0000, false),
+            (0xff80_0000, false),
+        ] {
+            let mut state = NumState::default();
+            state.nodes = vec![
+                node(NodeKind::Input((0, 0)), 0),
+                node(NodeKind::Input((0, 1)), 0),
+                node(NodeKind::Leaf, bits),
+                node(NodeKind::Add(1, 2, false), bits),
+                node(
+                    NodeKind::Seg(SegRef(std::sync::Arc::new(program.clone()))),
+                    0,
+                ),
+            ];
+            state.mark_constant(2);
+            let mut cx = Ctx::new(&state, &[0]);
+            let result = cx.lin(4);
+            if maximum {
+                let (linear, rounded) = result.unwrap();
+                assert!(!rounded);
+                assert!(cx.finite_max);
+                let members = match linear.terms.keys().collect::<Vec<_>>().as_slice() {
+                    [Atom::Max(members)] => members.clone(),
+                    terms => panic!("not a maximum: {terms:?}"),
+                };
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&(0, 0)));
+                assert!(members.iter().any(|m| m.0 == SCORE_LEAF));
+            } else {
+                assert!(result.is_err(), "{bits:#x}: {result:?}");
+            }
+        }
     }
 }

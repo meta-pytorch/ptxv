@@ -1,0 +1,82 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-BAR-OVER's walk and SASS `@P BRA.U` (Op::Bra `all`; MISS 132, MISS 141). The shape of
+// fixtures/e_barover BO1. Every barrier id is an immediate, so E-BAR-OVER uses the plain walk
+// (fixtures/e_barover_brau_regid: the register-id walk). Block [32, 4, 1]: lane = %tid.x,
+// warp = %tid.y.
+// Warp 0 (producer): buf[lane] = lane + 1; bar.sync 1, 64.
+// Warp 1 (consumer): bar.sync 1, 64; out[lane] = buf[lane].
+// Warps 2, 3: p3 = lane < k1, p4 = lane < k2 (k1 = k2 = 16);
+//   a volatile store of (p3, p4): a visible instruction, so a split's step stops there with
+//     p3 and p4 computed (a walk from there starts past the ISETPs);
+//   @p3 bra SKIPPED     (`@!P0 BRA` at 0x0200; variant BRAU makes it `@!P0 BRA.U`)
+//   marker stores
+//   @!p4 bra DONE
+//   barrier.sync 1, 64  (not aligned: lanes may diverge)
+//   SKIPPED: marker stores
+// Per-lane BRA (good): lanes 0-15 branch, lanes 16-31 fall through and leave at @!p4; warps 2
+// and 3 never arrive, and barrier 1 sees 64 arrivals: clean.
+// BRA.U (BRAU): p3 does not hold in every lane, so no lane branches; lanes 0-15 pass @!p4 and
+// arrive (the warp counts 32). Barrier 1 sees 128 arrivals of count 64, as in e_barover BO1,
+// and which warps share a generation depends on arrival order.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_barover_brau(.param .u64 out_p, .param .u32 k1, .param .u32 k2, .param .u32 bid)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 buf[32];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r8, %tid.y;
+    mov.u32 %r3, buf;
+    shl.b32 %r4, %r2, 2;
+    add.u32 %r5, %r3, %r4;
+    mul.wide.u32 %rd2, %r2, 4;
+    add.u64 %rd3, %rd1, %rd2;
+    setp.ge.u32 %p1, %r8, 2;
+    @%p1 bra OTHER;
+    setp.eq.u32 %p2, %r8, 1;
+    @%p2 bra CONSUMER;
+    add.u32 %r6, %r2, 1;
+    st.shared.u32 [%r5], %r6;
+    bar.sync 1, 64;
+    bra DONE;
+CONSUMER:
+    bar.sync 1, 64;
+    ld.shared.u32 %r7, [%r5];
+    st.global.u32 [%rd3], %r7;
+    bra DONE;
+OTHER:
+    ld.param.u32 %r10, [k1];
+    ld.param.u32 %r11, [k2];
+    setp.lt.u32 %p3, %r2, %r10;
+    setp.lt.u32 %p4, %r2, %r11;
+    mad.lo.u32 %r13, %r8, 32, %r2;
+    mul.wide.u32 %rd4, %r13, 4;
+    add.u64 %rd5, %rd1, %rd4;
+    selp.u32 %r20, 1, 0, %p3;
+    selp.u32 %r21, 2, 0, %p4;
+    or.b32 %r22, %r20, %r21;
+    st.volatile.global.u32 [%rd5+2048], %r22;
+    @%p3 bra SKIPPED;
+    activemask.b32 %r14;
+    st.volatile.global.u32 [%rd5], %r14;
+    st.volatile.global.u32 [%rd5+512], %r8;
+    @!%p4 bra DONE;
+    barrier.sync 1, 64;
+    bra DONE;
+SKIPPED:
+    activemask.b32 %r15;
+    st.volatile.global.u32 [%rd5+1024], %r15;
+    st.volatile.global.u32 [%rd5+1536], %r2;
+DONE:
+    ret;
+}

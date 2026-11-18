@@ -1,0 +1,1 @@
+hw good   [scrubbed smem] error: Error: cuCtxSynchronize: an illegal instruction was encountered (0 runs, 0.6s) distinct outputs (count, words differing): []

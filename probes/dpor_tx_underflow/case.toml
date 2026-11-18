@@ -1,0 +1,39 @@
+name = "probe_dpor_tx_underflow"
+description = """
+DPOR repro (MISS 231 follow-up): a decrement that takes tx below 0 while an arrival is pending
+does not commute with the phase's last arrival. complete_tx 4 into a phase with tx 0 and one
+arrival pending, against that arrival: the arrival first completes the phase early (race on b),
+the complete_tx first leaves tx at -4 for good (deadlock). The decrement reads the last-arrival
+key, which the last arrival writes (exec.rs `rec_tx`). BAL: the arrival carries expect_tx 4, and
+the two commute. run.sh pins every explorer's classes (expected/classes.txt); fixtures.rs
+`dpor_orders_tx_increments_against_decrements` cross-checks DPOR against the stateful search.
+"""
+ptx = "kernel.ptx"
+entry = "tx_underflow"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "thread 32 completes 4 bytes with none expected, against thread 64's last arrival"
+expect = ["deadlock", "nondeterministic", "race"]
+expect_sass = ["deadlock", "nondeterministic"]
+
+[[variants]]
+id = "BAL"
+summary = "the last arrival carries expect_tx 4: the phase completes after both, in either order"
+expect = ["clean"]
+marker = "@ARV"
+find = "mbarrier.arrive.shared::cta.b64 _, [%r4];"
+replace = "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 4;"

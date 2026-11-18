@@ -1,0 +1,10 @@
+# GB300 (one GPU), 2026-11-11, rev 676cfd47 + this probe: PTXV_HW_EXPECT=variant ptxv hw --runs 1000 --scrub
+# grid 1x1x1, block 256; out[t] = {R4 (A), R5 (B), R6 (IADD3), R7}; each variant against its own simulator run
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 1.1s) distinct outputs (count, words differing): [(1000, 0)]
+hw QREAD  [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): [(998, 256), (2, 255)]
+hw QREAD_ST [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): [(998, 256), (2, 255)]
+hw QCTRL  [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): [(998, 256), (2, 255)]
+# One column wrong per run: B's (QREAD, QREAD_ST), the IADD3's (QCTRL, the positive control).
+# A SHFL does not read an earlier SHFL's unscoreboarded result in the queue: it reads it as
+# early as an ALU instruction does, also with ptxas's st=4. The static check's violation at
+# both levels stands (no same-opcode queued read for SHFL).

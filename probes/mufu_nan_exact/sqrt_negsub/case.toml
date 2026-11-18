@@ -1,0 +1,38 @@
+name = "sqrt_negsub"
+description = """
+MISS 258 repro: out = sqrt.approx.ftz.f32(x); x[i % 8 < 3] are negative subnormals (0x80000003, 0x807fffff,
+0x80000100: the .ftz forms flush them to -0; the true function has no real value there), the other
+lanes positive normals."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "sqrt_negsub"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

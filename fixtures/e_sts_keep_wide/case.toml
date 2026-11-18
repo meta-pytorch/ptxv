@@ -1,0 +1,38 @@
+name = "e_sts_keep_wide"
+description = """
+E-HW-STS-LOWEST width rule (MISS 75; review repro): the 32 lanes of one STS.64 write
+{tid, tid + 100} to one 8-byte location, then every lane traps if lane 16's value remains,
+GB300's outcome for STS.64 (e_sts_shapes good). V4: STS.128, trap on lane 24's value. GB300 traps
+in every launch of both. Before the width rule the gb300 profile kept lane 0's bytes for every
+width (clean), and the strict SASS level kept lane order (lane 31's: clean). grid 1, block 32."""
+ptx = "kernel.ptx"
+entry = "e_sts_keep_wide"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "STS.64 by every lane, trap if lane 16's value remains (GB300's outcome)"
+hw_note = "GB300: 5 of 5 launches trap here, 20 of 20 in review (ptxv hw --scrub, one run per launch)"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "V4"
+summary = "STS.128 by every lane, trap if lane 24's value remains (GB300's outcome)"
+hw_note = "GB300: 5 of 5 launches trap here, 20 of 20 in review (ptxv hw --scrub, one run per launch)"
+marker = "@ST"
+find = "st.volatile.shared.v2.u32 [%r2], {%r1, %r3};"
+replace = "st.volatile.shared.v4.u32 [%r2], {%r1, %r3, %r4, %r5};"
+edits = [{ marker = "@CMP", find = "setp.eq.u32 %p1, %r6, 16;", replace = "setp.eq.u32 %p1, %r6, 24;" }]
+expect = ["nondeterministic", "trap"]

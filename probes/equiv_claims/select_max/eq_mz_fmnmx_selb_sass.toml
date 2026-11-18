@@ -1,0 +1,10 @@
+# max.f32(x, y) vs x > y ? x : y (selp.b32: SEL), x = a + b, y = a - b (sass front). The model's claim, taken on set g (finite, no zeros or ties) without captures (check.py).
+max_states = 200000
+segments = true
+reference = { case = "mz_fmnmx_g", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "mz_selb_g"
+variant = "good"
+front = "sass"
+certify = true

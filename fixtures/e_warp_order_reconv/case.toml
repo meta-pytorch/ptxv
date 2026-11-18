@@ -1,0 +1,126 @@
+name = "e_warp_order_reconv"
+description = """
+E-WARP-ORDER after a reconvergence (MISS 73): lane 0 alone runs an init store under a
+lane-dependent branch (the warp diverges), the warp meets at bar.sync, then issues
+e_warp_order_div CONV's strong pair (lane 0 stores 1 then 2, lane 1 loads after each store).
+The PTX model lets the pair take effect in either order; the barrier gathers every live lane
+into one split, which shows only the program-order outcome, so the PTX front reports the pair
+nondeterministic, as without the divergence (NODIV, control). It was PTX clean while only a
+bar.warp.sync release ended a divergence. SHFL / ELECT: shfl.sync or elect.sync gathers the
+warp instead; they order no memory, so lane 0's plain init store also races with lane 1's
+loads. SHFLV / ELECTV / BARV / WARPV: the init store volatile (no race); WARPV gathers with
+bar.warp.sync, which ended a divergence before too (nondeterministic on both builds). SPAN: lane 0's volatile init
+store, made while the warp is apart, and lane 1's loads after a shfl.sync are unordered (the
+gathering keeps the loads after the store in every schedule): nondeterministic; with bar.sync
+(SPANBAR) they are ordered, clean. SASS: the converged warp's program order (E-WARP-ORDER,
+GB300 measured), clean."""
+ptx = "kernel.ptx"
+entry = "e_warp_order_reconv"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "diverged before bar.sync"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "NODIV"
+summary = "no divergence: lane 0's init store guarded instead of branched around"
+edits = [
+  { marker = "@DIV", replace = "<delete>" },
+  { marker = "@INIT", find = "st.shared.u32", replace = "@%p1 st.shared.u32" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SHFL"
+summary = "shfl.sync gathers the warp instead of bar.sync"
+marker = "@BAR"
+find = "bar.sync 0;"
+replace = "shfl.sync.idx.b32 %r20, %r1, 0, 0x1f, -1;"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "ELECT"
+summary = "elect.sync gathers the warp instead of bar.sync"
+marker = "@BAR"
+find = "bar.sync 0;"
+replace = "elect.sync %r21|%p6, -1;"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SHFLV"
+summary = "shfl.sync gathers the warp; the init store is volatile"
+edits = [
+  { marker = "@BAR", find = "bar.sync 0;", replace = "shfl.sync.idx.b32 %r20, %r1, 0, 0x1f, -1;" },
+  { marker = "@INIT", find = "st.shared.u32", replace = "st.volatile.shared.u32" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "ELECTV"
+summary = "elect.sync gathers the warp; the init store is volatile"
+edits = [
+  { marker = "@BAR", find = "bar.sync 0;", replace = "elect.sync %r21|%p6, -1;" },
+  { marker = "@INIT", find = "st.shared.u32", replace = "st.volatile.shared.u32" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "BARV"
+summary = "bar.sync gathers the warp; the init store is volatile"
+edits = [
+  { marker = "@INIT", find = "st.shared.u32", replace = "st.volatile.shared.u32" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SPAN"
+summary = "shfl.sync gathers the warp, lane 0 stores nothing after it: lane 0's volatile init store, made while apart, against lane 1's loads after the gathering"
+edits = [
+  { marker = "@BAR", find = "bar.sync 0;", replace = "shfl.sync.idx.b32 %r20, %r1, 0, 0x1f, -1;" },
+  { marker = "@INIT", find = "st.shared.u32", replace = "st.volatile.shared.u32" },
+  { marker = "@ST1", replace = "<delete>" },
+  { marker = "@ST2", replace = "<delete>" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SPANBAR"
+summary = "SPAN with bar.sync, which orders the init store before the loads (control)"
+edits = [
+  { marker = "@INIT", find = "st.shared.u32", replace = "st.volatile.shared.u32" },
+  { marker = "@ST1", replace = "<delete>" },
+  { marker = "@ST2", replace = "<delete>" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "WARPV"
+summary = "bar.warp.sync gathers the warp; the init store is volatile"
+edits = [
+  { marker = "@BAR", find = "bar.sync 0;", replace = "bar.warp.sync -1;" },
+  { marker = "@INIT", find = "st.shared.u32", replace = "st.volatile.shared.u32" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

@@ -477,16 +477,27 @@ pub fn canon(p: &Prog, i: u32, memo: &mut HashMap<u32, u64>) -> u64 {
         }
         // Agent AG: non-chain ops (ordered children).
         Op::Nl(nl) => {
-            // A max (min) tree is the max over the set of its non-max operands, in any order.
-            let ks: Vec<u64> = match nl {
-                super::nonlin::ops::NlOp::Max { min, .. } => {
+            // An FMNMX tree of one kind is the max (min) over the set of its other operands, in
+            // any order. A select returns one operand by the comparison's outcome: ordered
+            // operands, normalized with its mask (MISS 197).
+            use super::nonlin::ops::NlOp;
+            use crate::num::MaxKind;
+            let (shape, ks): (u64, Vec<u64>) = match nl {
+                NlOp::Max {
+                    min,
+                    kind: kind @ MaxKind::Fmnmx { .. },
+                    ..
+                } => {
                     let mut st = vec![i];
                     let mut ks = Vec::new();
                     while let Some(j) = st.pop() {
                         match &p.ops[j as usize] {
-                            Op::Nl(super::nonlin::ops::NlOp::Max { a, b, min: m2 })
-                                if m2 == min =>
-                            {
+                            Op::Nl(NlOp::Max {
+                                a,
+                                b,
+                                min: m2,
+                                kind: k2,
+                            }) if m2 == min && k2 == kind => {
                                 st.extend([*a, *b]);
                             }
                             _ => ks.push(canon(p, j, memo)),
@@ -494,11 +505,35 @@ pub fn canon(p: &Prog, i: u32, memo: &mut HashMap<u32, u64>) -> u64 {
                     }
                     ks.sort();
                     ks.dedup();
-                    ks
+                    (nl.shape_key(), ks)
                 }
-                _ => nl.args().iter().map(|&a| canon(p, a, memo)).collect(),
+                NlOp::Max {
+                    a,
+                    b,
+                    min,
+                    kind: kind @ MaxKind::Select(_),
+                } => {
+                    let (ka, kb) = (canon(p, *a, memo), canon(p, *b, memo));
+                    let sw = kind.swapped();
+                    let (k, ks) = match ka.cmp(&kb) {
+                        std::cmp::Ordering::Greater => (sw, vec![kb, ka]),
+                        std::cmp::Ordering::Equal => (std::cmp::min(*kind, sw), vec![ka, kb]),
+                        std::cmp::Ordering::Less => (*kind, vec![ka, kb]),
+                    };
+                    let normal = NlOp::Max {
+                        a: 0,
+                        b: 0,
+                        min: *min,
+                        kind: k,
+                    };
+                    (normal.shape_key(), ks)
+                }
+                _ => (
+                    nl.shape_key(),
+                    nl.args().iter().map(|&a| canon(p, a, memo)).collect(),
+                ),
             };
-            (6u8, nl.shape_key(), ks).hash(&mut h)
+            (6u8, shape, ks).hash(&mut h)
         }
     }
     let v = h.finish();

@@ -24,9 +24,13 @@ buffer = "out"
 id = "good"
 summary = "only thread 0 stores the (defined) sum of warp 0"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "store_all"
 summary = "lane 0 of each warp stores its sum: warp 1's undefined sum reaches memory"
 edits = [{ marker = "@STORE", find = "setp.eq.u32 %p2, %r1, 0;", replace = "setp.eq.u32 %p2, %r2, 0;" }]
 expect = ["violation"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "violation"]

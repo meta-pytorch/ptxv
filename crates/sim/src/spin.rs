@@ -995,11 +995,18 @@ pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
             }
             Ok((h, b))
         })();
-        // A compare-and-swap update loop (ptxas's CAS loop for an atomic without a native form,
-        // e.g. `atom.add.noftz.bf16`) is not a poll: the model runs each iteration as a step,
-        // and that terminates, since a failed attempt reads a value another thread wrote after
-        // this thread's previous read (each failure consumes one of finitely many writes).
-        if shape.is_err() && cas && cas_update_loop(code, l, h, b) {
+        // A compare-and-swap retry loop (ptxas's CAS loop for an atomic without a native form,
+        // e.g. `atom.add.noftz.f16` / `.bf16`; MISS 174) is a lock-free read-modify-write, not
+        // a poll: the model runs each attempt as a step, and that terminates on every schedule,
+        // since a failed attempt means another thread wrote the word after this thread's
+        // previous CAS read it (each failure consumes one of finitely many writes). The
+        // recognizer is exact (`ptxv_ir::casloop::cas_retry_loop`: the next compare is the
+        // returned old value, only the CAS's success exits, the address is loop-invariant);
+        // a CAS loop that waits for a value stays a poll. ASSUME(E-SPIN)
+        if cas
+            && ptxv_ir::casloop::cas_retry_loop(code, l)
+                .is_some_and(|c| c.head == h && c.branch == b)
+        {
             continue;
         }
         if strong || shape.is_ok() {
@@ -1007,48 +1014,6 @@ pub fn poll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<PollLoop> {
         }
     }
     out
-}
-
-/// `H: <pure ops>; l: d = cas [a], cmp, new; <pure ops>; @p bra H` where the only register
-/// carried from one iteration to the next is `cmp`, rewritten from `d` (a move) before the
-/// branch: an atomic read-modify-write by compare-and-swap.
-fn cas_update_loop(code: &[Inst], l: usize, h: usize, b: usize) -> bool {
-    let Op::Atom {
-        d: Some(d),
-        v: Val::Reg(cmp, _),
-        ..
-    } = &code[l].op
-    else {
-        return false;
-    };
-    let (d, cmp) = (*d, *cmp);
-    let pure = (h..b).all(|p| p == l || pure_dst(&code[p].op).is_some() || model_nop(&code[p].op));
-    let refresh = (l + 1..b).any(|p| {
-        code[p].guard.is_always()
-            && code[p].op.dst_regs() == [cmp]
-            && code[p].op.src_regs().iter().all(|r| *r == d)
-            && !code[p].op.src_regs().is_empty()
-    });
-    if !pure || !refresh {
-        return false;
-    }
-    let mut writes = std::collections::HashSet::new();
-    for inst in &code[h..b] {
-        writes.extend(inst.op.dst_regs());
-    }
-    let mut done = std::collections::HashSet::new();
-    for inst in &code[h..=b] {
-        let mut reads = inst.op.src_regs();
-        reads.extend(inst.guard.reg);
-        if reads
-            .iter()
-            .any(|r| writes.contains(r) && !done.contains(r) && *r != cmp)
-        {
-            return false;
-        }
-        done.extend(inst.op.dst_regs());
-    }
-    true
 }
 
 /// A split that arrives at a poll load (`Machine::polls`) that would fail stops there without
@@ -1132,8 +1097,9 @@ fn undef_poll(m: &mut Machine, t: usize, pc: u32, loc: crate::exec::Loc, n: usiz
     m.report("violation", format!("uninit-poll:{pc}"), msg);
 }
 
-/// A strong global or shared load (a poll the E-POLL-ANY arrival read applies to).
-fn strong_poll(op: &Op) -> bool {
+/// A strong global or shared load (a poll the E-POLL-ANY arrival read applies to; exec.rs
+/// `vip_ok` takes only such loads too).
+pub(crate) fn strong_poll(op: &Op) -> bool {
     matches!(
         op,
         Op::Ld {
@@ -1316,8 +1282,9 @@ pub fn wpoll_loops(code: &[Inst], front: ptxv_ir::Front) -> Vec<(usize, usize)> 
     out
 }
 
-/// A read of a blocked poll: thread, pc, location, bytes, strength code.
-pub type PollRead = (usize, u32, crate::exec::Loc, usize, u8);
+/// A read of a blocked poll: thread, pc, location, bytes, strength code, and the mapping it
+/// went through when the allocation has several (S-VA-ALIAS; None: one mapping).
+pub type PollRead = (usize, u32, crate::exec::Loc, usize, u8, Option<u16>);
 
 /// Runs one iteration of the warp-level poll loop (H = `h`, back branch `b`) for the split
 /// `members` on a copy. `Some(reads)` if it is a stutter step (every member back at H with
@@ -1367,7 +1334,8 @@ pub fn wpoll_dry(m0: &Machine, members: &[usize], h: u32, b: u32) -> Option<Vec<
                     .and_then(|a| m.resolve(t, *space, a, *bytes as usize))
                 {
                     let sc = sync.map_or(0, |s| crate::machine::strong_code(s.scope));
-                    reads.push((t, pc, loc, *bytes as usize, sc));
+                    let view = crate::exec::va_noted(t, loc, *bytes as usize);
+                    reads.push((t, pc, loc, *bytes as usize, sc, view));
                 }
             }
         }
@@ -1476,9 +1444,14 @@ pub(crate) fn store_spans(
         .collect()
 }
 
-/// The race-detector reads of a blocked warp-level poll (as `blocked_poll_read`).
+/// The race-detector reads of a blocked warp-level poll (as `blocked_poll_read`), each through
+/// the mapping its dry iteration resolved (S-VA-ALIAS: `wpoll_dry` ran on a copy whose
+/// instructions cleared the notes).
 pub fn blocked_wpoll_read(m: &mut Machine, reads: &[PollRead]) {
-    for &(t, pc, loc, bytes, sc) in reads {
+    for &(t, pc, loc, bytes, sc, view) in reads {
+        if let (Some(v), crate::exec::Loc::Global { alloc, off }) = (view, loc) {
+            crate::exec::va_note(t, alloc, off, bytes as u64, v);
+        }
         let saved = m.stale.replace(None);
         let vc = m.threads[t].vc.clone();
         m.access_x(t as u32, &vc, pc, loc, bytes, None, sc);
@@ -1528,6 +1501,227 @@ mod retry_tests {
             let m = crate::machine::Machine::new(Arc::new(k), Arc::new(launch));
             assert_eq!(super::retry_shape(&m, 0).is_ok(), accepted, "{target}");
         }
+    }
+}
+
+/// MISS 174 / 175: the exact CAS retry-loop recognizer (`ptxv_ir::casloop`) on ptxas 13.0's
+/// emulated `atom.add.noftz.f16` (sm_103a) and its negative controls. Each case is the SASS of
+/// the loop with one edit; `accepted` says whether the loop is a CAS retry loop (not an E-SPIN
+/// poll), `seeded` whether the front-end made the seed `LD.E` relaxed (E-CAS-SEED).
+#[cfg(test)]
+mod cas_tests {
+    const BASE: &str = r#".text.k:
+/*0000*/ LD.E R11, desc[UR4][R8.64] ;
+/*0010*/ LOP3.LUT R0, R4, 0x2, RZ, 0xc0, !PT ;
+/*0020*/ ISETP.EQ.U32.AND P0, PT, R0, RZ, PT ;
+/*0030*/ MOV R0, 0x3254 ;
+/*0040*/ SEL R0, R0, 0x7610, P0 ;
+.L_x_1:
+/*0050*/ HADD2 R2, R11, R6.H0_H0 ;
+/*0060*/ PRMT R3, R11, R0, R2 ;
+/*0070*/ ATOM.E.CAS.STRONG.GPU PT, R2, [R8], R11, R3 ;
+/*0080*/ ISETP.NE.U32.AND P0, PT, R2, R11, PT ;
+/*0090*/ IMAD.MOV.U32 R11, RZ, RZ, R2 ;
+/*00a0*/ @P0 BRA `(.L_x_1) ;
+/*00b0*/ STG.E desc[UR4][R12.64], R11 ;
+/*00c0*/ EXIT ;
+"#;
+
+    /// nvdisasm-style text: instruction addresses renumbered in order (edits insert lines),
+    /// each followed by a neutral control word.
+    fn lower(text: &str) -> ptxv_ir::Kernel {
+        let mut dis = String::new();
+        let mut pc = 0;
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("/*").and_then(|l| l.split_once("*/")) {
+                dis.push_str(&format!("/*{pc:04x}*/{}\n", rest.1));
+                dis.push_str("/* 0x000fc00000000000 */\n");
+                pc += 16;
+            } else {
+                dis.push_str(line);
+                dis.push('\n');
+            }
+        }
+        ptxv_sass::lower(&dis, "k", &ptxv_sass::CubinMeta::default())
+            .unwrap_or_else(|e| panic!("{text}: {e}"))
+    }
+
+    /// (accepted, seeded, polls) of `text`.
+    fn classify(text: &str) -> (bool, bool, usize) {
+        let k = lower(text);
+        let cas = (0..k.code.len())
+            .find(|&p| matches!(k.code[p].op, ptxv_ir::Op::Atom { .. }))
+            .unwrap();
+        let accepted = ptxv_ir::casloop::cas_retry_loop(&k.code, cas).is_some();
+        let seeded = k.code.iter().any(|i| {
+            matches!(
+                i.op,
+                ptxv_ir::Op::Ld {
+                    sync: Some(ptxv_ir::MemSync {
+                        sem: ptxv_ir::Sem::Relaxed,
+                        scope: ptxv_ir::Scope::Gpu
+                    }),
+                    ..
+                }
+            )
+        });
+        let polls = super::poll_loops(&k.code, k.front).len();
+        (accepted, seeded, polls)
+    }
+
+    fn edit(pairs: &[(&str, &str)]) -> String {
+        let mut t = BASE.to_string();
+        for (a, b) in pairs {
+            assert!(t.contains(a), "{a}");
+            t = t.replacen(a, b, 1);
+        }
+        t
+    }
+
+    #[test]
+    fn ptxas_f16_emulation_is_a_cas_retry_loop() {
+        assert_eq!(classify(BASE), (true, true, 0));
+        // `ISETP.EQ` with the branch on `!P0` repeats on failure too.
+        let eq = edit(&[
+            (
+                "ISETP.NE.U32.AND P0, PT, R2, R11",
+                "ISETP.EQ.U32.AND P0, PT, R11, R2",
+            ),
+            ("@P0 BRA", "@!P0 BRA"),
+        ]);
+        assert_eq!(classify(&eq), (true, true, 0));
+        // A plain MOV as the refresh, and a register pair {compare, new}.
+        let mov = edit(&[("IMAD.MOV.U32 R11, RZ, RZ, R2", "MOV R11, R2")]);
+        assert_eq!(classify(&mov), (true, true, 0));
+        let pair = edit(&[
+            ("PRMT R3, R11, R0, R2", "PRMT R12, R11, R0, R2"),
+            ("[R8], R11, R3", "[R8], R11, R12"),
+            (
+                "STG.E desc[UR4][R12.64], R11",
+                "STG.E desc[UR4][R14.64], R11",
+            ),
+        ]);
+        assert_eq!(classify(&pair), (true, true, 0));
+    }
+
+    #[test]
+    fn cas_loops_that_poll_stay_polls() {
+        for (why, e) in [
+            ("compare refreshed from a constant", vec![("IMAD.MOV.U32 R11, RZ, RZ, R2", "MOV R11, 0x5")]),
+            ("compare refreshed from old + 1", vec![("IMAD.MOV.U32 R11, RZ, RZ, R2", "IADD3 R11, PT, PT, R2, 0x1, RZ")]),
+            ("compare refreshed from another register", vec![("IMAD.MOV.U32 R11, RZ, RZ, R2", "IMAD.MOV.U32 R11, RZ, RZ, R3")]),
+            ("exit waits for a value", vec![("ISETP.NE.U32.AND P0, PT, R2, R11, PT", "ISETP.NE.U32.AND P0, PT, R2, 0x5, PT")]),
+            ("exit also depends on another predicate", vec![("ISETP.NE.U32.AND P0, PT, R2, R11, PT", "ISETP.NE.U32.AND P0, PT, R2, R11, P1")]),
+            ("exit repeats on success", vec![("@P0 BRA", "@!P0 BRA")]),
+            // Branch forms other than a plain per-thread `@P BRA` (RHA hole A): with `.U` a
+            // failed lane leaves when a warp-mate succeeded, with a second condition when it
+            // is false, with `.DIV` a lane that succeeded goes round again.
+            ("exit branch warp-uniform (BRA.U)", vec![("@P0 BRA `(.L_x_1)", "@P0 BRA.U `(.L_x_1)")]),
+            ("exit branch with a second condition", vec![("@P0 BRA `(.L_x_1)", "@P0 BRA P1, `(.L_x_1)")]),
+            ("exit branch warp-collective (BRA.DIV)", vec![("@P0 BRA `(.L_x_1)", "@P0 BRA.DIV UR8, `(.L_x_1)")]),
+            ("exit predicate written twice", vec![("IMAD.MOV.U32 R11, RZ, RZ, R2 ;", "IMAD.MOV.U32 R11, RZ, RZ, R2 ;\n/*0098*/ ISETP.NE.U32.AND P0, PT, R3, RZ, PT ;")]),
+            ("exit tested after the refresh", vec![
+                ("/*0080*/ ISETP.NE.U32.AND P0, PT, R2, R11, PT ;\n/*0090*/ IMAD.MOV.U32 R11, RZ, RZ, R2 ;",
+                 "/*0080*/ IMAD.MOV.U32 R11, RZ, RZ, R2 ;\n/*0090*/ ISETP.NE.U32.AND P0, PT, R2, R11, PT ;"),
+            ]),
+            ("old rewritten after the CAS", vec![("ISETP.NE.U32.AND P0, PT, R2, R11, PT ;", "IADD3 R2, PT, PT, R2, 0x1, RZ ;\n/*0084*/ ISETP.NE.U32.AND P0, PT, R2, R11, PT ;")]),
+            ("address moves in the loop", vec![("PRMT R3, R11, R0, R2 ;", "PRMT R3, R11, R0, R2 ;\n/*0064*/ IADD3 R8, PT, PT, R8, 0x4, RZ ;")]),
+            ("another register carried", vec![("PRMT R3, R11, R0, R2 ;", "PRMT R3, R11, R0, R2 ;\n/*0064*/ HADD2 R6, R6, R6 ;")]),
+            ("a predicated operation in the loop", vec![("PRMT R3, R11, R0, R2 ;", "@P1 PRMT R3, R11, R0, R2 ;")]),
+            ("a load in the loop", vec![("PRMT R3, R11, R0, R2 ;", "PRMT R3, R11, R0, R2 ;\n/*0064*/ LD.E R13, desc[UR4][R14.64] ;")]),
+            // Recomputed from loop-invariant registers: not carried, but not the seed's address.
+            ("address recomputed in the loop", vec![("PRMT R3, R11, R0, R2 ;", "PRMT R3, R11, R0, R2 ;\n/*0064*/ IADD3 R8, PT, PT, R14, 0x4, RZ ;")]),
+            ("compare overwritten before the CAS", vec![("PRMT R3, R11, R0, R2 ;", "PRMT R3, R11, R0, R2 ;\n/*0064*/ MOV R11, R13 ;")]),
+        ] {
+            let (accepted, seeded, polls) = classify(&edit(&e));
+            assert!(!accepted && !seeded && polls == 1, "{why}: accepted {accepted}, seeded {seeded}, polls {polls}");
+        }
+    }
+
+    #[test]
+    fn seed_loads_used_elsewhere_stay_plain() {
+        for (why, e) in [
+            (
+                "seed also stored",
+                vec![(
+                    "SEL R0, R0, 0x7610, P0 ;",
+                    "SEL R0, R0, 0x7610, P0 ;\n/*0044*/ STG.E desc[UR4][R14.64], R11 ;",
+                )],
+            ),
+            (
+                "seed also read by an add",
+                vec![(
+                    "SEL R0, R0, 0x7610, P0 ;",
+                    "SEL R0, R0, 0x7610, P0 ;\n/*0044*/ IADD3 R13, PT, PT, R11, 0x1, RZ ;",
+                )],
+            ),
+            (
+                "seed from another word",
+                vec![(
+                    "LD.E R11, desc[UR4][R8.64]",
+                    "LD.E R11, desc[UR4][R8.64+0x4]",
+                )],
+            ),
+            (
+                "seed through another base",
+                vec![("LD.E R11, desc[UR4][R8.64]", "LD.E R11, desc[UR4][R14.64]")],
+            ),
+            (
+                "address rewritten after the seed",
+                vec![(
+                    "SEL R0, R0, 0x7610, P0 ;",
+                    "SEL R0, R0, 0x7610, P0 ;\n/*0044*/ IADD3 R8, PT, PT, R8, 0x4, RZ ;",
+                )],
+            ),
+            (
+                "a 2-byte seed",
+                vec![(
+                    "LD.E R11, desc[UR4][R8.64]",
+                    "LD.E.U16 R11, desc[UR4][R8.64]",
+                )],
+            ),
+            (
+                "a predicated seed",
+                vec![(
+                    "LD.E R11, desc[UR4][R8.64]",
+                    "@P1 LD.E R11, desc[UR4][R8.64]",
+                )],
+            ),
+            (
+                "a fence between the seed and the loop",
+                vec![(
+                    "SEL R0, R0, 0x7610, P0 ;",
+                    "SEL R0, R0, 0x7610, P0 ;\n/*0044*/ MEMBAR.ALL.GPU ;",
+                )],
+            ),
+            (
+                "a seed in another state space",
+                vec![("LD.E R11, desc[UR4][R8.64]", "LDG.E R11, desc[UR4][R8.64]")],
+            ),
+            (
+                "a branch into the gap",
+                vec![
+                    (
+                        "/*00b0*/ STG.E",
+                        "/*00b0*/ @P2 BRA `(.L_x_0) ;\n/*00b4*/ STG.E",
+                    ),
+                    ("/*0010*/ LOP3.LUT", ".L_x_0:\n/*0010*/ LOP3.LUT"),
+                ],
+            ),
+        ] {
+            let (accepted, seeded, _) = classify(&edit(&e));
+            assert!(
+                accepted && !seeded,
+                "{why}: accepted {accepted}, seeded {seeded}"
+            );
+        }
+        // A seed that is already strong stays as it was (and is not counted as rewritten).
+        let k = lower(&edit(&[(
+            "LD.E R11, desc[UR4][R8.64]",
+            "LD.E.STRONG.SYS R11, desc[UR4][R8.64]",
+        )]));
+        let cr = ptxv_ir::casloop::cas_retry_loops(&k.code)[0];
+        assert!(ptxv_ir::casloop::seeded_load(&k.code, &cr).is_none());
     }
 }
 

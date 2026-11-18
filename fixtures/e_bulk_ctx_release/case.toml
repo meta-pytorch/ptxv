@@ -1,0 +1,90 @@
+name = "e_bulk_ctx_release"
+description = """
+S-MBAR-SCOPE, what the complete-tx of a cp.async.bulk releases (MISS 119): it is ordered only with
+respect to the memory operations of the same asynchronous instruction and "does not transitively
+establish ordering with respect to prior instructions from the issuing thread" (PTX ISA 9.5
+8.9.1.1), so it releases the copy's writes and nothing else of the issuer. RELAXED (a relaxed
+expect_tx arrive), AFTER (the store between a release arrive and the bulk copy) and GLOBAL are
+races on the PTX front; good (the store before a release arrive) is clean. SASS: ptxas emits the
+same SYNCS.ARRIVE.TRANS64 for the relaxed and the release arrive, which the SASS front reads as
+a release at CTA scope, so RELAXED is clean there; AFTER's race is reported by the plain-LDS/STS
+pass and cleared by the strong re-check (S-SMEM-STRONG); in GLOBAL ptxas schedules the STG after
+the arrive, and it races. NOWAIT (no wait loop) is the positive control. Before, the complete-tx
+released the issuer's whole clock and RELAXED, AFTER and GLOBAL were clean."""
+ptx = "kernel.ptx"
+entry = "e_bulk_ctx_release"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "g"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "g"
+
+[[variants]]
+id = "good"
+summary = "the store, then a release arrive.expect_tx, then the bulk copy"
+expect = ["clean"]
+
+[[variants]]
+id = "RELAXED"
+summary = "the arrive.expect_tx is .relaxed: only the complete-tx releases"
+edits = [
+    { marker = "@ARR", find = "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r5], 16;", replace = "mbarrier.arrive.expect_tx.relaxed.cta.shared::cta.b64 _, [%r5], 16;" },
+]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "AFTER"
+summary = "a release arrive.expect_tx, then the store, then the bulk copy"
+edits = [
+    { marker = "@ST1", find = "st.shared.u32 [%r8], %r3;", replace = "" },
+    { marker = "@ST2", find = "// @ST2", replace = "st.shared.u32 [%r8], %r3;" },
+]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "GLOBAL"
+summary = "RELAXED with the word in global memory"
+edits = [
+    { marker = "@ARR", find = "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r5], 16;", replace = "mbarrier.arrive.expect_tx.relaxed.cta.shared::cta.b64 _, [%r5], 16;" },
+    { marker = "@ST1", find = "st.shared.u32 [%r8], %r3;", replace = "st.global.u32 [%rd4], %r3;" },
+    { marker = "@LD1", find = "ld.shared.u32 %r6, [%r8];", replace = "ld.global.u32 %r6, [%rd4];" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "good without the wait loop: one try_wait, then the reads (positive control)"
+edits = [
+    { marker = "@LOOP", find = "@!%p3 bra WAIT;", replace = "" },
+]
+expect = ["nondeterministic", "race", "violation"]

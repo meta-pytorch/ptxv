@@ -1,0 +1,46 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 207: oute[t] = ex2.approx.ftz.f32(x[t]) and outs[t] = sqrt.approx.ftz.f32(x[t]) for
+// probes/mufu_ftz_bound's 32 operands (24 subnormals, 128 - 2^-17 .. 127.5, 2^-126, 2^-127, 2^-128,
+// 1), and outr[t] = rcp.approx.ftz.f32(y[t]) for 32 normal operands (128 - 2^-17 .. 127.5, 2^-126,
+// 1, edge and random values): every result finite.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry num_mufu_ftz(.param .u64 px, .param .u64 py, .param .u64 poute, .param .u64 poutr,
+    .param .u64 pouts)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [py];
+    ld.param.u64 %rd3, [poute];
+    ld.param.u64 %rd4, [poutr];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    cvta.to.global.u64 %rd4, %rd4;
+    ld.param.u64 %rd10, [pouts];
+    cvta.to.global.u64 %rd10, %rd10;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd5, %r0, 4;
+    add.s64 %rd6, %rd1, %rd5;
+    add.s64 %rd7, %rd2, %rd5;
+    add.s64 %rd8, %rd3, %rd5;
+    add.s64 %rd9, %rd4, %rd5;
+    add.s64 %rd11, %rd10, %rd5;
+    ld.global.f32 %f1, [%rd6];
+    ld.global.f32 %f2, [%rd7];
+    ex2.approx.ftz.f32 %f3, %f1;
+    rcp.approx.ftz.f32 %f4, %f2;
+    sqrt.approx.ftz.f32 %f5, %f1;
+    st.global.f32 [%rd8], %f3;
+    st.global.f32 [%rd9], %f4;
+    st.global.f32 [%rd11], %f5;
+    ret;
+}

@@ -217,6 +217,9 @@ def parent():
         LAUNCHCAP_MEMOPS="1",
         LAUNCHCAP_VMM="1",
         CUBINCAP_DIR=f"{WORK}/r%r/cupti",
+        # Every module loads inside its load call, so handles.jsonl names its image (a lazily
+        # loaded module arrives inside its first launch, with no load call to map).
+        CUDA_MODULE_LOADING="EAGER",
         PTXV_CAPTURE_DIST_WORK=WORK,
     )
     port = A.master_port or 29500 + os.getpid() % 2000
@@ -950,6 +953,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 if y["vmm"] == "map" and y.get("handle") == h:
                     need = max(need, y["offset"] + y["size"])
             imps.append((x.get("t", 0), r, id(x), kind, need))
+    fd_class = {}  # id(import record) -> (host, kind)
+    guessed_class = set()  # (host, kind) where some import had several candidates
     for t, r, xid, kind, need in sorted(imps):
         cand = [
             e
@@ -966,17 +971,25 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         e = min(cand, key=lambda e: e[0])
         e[3] = True
         fd_import[xid] = e[2]
-        fd_guess += len({c[2] for c in cand}) > 1
+        fd_class[xid] = (host[r], kind)
+        if len({c[2] for c in cand}) > 1:
+            fd_guess += 1
+            guessed_class.add((host[r], kind))
+    # Every time-order match in a class where some import had several candidates is uncertain
+    # (an earlier wrong guess consumes the export a later import needs). The identity matters
+    # only for mappings the case uses: resolve() records the uncertain mappings a captured
+    # launch, a pointer table or a multicast bind reaches, and only those are capture errors.
+    # (NCCL's own POSIX-fd buffers, which no kernel of the case points into, are the common
+    # unreferenced ones.)
+    fd_uncertain = {xid for xid, c in fd_class.items() if c in guessed_class}
+    fd_uncertain_maps = set()  # (rank, phys id) of an uncertain import's mappings
+    fd_uncertain_used = set()
     if imps:
         warnings.append(
             f"{len(imps)} POSIX-fd import(s) with a shared fd inode: {len(fd_import)} matched "
             f"to an export by time order, {fd_guess} of them with several candidates"
         )
-    if fd_guess and not A.allow_fd_guess:
-        identity_errors.append(
-            f"{fd_guess} POSIX-fd import(s) matched by time order among several exports of the same kind and size (--allow-fd-guess accepts the guess)"
-        )
-    elif fd_guess:
+    if fd_guess and A.allow_fd_guess:
         notes.append(
             f"S-VA-ALIAS: {fd_guess} POSIX-fd import(s) matched to an export by time order among several candidates (--allow-fd-guess)"
         )
@@ -1023,6 +1036,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 )
             if x["vmm"] == "import" and not x["r"] and id(x) in fd_import:
                 handle_phys[r][x["handle"]] = fd_import[id(x)]
+                if id(x) in fd_uncertain:
+                    fd_uncertain_maps.add((r, fd_import[id(x)]))
             elif x["vmm"] == "import" and not x["r"]:
                 key = x["fabric"] or fdk(r, x)
                 if f"g:{key}" not in phys:
@@ -1358,6 +1373,8 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                 p = phys.get(pid)
                 if p is None or p["owner"] is None:
                     return None
+                if (r, pid) in fd_uncertain_maps:
+                    fd_uncertain_used.add((r, pid))
                 if p["kind"] == "multicast":
                     return ("multicast", pid, v - s + off)
                 oa = owner_addr(pid, off + (v - s))
@@ -1734,6 +1751,11 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
                     note(*loc)
 
     # Pointer tables: words inside referenced regions that resolve (peer pointer arrays).
+    # Regions larger than PTR_SCAN_MAX are data, not tables: scanning a multi-GB weight
+    # buffer word by word takes hours, and a data word that happens to land in a mapped range
+    # would turn the buffer into a "pointer table" whose words the simulator overwrites.
+    ptr_scan_max = int(os.environ.get("PTXV_CAPTURE_PTR_SCAN_MAX", str(16 << 20)))
+    unscanned = []
     todo = sorted(refs)
     done = set()
     while todo:
@@ -1743,6 +1765,9 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         done.add(i)
         g = regions[i]
         if not g["data"] or g["kind"] in ("symm", "signal"):
+            continue
+        if len(g["data"]) > ptr_scan_max:
+            unscanned.append(f"{g['name']} ({len(g['data']) >> 20} MiB)")
             continue
         g["ptrs"] = []
         for off in range(0, len(g["data"]) - 7, 8):
@@ -1758,6 +1783,12 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         # A pointer table is not data: the simulator fills the words in.
         if g["ptrs"] and len(g["data"]) % 8 == 0:
             g["dtype"], g["shape"] = "u64", [len(g["data"]) // 8]
+    if unscanned:
+        notes.append(
+            f"pointer tables: {len(unscanned)} region(s) over {ptr_scan_max >> 20} MiB not scanned for "
+            f"pointer words (data, PTXV_CAPTURE_PTR_SCAN_MAX): " + ", ".join(unscanned[:8])
+            + (" ..." if len(unscanned) > 8 else "")
+        )
 
     # IBGDA handles: their remote addresses are VAs of the peer rank (they may resolve to an
     # unrelated buffer of this rank by accident): point them at the peer's buffer.
@@ -1868,6 +1899,11 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     for k, pid in enumerate(sorted(mc_used)):
         cuts = []
         for br, mpid, moff, mcoff, size in mc_bind.get(pid, []):
+            # A bind through an uncertain import (of the multicast handle or of the bound
+            # memory) attaches memory the identity of which depends on a time-order guess.
+            for q in (pid, mpid):
+                if (br, q) in fd_uncertain_maps:
+                    fd_uncertain_used.add((br, q))
             p = phys.get(mpid)
             oa = owner_addr(mpid, moff, size) if p and p["owner"] is not None else None
             if oa is None:
@@ -1888,6 +1924,19 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
             warnings.append(f"multicast mc{k}: no bound bytes in any buffer")
         mc_objs.append((pid, f"mc{k}", phys.get(pid, {}).get("size") or 0, cuts))
     mc_name = {pid: n for pid, n, _, _ in mc_objs}
+    if fd_guess and not A.allow_fd_guess:
+        if fd_uncertain_used:
+            identity_errors.append(
+                f"{fd_guess} POSIX-fd import(s) matched by time order among several exports of the same kind "
+                f"and size, and the case uses {len(fd_uncertain_used)} mapping(s) whose identity depends on "
+                "those matches (--allow-fd-guess accepts the guess)"
+            )
+        else:
+            notes.append(
+                f"S-VA-ALIAS: {fd_guess} POSIX-fd import(s) matched by time order among several candidates; "
+                f"no launch, pointer table or multicast bind of the case reaches the {len(fd_uncertain_maps)} "
+                "mapping(s) whose identity depends on them"
+            )
     if identity_errors:
         sys.exit(
             "capture_dist: physical identity not determined (S-VA-ALIAS):\n  "
@@ -1940,13 +1989,29 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     # Keyed by (rank, kernel, parameter count): a JIT framework can also emit same-named
     # specializations with different signatures (quack GemmDefaultSm100 with 24 and 26
     # parameters in one run); each launch takes an image whose KPARAM_INFO matches its count.
+    # When several different images still qualify (one source built as several images with
+    # the same kernel name and signature, e.g. a megakernel's per-layer images, or JIT
+    # specializations), the launch takes the image of its own module / library handle
+    # (cubincap's handles.jsonl, as tools/capture.py); unidentified, the capture fails rather
+    # than pick one (until 2026-11-12 the smallest was taken: another image's code).
+    image_of_handle = {}
+    for r in range(R):
+        hp = f"{WORK}/r{r}/cupti/handles.jsonl"
+        if os.path.exists(hp):
+            for ln in open(hp):
+                d = json.loads(ln)
+                image_of_handle[(r, d["handle"])] = f"{WORK}/r{r}/cupti/{d['file']}.cubin"
+    _img_sha = {}
+
+    def img_sha(p):
+        if p not in _img_sha:
+            _img_sha[p] = hashlib.sha1(open(p, "rb").read()).hexdigest()
+        return _img_sha[p]
+
     knames = []
-    for r, x, _ in launches:
-        key = (r, x["name"], len(x["params"]))
-        if key not in knames:
-            knames.append(key)
     cubin_of = {}
-    for r, n, np_ in knames:
+    for r, x, _ in launches:
+        n, np_ = x["name"], len(x["params"])
         mine = [p for p in images if f"/r{r}/" in p]
         c = (
             [p for p in mine if "/cupti/" in p and elf_defines(p, n)]
@@ -1959,7 +2024,24 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
         fit = [p for p in c if len(kparam_layout(p, n) or []) == np_]
         if not fit and len({len(kparam_layout(p, n) or []) for p in c}) > 1:
             warnings.append(f"rank {r}: no image of {n[:60]} has {np_} parameters")
-        cubin_of[(r, n, np_)] = min(fit or c, key=os.path.getsize)
+        cands = fit or c
+        if len({img_sha(p) for p in cands}) > 1:
+            own = [image_of_handle.get((r, x.get(k))) for k in ("lib", "mod") if x.get(k)]
+            own = [p for p in own if p and elf_defines(p, n)]
+            if not own:
+                sys.exit(
+                    f"capture_dist: rank {r}: {len({img_sha(p) for p in cands})} different captured "
+                    f"images define {n[:80]} and the launch's own module / library handle names "
+                    "none of them (cubincap handles.jsonl; modules must load eagerly)"
+                )
+            img = own[0]
+        else:
+            img = min(cands, key=os.path.getsize)
+        key = (r, n, np_, img)
+        x["_ckey"] = key
+        if key not in knames:
+            knames.append(key)
+            cubin_of[key] = img
     out = os.path.abspath(A.out)
     os.makedirs(out, exist_ok=True)
     for sub in ("data", "expected"):
@@ -2005,7 +2087,7 @@ def merge():  # noqa: C901 (cross-rank merge: one linear pass over shared captur
     q = json.dumps
 
     def ck(r, x):
-        return cubin_file[(r, x["name"], len(x["params"]))]
+        return cubin_file[x["_ckey"]]
 
     def toml_tmap(prefix, ri, ro, gr, extra=""):
         g_, raw_ = gr

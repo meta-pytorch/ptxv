@@ -1,0 +1,82 @@
+# run.sh, 2026-11-12, on agentSC2 53ef07ac (before the fixes): exit 1
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [clean]                    observed [clean]                    ok
+good  sass dpor     expected [clean]                    observed [clean]                    ok
+good  sass certify  expected [clean]                    observed [clean]                    ok
+NOBRK ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+NOBRK ptx  dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+NOBRK ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+NOBRK sass stateful expected [clean]                    observed [clean]                    ok
+NOBRK sass dpor     expected [clean]                    observed [clean]                    ok
+NOBRK sass certify  expected [clean]                    observed [clean]                    ok
+SWAP  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+SWAP  ptx  dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+SWAP  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+SWAP  sass stateful expected [clean]                    observed [clean]                    ok
+SWAP  sass dpor     expected [clean]                    observed [clean]                    ok
+SWAP  sass certify  expected [clean]                    observed [clean]                    ok
+RACE  ptx  stateful expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+RACE  ptx  dpor     expected [nondeterministic,race]    observed [clean]                    MISMATCH
+RACE  ptx  certify  expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+RACE  sass stateful expected [clean]                    observed [clean]                    ok
+RACE  sass dpor     expected [clean]                    observed [clean]                    ok
+RACE  sass certify  expected [clean]                    observed [clean]                    ok
+rc=1
+
+# After the MISS 221 fix (Footprint::obs) alone: exit 1
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [clean]                    observed [clean]                    ok
+good  sass dpor     expected [clean]                    observed [clean]                    ok
+good  sass certify  expected [clean]                    observed [clean]                    ok
+NOBRK ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+NOBRK ptx  dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+NOBRK ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+NOBRK sass stateful expected [clean]                    observed [clean]                    ok
+NOBRK sass dpor     expected [clean]                    observed [clean]                    ok
+NOBRK sass certify  expected [clean]                    observed [clean]                    ok
+SWAP  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+SWAP  ptx  dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+SWAP  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+SWAP  sass stateful expected [clean]                    observed [clean]                    ok
+SWAP  sass dpor     expected [clean]                    observed [clean]                    ok
+SWAP  sass certify  expected [clean]                    observed [clean]                    ok
+RACE  ptx  stateful expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+RACE  ptx  dpor     expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+RACE  ptx  certify  expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+RACE  sass stateful expected [clean]                    observed [clean]                    ok
+RACE  sass dpor     expected [clean]                    observed [clean]                    ok
+RACE  sass certify  expected [clean]                    observed [clean]                    ok
+rc=1
+
+# After the MISS 222 fix too (pipe issue key): exit 0
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [clean]                    observed [clean]                    ok
+good  sass dpor     expected [clean]                    observed [clean]                    ok
+good  sass certify  expected [clean]                    observed [clean]                    ok
+NOBRK ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+NOBRK ptx  dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+NOBRK ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+NOBRK sass stateful expected [clean]                    observed [clean]                    ok
+NOBRK sass dpor     expected [clean]                    observed [clean]                    ok
+NOBRK sass certify  expected [clean]                    observed [clean]                    ok
+SWAP  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+SWAP  ptx  dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+SWAP  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+SWAP  sass stateful expected [clean]                    observed [clean]                    ok
+SWAP  sass dpor     expected [clean]                    observed [clean]                    ok
+SWAP  sass certify  expected [clean]                    observed [clean]                    ok
+RACE  ptx  stateful expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+RACE  ptx  dpor     expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+RACE  ptx  certify  expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+RACE  sass stateful expected [clean]                    observed [clean]                    ok
+RACE  sass dpor     expected [clean]                    observed [clean]                    ok
+RACE  sass certify  expected [clean]                    observed [clean]                    ok
+rc=0
+
+# On agentDP after merging int7 05eb1a04 (2cd6794f): exit 0, every line ok

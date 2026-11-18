@@ -1,0 +1,91 @@
+name = "probe_async_read_ops"
+description = """
+Probe (L-OPREAD; MISS 157, RVS2 W3), static only: ops ptxas gives read scoreboards (STAS,
+UTMAREDG, UBLKPF; UBLKCP as the MISS 131 control) read their operands late. *_NORB: the read
+scoreboard removed and an operand register overwritten right after; *_REF: the scoreboard kept,
+the wait on it removed. Both are SCOREBOARD WAR violations (before MISS 157, NORB was clean). The
+kernel is a dummy cluster kernel with unrelated findings: tests compare only the SCOREBOARD
+lines. REDAS and UBLKRED are not lifted (fail-closed)."""
+ptx = "kernel.ptx"
+entry = "a"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["g"]
+
+[[buffers]]
+name = "g"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+
+[[buffers]]
+name = "tmap"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "g"
+
+[[params]]
+kind = "ptr"
+buffer = "tmap"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "STAS_NORB"
+patch = [
+    { at = "@0x0110", rbar = 7, expect = "STAS [R2.64], R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x000000ff00027202], [64, 41, 0xf00]], wait = 0, expect = "MOV R2, RZ" },
+]
+expect = ["violation"]
+
+[[variants]]
+id = "STAS_REF"
+patch = [
+    { at = "@0x0120", bits = [[0, 64, 0x000000ff00027202], [64, 41, 0xf00]], wait = 0, expect = "MOV R2, RZ" },
+]
+expect = ["violation"]
+
+[[variants]]
+id = "UTMAREDG_NORB"
+patch = [
+    { at = "@0x0180", rbar = 7, expect = "UTMAREDG.2D.ADD [UR8], [UR6]" },
+    { at = "@0x0190", wait = 0, expect = "@P0 BRA.U.ANY `(.L_x_0)" },
+]
+expect = ["violation"]
+
+[[variants]]
+id = "UTMAREDG_REF"
+patch = [
+    { at = "@0x0190", wait = 0, expect = "@P0 BRA.U.ANY `(.L_x_0)" },
+]
+expect = ["violation"]
+
+[[variants]]
+id = "UBLKCP_NORB"
+patch = [
+    { at = "@0x01d0", rbar = 7, expect = "UBLKCP.G.S [UR4], [UR8], UR6" },
+    { at = "@0x01e0", bits = [[0, 64, 0x0000001000067882], [64, 41, 0x0]], wait = 0, expect = "UMOV UR6, 0x10" },
+]
+expect = ["violation"]
+
+[[variants]]
+id = "UBLKPF_NORB"
+patch = [
+    { at = "@0x00f0", rbar = 7, expect = "UBLKPF.L2 [UR4], UR9" },
+    { at = "@0x0150", wait = 0, expect = "@P1 R2UR.BROADCAST UR9, R0" },
+]
+expect = ["violation"]
+
+[[variants]]
+id = "UBLKPF_REF"
+patch = [
+    { at = "@0x0150", wait = 0, expect = "@P1 R2UR.BROADCAST UR9, R0" },
+]
+expect = ["violation"]

@@ -64,7 +64,7 @@ fn before_atomic_bytes(atomic: &str, initial: &[u8], tracked: bool) -> Machine {
         m: manifest,
     };
     let mut launch = crate::build_launch(&case, &kernel).unwrap();
-    launch.allocs[0].init[..initial.len()].copy_from_slice(initial);
+    Arc::make_mut(&mut launch.allocs[0].init)[..initial.len()].copy_from_slice(initial);
     let mut machine = Machine::new(kernel, Arc::new(launch));
     if tracked {
         let mut ns = NumState::default();
@@ -150,22 +150,24 @@ fn successful_wide_atomics_clear_upper_word_history() {
     }
 }
 
+/// A 64-bit compare-and-swap of input data that fails here writes nothing, but another input
+/// may swap (MISS 177, ASSUME N-EQUIV): both words it covers lose their nodes and count as
+/// written. Its bytes, shadow, 16-bit provenance and taint and the thread's clock stay.
 #[test]
-fn failed_cas_preserves_upper_history_and_byte_state() {
+fn failed_cas_forgets_both_words_and_keeps_byte_state() {
     let machine = before_atomic(&format!(
         "atom.global.cas.b64 %p1, [%p0], {}, {NEW};",
         OLD + 1
     ));
     let before = byte_state(&machine);
     let clock = machine.threads[0].vc.clone();
-    let upper = machine.num.as_ref().unwrap().mem[&(1, 0, 4)];
     let adjacent = machine.num.as_ref().unwrap().mem[&(1, 0, 8)];
     let machine = finish(machine);
     let ns = machine.num.as_ref().unwrap();
     assert!(!ns.mem.contains_key(&(1, 0, 0)));
-    assert_eq!(ns.mem[&(1, 0, 4)], upper);
+    assert!(!ns.mem.contains_key(&(1, 0, 4)), "stale upper history");
     assert_eq!(ns.mem[&(1, 0, 8)], adjacent);
-    assert_eq!(ns.written, [(0, 0)].into_iter().collect());
+    assert_eq!(ns.written, [(0, 0), (0, 4)].into_iter().collect());
     assert_eq!(byte_state(&machine), before);
     assert_eq!(machine.threads[0].vc, clock);
 }

@@ -299,6 +299,21 @@ impl Machine {
                         continue;
                     }
                 }
+                // MISS 74 (PTX), MISS 75, 168 (SASS stores): the lanes of one store / exchange /
+                // atomic on one word take effect in any order (`Machine::lane_orders`).
+                if let Some(o) = self.lane_orders(&members, pc) {
+                    for k in 0..o.list.len() {
+                        out.push((
+                            Action::Split {
+                                warp: w,
+                                pc,
+                                leader: Some(crate::exec::LANE_ORDER_BASE + k),
+                            },
+                            d!("{sdesc}, lane order {k} of {}", o.list.len()),
+                        ));
+                    }
+                    continue;
+                }
                 out.push((
                     Action::Split {
                         warp: w,
@@ -371,7 +386,11 @@ impl Machine {
             }
             // In-order pipes (tcgen05): only the oldest op of each pipe can complete.
             if let Some(f) = op.fifo {
-                if self.pending[..i].iter().any(|o| o.fifo == Some(f)) {
+                if self
+                    .pending
+                    .iter()
+                    .any(|o| o.fifo == Some(f) && o.seq < op.seq)
+                {
                     continue;
                 }
             }
@@ -888,6 +907,8 @@ pub fn elect_sensitivity_kernel(
                     .guard
                     .reg
                     .is_some_and(|r| ls.contains(&r) || lp.contains(&r));
+            // Lane-varying control: lanes that skip the instruction keep their old values.
+            let ctl_lv = rlv[pc] || inst.guard.reg.is_some_and(|r| lv.contains(&r));
             let mut val_ls = data.iter().any(|r| ls.contains(r));
             let pat_ls = data.iter().any(|r| lp.contains(r));
             let mut ls_in = ctl_ls || val_ls || pat_ls;
@@ -930,13 +951,18 @@ pub fn elect_sensitivity_kernel(
                     a: Val::Reg(r, _),
                     b: Val::Imm(sh),
                     ..
-                } => rows && *sh >= 5 && tidx.contains(r) && inst.guard.reg.is_none(),
+                } => rows && *sh >= 5 && tidx.contains(r) && inst.guard.reg.is_none() && !rlv[pc],
                 Op::Int {
                     op: IntOp::And,
                     a: Val::Reg(r, _),
                     b: Val::Imm(mask),
                     ..
-                } => rows && mask & 31 == 0 && tidx.contains(r) && inst.guard.reg.is_none(),
+                } => {
+                    rows && mask & 31 == 0
+                        && tidx.contains(r)
+                        && inst.guard.reg.is_none()
+                        && !rlv[pc]
+                }
                 _ => false,
             };
             let mut out_lv = lv_in && !uniform_of_tid;
@@ -990,8 +1016,18 @@ pub fn elect_sensitivity_kernel(
                 | Op::MovMatrix { .. }
                 | Op::Hmma { .. } => out_lv = true,
                 Op::Atom { d: Some(_), .. } => out_lv = true,
-                Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. } => out_lv = false,
+                // A ballot or a reduction of lane-varying values is warp-uniform, under
+                // warp-uniform control.
+                Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. } => out_lv = ctl_lv,
                 _ => {}
+            }
+            // A collective that moves a leader-dependent pattern (elect's predicate, values
+            // written under it) between lanes, or that runs under leader-dependent control,
+            // can name the leader's lane (bfind of a ballot; shfl.idx from a fixed lane is
+            // set exactly when that lane leads): the leader's identity, lane-varying as
+            // elect's lane output. vote.all / any / uni of it is the same for every leader.
+            if collective && (pat_ls || ctl_ls) && !matches!(inst.op, Op::VoteAll { .. }) {
+                out_lv = true;
             }
             for d in dst {
                 if out_lv {
@@ -1004,11 +1040,17 @@ pub fn elect_sensitivity_kernel(
                     lp.insert(d);
                 }
             }
-            if let Op::Bra { .. } = &inst.op {
+            if matches!(inst.op, Op::Bra { .. } | Op::Brx { .. }) {
                 let g = inst.guard.reg;
+                // An indexed branch also on its index (`brx.idx`, BRX's target register).
+                let idx: Vec<ptxv_ir::Reg> = match &inst.op {
+                    Op::Brx { .. } => inst.op.src_regs(),
+                    _ => Vec::new(),
+                };
                 let (glv, gls) = (
-                    g.is_some_and(|r| lv.contains(&r)),
-                    g.is_some_and(|r| ls.contains(&r) || lp.contains(&r)),
+                    g.is_some_and(|r| lv.contains(&r)) || idx.iter().any(|r| lv.contains(r)),
+                    g.is_some_and(|r| ls.contains(&r) || lp.contains(&r))
+                        || idx.iter().any(|r| ls.contains(r) || lp.contains(r)),
                 );
                 if glv || gls {
                     for x in region(pc) {
@@ -1412,8 +1454,11 @@ pub fn clc_eager(m0: Machine) -> Machine {
         };
         probe.apply(&a);
         // A step that faults forever: undecided, so lazy (the safe default).
-        if faults.repeats(delivery.fresh(&probe)).is_some() {
+        if faults.repeats(&probe, delivery.fresh(&probe)).is_some() {
             return m0;
+        }
+        if faults.stalled() {
+            sched.move_on();
         }
         if delivery
             .fresh(&probe)
@@ -1545,7 +1590,9 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
             // An unguarded exit of part of a warp, none of whose threads has an async
             // operation pending: exited threads never merge with a split again, and an exit
             // commutes with barrier arrivals (all-thread bar.sync, barrier.cluster, warpsync
-            // complete once every live thread arrived, in either order).
+            // complete once every live thread arrived, in either order). Not the exit that
+            // ends its CTA's shared memory while another process can still reach it
+            // (`exit_ends_reachable_smem`).
             if matches!(op, ptxv_ir::Op::Exit) && m.k.code[*pc as usize].guard.is_always() {
                 let split: Vec<u32> = m
                     .warp_threads(*warp)
@@ -1556,6 +1603,7 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                     })
                     .collect();
                 if !m.pending.iter().any(|o| split.contains(&o.issuer))
+                    && !exit_ends_reachable_smem(m, &split)
                     && (!m.observes_barrier_memory()
                         || split
                             .iter()
@@ -1574,31 +1622,33 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
             // Bb's recorded mask covers every live lane and every lane already parked waits at
             // this same BSYNC: it parks the lanes (or, as the last arrival, releases every
             // live lane), the same whichever order the lanes arrive in, and touches nothing
-            // outside its warp.
-            if let ptxv_ir::Op::Bsync { b } = op {
-                let guard = m.k.code[*pc as usize].guard;
-                let members: Vec<usize> = m
-                    .warp_threads(*warp)
-                    .filter(|&t| {
-                        let th = &m.threads[t];
-                        th.warp == *warp && th.pc == *pc && th.st == St::Run
-                    })
-                    .collect();
-                let live = m
-                    .warp_threads(*warp)
-                    .map(|t| &m.threads[t])
-                    .filter(|t| t.warp == *warp && t.st != St::Exited)
-                    .fold(0u32, |a, t| a | 1 << t.lane);
-                let bm = m.warps[*warp as usize].bmask[*b as usize];
-                if std::env::var("PTXV_NO_BSYNC_POR").is_err()
-                    && !members.is_empty()
-                    && members.iter().all(|&t| m.prd(t, guard))
-                    && bm & live == live
-                    && m.warp_threads(*warp)
+            // outside its warp. Only a reconvergence point parks lanes (MISS 81).
+            if let ptxv_ir::Op::Bsync { b, form } = op {
+                if crate::exec::bsync_holds(*form) {
+                    let guard = m.k.code[*pc as usize].guard;
+                    let members: Vec<usize> = m
+                        .warp_threads(*warp)
+                        .filter(|&t| {
+                            let th = &m.threads[t];
+                            th.warp == *warp && th.pc == *pc && th.st == St::Run
+                        })
+                        .collect();
+                    let live = m
+                        .warp_threads(*warp)
                         .map(|t| &m.threads[t])
-                        .all(|t| t.warp != *warp || t.st != St::WarpSync || t.pc == *pc)
-                {
-                    return true;
+                        .filter(|t| t.warp == *warp && t.st != St::Exited)
+                        .fold(0u32, |a, t| a | 1 << t.lane);
+                    let bm = m.warps[*warp as usize].bmask[*b as usize];
+                    if std::env::var("PTXV_NO_BSYNC_POR").is_err()
+                        && !members.is_empty()
+                        && members.iter().all(|&t| m.prd(t, guard))
+                        && bm & live == live
+                        && m.warp_threads(*warp)
+                            .map(|t| &m.threads[t])
+                            .all(|t| t.warp != *warp || t.st != St::WarpSync || t.pc == *pc)
+                    {
+                        return true;
+                    }
                 }
             }
             let wt = m.warp_threads(*warp);
@@ -1621,10 +1671,18 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                     || match op {
                         // Enabled once its own stores completed; nothing can disable it.
                         ptxv_ir::Op::BulkWait { cp, .. } => !*cp || !m.observes_barrier_memory(),
-                        // Exit conflicts only with the completion of the exiting threads' own
-                        // async operations (async-after-exit).
+                        // Exit conflicts with the completion of the exiting threads' own
+                        // async operations (async-after-exit), and, when it ends the CTA's
+                        // shared memory, with every access another process can still make to
+                        // it (`exit_ends_reachable_smem`).
                         ptxv_ir::Op::Exit => {
                             !m.pending.iter().any(|o| members().any(|t| t == o.issuer))
+                                && !exit_ends_reachable_smem(
+                                    m,
+                                    &members()
+                                        .filter(|&t| m.threads[t as usize].st != St::Exited)
+                                        .collect::<Vec<u32>>(),
+                                )
                                 && (!m.observes_barrier_memory()
                                     || members()
                                         .all(|t| m.threads[t as usize].cp_pending.is_empty()))
@@ -1669,6 +1727,40 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
     }
 }
 
+/// Does the exit of `split` (threads of one CTA) end that CTA's shared memory while another
+/// process can still access it? The exit of a CTA's last running threads makes its shared
+/// memory dead (S-CLUSTER-LIFE): an access after it is a lifetime violation and is dropped
+/// (`check_alive`, `dead_target`), an access before it lands and is checked for races with
+/// the CTA's own accesses. So that exit does not commute with a peer CTA's distributed
+/// shared memory access (MISS 153: e_dsmem_rank CLUSTER, where exploring only exit-first
+/// hid the race of the peer's st.shared::cluster with the CTA's own ld.shared), nor with
+/// the completion of an async operation that can still write the CTA's shared memory or
+/// arrive at its mbarriers. Accesses from outside the cluster cannot reach it. Any thread
+/// of another CTA of the cluster that has not exited (unlaunched included) or any pending
+/// operation issued in the cluster outside `split` counts as able to; the kernel's
+/// instructions are not inspected (SASS reaches a peer through generic addresses). An exit
+/// that leaves another thread of the CTA running ends nothing: its shared memory then dies
+/// at a later exit, which is checked when it is a candidate.
+fn exit_ends_reachable_smem(m: &Machine, split: &[u32]) -> bool {
+    let Some(&t0) = split.first() else {
+        return false;
+    };
+    let cta = m.threads[t0 as usize].cta;
+    if m.cta_threads(cta)
+        .any(|u| m.threads[u].st != St::Exited && !split.contains(&(u as u32)))
+    {
+        return false;
+    }
+    let cl = m.launch.cluster_of(cta as u32).0;
+    let in_cluster = |c: u16| m.launch.cluster_of(c as u32).0 == cl;
+    m.threads
+        .iter()
+        .any(|t| t.cta != cta && t.st != St::Exited && in_cluster(t.cta))
+        || m.pending
+            .iter()
+            .any(|o| !split.contains(&o.issuer) && in_cluster(m.threads[o.issuer as usize].cta))
+}
+
 /// ASSUME(E-BSYNC): lanes of `warp` parked at a reconvergence point (`St::WarpSync`) that
 /// only the warp's running lanes can release: every one is parked at the same `BSYNC Bb`
 /// whose recorded mask (`Warp::bmask`) covers every live lane of the warp. The release then
@@ -1691,9 +1783,12 @@ fn bsync_parked(m: &Machine, warp: u32) -> Option<u32> {
         }
     }
     let p = at?;
-    let ptxv_ir::Op::Bsync { b } = m.k.code[p as usize].op else {
+    let ptxv_ir::Op::Bsync { b, form } = m.k.code[p as usize].op else {
         return None;
     };
+    if !crate::exec::bsync_holds(form) {
+        return None;
+    }
     let bm = m.warps[warp as usize].bmask[b as usize];
     (bm & live == live).then_some(p)
 }
@@ -4300,11 +4395,14 @@ impl Machine {
                         next.sort();
                     }
                 }
+                // `@P BRA.U` (`all`) is taken only when the guard holds in every lane of the
+                // split, so the thread's own guard does not decide it: both edges (MISS 141).
                 let decided = match &i.op {
                     Op::Bra {
                         cond: None,
                         any: false,
                         tid0_falls: false,
+                        all: false,
                         div: None,
                         ..
                     }
@@ -4625,11 +4723,13 @@ impl Machine {
                         next.sort();
                     }
                 }
+                // (`@P BRA.U`: both edges, as in the plain walk.)
                 let decided = match &i.op {
                     Op::Bra {
                         cond: None,
                         any: false,
                         tid0_falls: false,
+                        all: false,
                         div: None,
                         ..
                     }
@@ -4909,7 +5009,7 @@ fn blocked_sync(m: &Machine, all: &[(Action, String)]) -> Vec<(Ent, u32, Footpri
         };
         // A blocked warp-level poll (spin::wpoll_loops) reads its flags.
         if let Some(&b) = m.wpolls.get(&pc) {
-            for (_, _, loc, bytes, _) in
+            for (_, _, loc, bytes, _, _) in
                 crate::spin::wpoll_dry(m, &members, pc, b).unwrap_or_default()
             {
                 match loc {
@@ -4963,7 +5063,14 @@ fn blocked_sync(m: &Machine, all: &[(Action, String)]) -> Vec<(Ent, u32, Footpri
                 }
             }
             Op::TmemAlloc { .. } | Op::TmemAllocRaw { .. } => {
-                f.add(3, m.threads[members[0]].cta as u32, 0, 1, true)
+                let cta = m.threads[members[0]].cta;
+                f.add(3, cta as u32, 0, 1, true);
+                // A paired alloc also changes its peer CTA's allocator (E-PAIR).
+                if let Op::TmemAlloc { pair: true, .. } = m.k.code[pc as usize].op {
+                    if let Ok(p) = m.pair_peer(cta) {
+                        f.add(3, p as u32, 0, 1, true);
+                    }
+                }
             }
             _ => {}
         }
@@ -5975,6 +6082,48 @@ fn sync_ample(
     pos.map(|i| (i, deps))
 }
 
+/// A launch check whose exploration left orders out does not cover every outcome:
+/// incomplete, with a note naming the first instruction. MISS 74: lane orders of one
+/// instruction not all explored (notes `lane-order-bound:`, `Machine::lane_orders`).
+/// ASSUME(E-WARP-ORDER), PTX: a strong pair of one lockstep group is reported, not explored
+/// (findings `warp-order:`): races, traps or hangs that only the other order reaches are not
+/// checked (the completeness defect of the soundness audit). Applied where every check of a
+/// launch ends (`smid::explore_smid`, `smid::check_placements`), as
+/// `clock::mark_clock_outputs`.
+pub fn mark_unexplored(v: &mut Verdict) {
+    let bound: Vec<&Finding> = v
+        .findings
+        .iter()
+        .filter(|f| f.kind == "note" && f.sig.starts_with("lane-order-bound:"))
+        .collect();
+    let mut notes = Vec::new();
+    if let Some(f) = bound.first() {
+        notes.push(format!(
+            "MISS 74: lane orders of {} instruction(s) not all explored (first: {}); the verdict is incomplete",
+            bound.len(),
+            f.msg
+        ));
+    }
+    let pairs: Vec<&Finding> = v
+        .findings
+        .iter()
+        .filter(|f| f.sig.starts_with("warp-order:"))
+        .collect();
+    if let Some(f) = pairs.first() {
+        notes.push(format!(
+            "E-WARP-ORDER: the other order of {} intra-warp strong pair(s) is reported, not explored (first: {}); races, traps or hangs that only that order reaches are not checked, the verdict is incomplete",
+            pairs.len(),
+            f.msg
+        ));
+    }
+    for note in notes {
+        v.complete = false;
+        if !v.notes.contains(&note) {
+            v.notes.push(note);
+        }
+    }
+}
+
 pub fn explore(m0: Machine, max_states: usize) -> Verdict {
     run_with_finalization(m0, |m| {
         crate::smem::two_pass(m, |m| explore_slice(m, max_states, None))
@@ -6577,11 +6726,35 @@ fn rss_bytes() -> u64 {
         .map_or(0, |kb| kb * 1024)
 }
 
+/// The pcs (bitmap) that can (re-)initialize an mbarrier and so read the old object's
+/// `atomics` (`forget_dead_sync`): `mbarrier.init` / `SYNCS.EXCH.64`, and on SASS an 8-byte
+/// store that can reach shared memory (an `STS.64` of a state word over a live object
+/// re-initializes it, `Machine::store_over_mbar`, MISS 218).
+fn mbar_init_pcs(k: &ptxv_ir::Kernel) -> Vec<u64> {
+    use ptxv_ir::{Op, Space};
+    let mut v = vec![0u64; k.code.len().div_ceil(64)];
+    for (pc, i) in k.code.iter().enumerate() {
+        let init = match &i.op {
+            Op::MbarInit { .. } => true,
+            Op::St {
+                space: Space::Shared | Space::SharedCluster | Space::Generic,
+                bytes: 8,
+                ..
+            } => k.front == ptxv_ir::Front::Sass,
+            _ => false,
+        };
+        if init {
+            v[pc / 64] |= 1 << (pc % 64);
+        }
+    }
+    v
+}
+
 /// ASSUME(E-DRF): forget synchronization bookkeeping no future step can read
 /// (`PTXV_NO_DEAD_SYNC` turns it off), so that states that differ only in it are one state:
 /// - an mbarrier's `atomics` (the arrivals' epochs) are read only by a later
-///   `mbarrier.init` of it (init-vs-arrival race check): cleared once no live thread can
-///   reach any `mbarrier.init` pc;
+///   `mbarrier.init` of it, or on SASS an `STS.64` re-initializing it (init-vs-arrival race
+///   check): cleared once no live thread can reach any such pc (`mbar_init_pcs`);
 /// - a named barrier's completed-generation count and last release clock (`bar_gen`,
 ///   `bar_prev`) are read only by later arrivals at it, and its (empty) generation record
 ///   by later arrivals or by exits releasing a generation in progress: dropped once no live
@@ -6673,12 +6846,7 @@ fn check_walks(m0: &Machine, v: &Verdict, threads: usize, by: &Sets, plain: bool
     } else {
         Vec::new()
     };
-    let mut inits = vec![0u64; m0.k.code.len().div_ceil(64)];
-    for (pc, i) in m0.k.code.iter().enumerate() {
-        if matches!(i.op, ptxv_ir::Op::MbarInit { .. }) {
-            inits[pc / 64] |= 1 << (pc % 64);
-        }
-    }
+    let inits = mbar_init_pcs(&m0.k);
     let (reach0, inits) = (&reach0, &inits);
     let sigs: HashSet<String> = v.findings.iter().map(|f| f.sig.clone()).collect();
     let next = AtomicUsize::new(0);
@@ -6895,10 +7063,44 @@ fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
     // terminal state (NIC ep4s_dispatch: 32 workers, 400k states, none terminal; 8 workers
     // find its races). Then one deterministic run to the end adds depth: its findings are
     // witnesses of that run (happens-before races, violations), the verdict stays incomplete.
-    if !v.complete && v.terminal_states == 0 && std::env::var("PTXV_NO_DEPTH_RUN").is_err() {
-        // The whole check's time budget (membudget.rs) stops this run too.
-        let (_, fs, ok, cut) =
-            run_once_until(m0.clone(), &mut |_| crate::membudget::time_budget_spent());
+    if !v.complete
+        && v.terminal_states == 0
+        && !m0.race_stop
+        && std::env::var("PTXV_NO_DEPTH_RUN").is_err()
+    {
+        // The whole check's time budget (membudget.rs) stops this run too, and so do the
+        // memory budget, a step cap and a wall-clock cap (MISS 277: with no time budget set,
+        // a run that went round a loop forever never stopped; PTXV_DEPTH_RUN_STEPS, default
+        // 10M; PTXV_DEPTH_RUN_SECS, default 120 s, when no time budget is set). A stopped run
+        // adds its findings; the verdict stays incomplete either way.
+        let env = |k: &str, d: u64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(d)
+        };
+        let (cap, secs) = (
+            env("PTXV_DEPTH_RUN_STEPS", 10_000_000),
+            env("PTXV_DEPTH_RUN_SECS", 120),
+        );
+        let t0 = std::time::Instant::now();
+        let budget = crate::membudget::time_budget_end().is_some();
+        let (mut steps, mut why) = (0u64, None);
+        let (_, fs, end) = run_once_ended(m0.clone(), &mut |_| {
+            steps += 1;
+            why = if crate::membudget::time_budget_spent() {
+                Some(crate::membudget::TIME_BUDGET.to_string())
+            } else if steps > cap {
+                Some(format!("{cap} steps"))
+            } else if !budget && t0.elapsed().as_secs() >= secs {
+                Some(format!("{secs} s"))
+            } else if crate::membudget::exceeded() {
+                Some("the memory budget".to_string())
+            } else {
+                None
+            };
+            why.is_some()
+        });
         let mut added = 0usize;
         for f in fs {
             if !v.findings.iter().any(|g| g.sig == f.sig) {
@@ -6906,10 +7108,11 @@ fn explore_one(mut m0: Machine, max_states: usize, threads: usize) -> Verdict {
                 added += 1;
             }
         }
-        let how = match (ok, cut) {
-            (true, _) => "to the end".to_string(),
-            (false, true) => format!("(stopped at {})", crate::membudget::TIME_BUDGET),
-            (false, false) => "(not to the end)".to_string(),
+        let how = match end {
+            RunEnd::Terminal => "to the end".to_string(),
+            RunEnd::Deadlock => "to a deadlock".to_string(),
+            RunEnd::Stuck(w) => format!("(stopped: {w})"),
+            RunEnd::Stopped => format!("(stopped at {})", why.unwrap_or_default()),
         };
         v.notes.push(format!(
             "the bounded search reached no terminal state; one deterministic run {how} added {added} finding(s)"
@@ -6936,6 +7139,24 @@ fn explore_one_models(m0: Machine, max_states: usize, threads: usize) -> (Verdic
     })
 }
 
+/// Whether the kernel has a load E-POLL-ANY can act on: a strong global or shared load
+/// (spin.rs `strong_poll`; exec.rs `vip_ok` takes no other load for a value-insensitive
+/// poll). Without one, a search with value-insensitive polls explores the plain model.
+fn vip_can_poll(m: &Machine) -> bool {
+    m.k.code.iter().any(|i| crate::spin::strong_poll(&i.op))
+}
+
+/// A finding that the plain model must confirm (`explore_one_models_with`): a race, or a
+/// store over an mbarrier's bytes not ordered with its init / inval (`mbar-store`, S-MBAR-MEM):
+/// both are happens-before verdicts, and a value-insensitive poll (E-POLL-ANY) acquires
+/// nothing, so with one the search reports stores the plain model orders after the inval
+/// (MISS 241 follow-up: fixtures/e_mbar_reuse_ordered good / CL, a reuse ordered by
+/// st.release / ld.acquire after the inval, was a violation without the synchronization
+/// reduction).
+fn needs_plain_rerun(f: &Finding) -> bool {
+    f.kind == "race" || f.sig.starts_with("mbar-store:")
+}
+
 /// `explore_one_models` with the search of one model given: `search(machine, peeks, vip)`.
 fn explore_one_models_with(
     m0: Machine,
@@ -6952,9 +7173,12 @@ fn explore_one_models_with(
         && (!peekwait_set(&m0).is_empty()
             || std::env::var("PTXV_NO_PEEKSKIP").is_err() && !peekskip_set(&m0).is_empty());
     let vip_model = m0.vip.is_none() && std::env::var("PTXV_NO_VIP").is_err();
-    // Debugging: PTXV_NO_RACE_RERUN keeps the first search's verdict.
+    // Debugging: PTXV_NO_RACE_RERUN keeps the first search's verdict; so does the first-race
+    // option (`Machine::race_stop`), whose verdict then says that its race is unconfirmed
+    // where a reduction could have acted.
     if (peek_model || vip_model)
-        && v.findings.iter().any(|f| f.kind == "race")
+        && v.findings.iter().any(needs_plain_rerun)
+        && !m0.race_stop
         && std::env::var("PTXV_NO_RACE_RERUN").is_err()
     {
         // First without the acquire loads among the value-insensitive polls, which is what
@@ -6974,9 +7198,9 @@ fn explore_one_models_with(
             let w = search(m0.clone(), true, 1);
             // A rerun cut short (state cap, time budget) that found no race refutes nothing:
             // the plain model decides, and what the searches found stays (`keep_found`).
-            if !w.findings.iter().any(|f| f.kind == "race") && !w.complete {
+            if !w.findings.iter().any(needs_plain_rerun) && !w.complete {
                 cut.push(w);
-            } else if !w.findings.iter().any(|f| f.kind == "race") {
+            } else if !w.findings.iter().any(needs_plain_rerun) {
                 let mut w = w;
                 w.notes.push(format!(
                     "a race was found: explored again with value-insensitive polls (E-POLL-ANY) on relaxed loads only ({} states with acquire loads too)",
@@ -6996,6 +7220,19 @@ fn explore_one_models_with(
         }
         return (w, false, 0);
     }
+    let mut v = v;
+    // Only where a reduction could have acted: the peek changes have locations, or the kernel
+    // has a load E-POLL-ANY can take for a poll. Otherwise the first search was the plain
+    // model's, and so is its race (fixtures/e_smem_root on PTX).
+    if m0.race_stop
+        && (peek_model || vip_model && vip_can_poll(&m0))
+        && v.findings.iter().any(needs_plain_rerun)
+    {
+        v.notes.push(
+            "first-race option: no rerun without the peek changes (E-SPIN) and value-insensitive polls (E-POLL-ANY), so the race is unconfirmed by the plain model"
+                .into(),
+        );
+    }
     (v, true, 2)
 }
 
@@ -7003,7 +7240,8 @@ fn explore_one_models_with(
 /// earlier searches of the model reductions found (`explore_one_models`): their findings and
 /// distinct outputs stay in the incomplete verdict, beside the rerun's own, with a note (a cut
 /// rerun used to replace them, so a deadlock / race / violation became an inconclusive search
-/// of a few states).
+/// of a few states). The note says how many are kept unconfirmed, or that the rerun found
+/// them all itself.
 fn keep_found<'a>(w: &mut Verdict, earlier: impl Iterator<Item = &'a Verdict>) {
     let (mut kept, mut from) = (0usize, 0usize);
     for e in earlier {
@@ -7017,10 +7255,17 @@ fn keep_found<'a>(w: &mut Verdict, earlier: impl Iterator<Item = &'a Verdict>) {
         w.distinct_outputs = w.distinct_outputs.max(e.distinct_outputs);
     }
     w.complete = false;
-    w.notes.push(format!(
-        "the rerun stopped incomplete at {} states: {kept} finding(s) of the searches with the model reductions ({from} states) are kept, unconfirmed by the plain model",
-        w.states
-    ));
+    w.notes.push(if kept == 0 {
+        format!(
+            "the rerun stopped incomplete at {} states: every finding of the searches with the model reductions ({from} states) was found by the plain model too",
+            w.states
+        )
+    } else {
+        format!(
+            "the rerun stopped incomplete at {} states: {kept} finding(s) of the searches with the model reductions ({from} states) are kept, unconfirmed by the plain model",
+            w.states
+        )
+    });
 }
 
 fn explore_one_model(
@@ -7115,15 +7360,7 @@ fn explore_one_model(
         } else {
             Default::default()
         },
-        inits: {
-            let mut v = vec![0u64; m0.k.code.len().div_ceil(64)];
-            for (pc, i) in m0.k.code.iter().enumerate() {
-                if matches!(i.op, ptxv_ir::Op::MbarInit { .. }) {
-                    v[pc / 64] |= 1 << (pc % 64);
-                }
-            }
-            v
-        },
+        inits: mbar_init_pcs(&m0.k),
         net: net.clone(),
         ..Default::default()
     });
@@ -7303,6 +7540,25 @@ fn over_budget() -> bool {
     crate::membudget::exceeded() || crate::membudget::past_deadline()
 }
 
+/// `fp` with the strong reads that the step's value-insensitive polls left out
+/// (`Machine::vip_learn`, taken): what the synchronization reduction learns for the step.
+/// E-POLL-ANY decides a poll on the state (the location's current value and the values seen
+/// written), but the learned sets stand for the warp's step at that pc in every state the
+/// reduction asks about. A poll that read 7 after the store of 7, footprint-free, hid the
+/// read from the store's ample check in the state before the store, where the load reads the
+/// never-written word (MISS 295, fixtures/e_peek_result ACQ SASS: [clean] against
+/// [nondeterministic, violation]).
+fn learned_fp(m: &mut Machine, mut fp: Footprint) -> Footprint {
+    if m.vip_learn.is_empty() {
+        return fp;
+    }
+    for r in std::mem::take(&mut m.vip_learn) {
+        fp.r.push(r);
+    }
+    fp.normalize();
+    fp
+}
+
 /// One random complete execution from `m`, learning the footprint of every step: the steps
 /// taken, and whether a budget stopped it (`budget`, `over_budget`) with an action still
 /// enabled.
@@ -7339,6 +7595,7 @@ fn seed_walk(
         m.findings.clear();
         let mut fp = m.take_footprint().map(|b| *b).unwrap_or_default();
         fp.normalize();
+        let fp = learned_fp(&mut m, fp);
         if let Some(e) = ent {
             view.learn(e, pc, &fp);
         }
@@ -7453,6 +7710,8 @@ struct Search<'a> {
     /// `Machine::weak_stop` of the root: stop at the first race that sends the weak pass's
     /// verdict to the strong pass (smem.rs).
     weak_stop: u8,
+    /// `Machine::race_stop` of the root: stop at the first race (opt-in).
+    race_stop: bool,
     learned: Option<&'a Learned>,
     sh: Arc<Shared>,
     /// Multi-node: this rank's part of the round.
@@ -7534,12 +7793,17 @@ impl Search<'_> {
         if g.seen_sig.insert(f.sig.clone()) {
             f.trace = path_vec(path);
             loc.sigs.insert(f.sig.clone());
-            let stop = self.weak_stop > 0
+            let weak = self.weak_stop > 0
                 && f.kind == "race"
                 && crate::smem::strong_race(&f.sig, self.weak_stop == 2);
+            let first = self.race_stop && f.kind == "race";
             g.findings.push(f);
-            if stop {
-                self.weak_stopped();
+            if weak {
+                self.stop_at_race(
+                    "weak LDS/STS pass: stopped at a race that the strong pass decides",
+                );
+            } else if first {
+                self.stop_at_race("stopped at the first race (first-race option)");
             }
         } else {
             loc.sigs.insert(f.sig);
@@ -7576,11 +7840,12 @@ impl Search<'_> {
         (f, top.join(" "))
     }
 
-    /// The weak pass found a race that the strong pass decides: its verdict will be
-    /// discarded, so stop (multi-node: every rank, as rank 0 does at the state cap).
-    fn weak_stopped(&self) {
+    /// The weak pass found a race that the strong pass decides (its verdict will be
+    /// discarded), or the first-race option is on and a race was found: stop (multi-node:
+    /// every rank, as rank 0 does at the state cap). The verdict is incomplete.
+    fn stop_at_race(&self, why: &str) {
         if !self.stop.swap(true, Ordering::AcqRel) {
-            eprintln!("  weak LDS/STS pass: stopped at a race that the strong pass decides");
+            eprintln!("  {why}");
             if let Some(d) = &self.dist {
                 d.d.broadcast(&d.msg(Body::Control(1)));
             }
@@ -7763,7 +8028,12 @@ impl Search<'_> {
             loc.transitions += 1;
             let mut fp = n.take_footprint().map(|b| *b).unwrap_or_default();
             fp.normalize();
-            if let (Some(v), Some(e)) = (loc.view.as_mut(), action_ent(&m, a)) {
+            if !n.vip_learn.is_empty() {
+                let lf = learned_fp(&mut n, fp.clone());
+                if let (Some(v), Some(e)) = (loc.view.as_mut(), action_ent(&m, a)) {
+                    v.learn(e, action_pc(&m, a), &lf);
+                }
+            } else if let (Some(v), Some(e)) = (loc.view.as_mut(), action_ent(&m, a)) {
                 v.learn(e, action_pc(&m, a), &fp);
             }
             let np = Some(Arc::new(PathNode {
@@ -7954,6 +8224,7 @@ fn explore_round(
         indep: ctas_independent(&m0),
         stats: std::env::var("PTXV_STATS").is_ok(),
         weak_stop: m0.weak_stop,
+        race_stop: m0.race_stop,
         learned,
         sh: sh.clone(),
         dist: dist.clone(),
@@ -8072,6 +8343,15 @@ pub struct DetSched {
 const DET_STREAK: u32 = 4096;
 
 impl DetSched {
+    /// The current warp's last steps made no progress (`FaultLoop::stalled`): end its streak,
+    /// so the next pick moves to the next warp that can move. Its remaining streak would only
+    /// repeat the same step on the same state, so the run continues from the same state as
+    /// it did after those steps (RMK277 F1: the no-progress stop came before the streak ended,
+    /// and the warp that would have unblocked the stalled one never ran).
+    pub fn move_on(&mut self) {
+        self.streak = DET_STREAK;
+    }
+
     pub fn pick(&mut self, m: &Machine) -> Option<Action> {
         let full = *self.full.get_or_insert_with(|| {
             m.launch.env.tmem_cotenant || m.live_threads().any(|(_, t)| t.st == St::Unlaunched)
@@ -8231,7 +8511,10 @@ fn det_async(m: &Machine) -> Option<usize> {
             continue;
         }
         if let Some(f) = op.fifo {
-            if m.pending[..i].iter().any(|o| o.fifo == Some(f)) {
+            if m.pending
+                .iter()
+                .any(|o| o.fifo == Some(f) && o.seq < op.seq)
+            {
                 continue;
             }
         }
@@ -8273,14 +8556,25 @@ impl FindingDelivery {
 
 /// A deterministic run's guard against a step that faults again and again: a faulting step
 /// leaves its warp where it was, so a scheduler that keeps picking it never ends.
+/// Also against any step that reports a finding and leaves the machine as it was (MISS 277:
+/// an mbarrier poll on an object that is not live reports a violation and stays at the poll,
+/// `Flow::Stay`): the deterministic scheduler picks the same step again, and a run whose
+/// findings grow every step never ended where no time budget was set.
 #[derive(Default)]
 pub struct FaultLoop {
     last: Option<(String, u32)>,
+    /// The machine's fingerprint after the last step, while every step since reported a
+    /// finding and left it unchanged, and the count of such steps.
+    same: Option<(u128, u32)>,
 }
 
 impl FaultLoop {
-    /// After a step with findings `fs`: Some(why) once the same fault came 64 steps in a row.
-    pub fn repeats(&mut self, fs: &[Finding]) -> Option<String> {
+    /// After a step of `m` that reported the findings `fs` (`FindingDelivery::fresh`, not yet
+    /// collected): Some(why) once the same fault came 64 steps in a row, or once
+    /// max(64, threads) steps in a row reported findings and left the machine's state
+    /// (`Machine::fingerprint`) unchanged: more than a scheduler that takes the warps in turn
+    /// needs to reach one that can move. Steps without findings cost nothing here.
+    pub fn repeats(&mut self, m: &Machine, fs: &[Finding]) -> Option<String> {
         match fs.iter().find(|f| f.sig.starts_with("fault:")) {
             None => self.last = None,
             Some(f) => match &mut self.last {
@@ -8296,8 +8590,46 @@ impl FaultLoop {
                 _ => self.last = Some((f.sig.clone(), 1)),
             },
         }
+        if fs.is_empty() {
+            self.same = None;
+            return None;
+        }
+        let fp = m.fingerprint();
+        match &mut self.same {
+            Some((p, n)) if *p == fp => {
+                *n += 1;
+                if *n >= 64.max(m.threads.len() as u32) {
+                    return Some(format!(
+                        "a step repeats without changing the machine's state ({}); the run stops there",
+                        fs[0].msg.lines().next().unwrap_or("")
+                    ));
+                }
+            }
+            _ => self.same = Some((fp, 0)),
+        }
         None
     }
+
+    /// The last two steps reported findings and left the machine's state unchanged: the
+    /// deterministic scheduler should move on (`DetSched::move_on`).
+    pub fn stalled(&self) -> bool {
+        matches!(self.same, Some((_, n)) if n >= 1)
+    }
+}
+
+/// How a deterministic run ended (`run_once_ended`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunEnd {
+    /// Every thread exited.
+    Terminal,
+    /// No thread can step and the run is not over (a deadlock finding is reported).
+    Deadlock,
+    /// `FaultLoop` stopped it: a step that faults again and again, or steps that repeat
+    /// without changing the machine's state with every warp tried (the reason). Not a
+    /// deadlock: the run decides nothing.
+    Stuck(String),
+    /// The caller's `stop` stopped it.
+    Stopped,
 }
 
 /// One deterministic execution (`DetSched`). Returns the final machine and the findings
@@ -8311,9 +8643,19 @@ pub fn run_once(m: Machine) -> (Machine, Vec<Finding>, bool) {
 /// caps): (machine, findings, terminal, stopped). A stopped run is not terminal and reports
 /// no deadlock.
 pub fn run_once_until(
-    mut m: Machine,
+    m: Machine,
     stop: &mut dyn FnMut(&Machine) -> bool,
 ) -> (Machine, Vec<Finding>, bool, bool) {
+    let (m, fs, end) = run_once_ended(m, stop);
+    let ok = end == RunEnd::Terminal;
+    (m, fs, ok, end == RunEnd::Stopped)
+}
+
+/// `run_once_until` with how the run ended.
+pub fn run_once_ended(
+    mut m: Machine,
+    stop: &mut dyn FnMut(&Machine) -> bool,
+) -> (Machine, Vec<Finding>, RunEnd) {
     let mut fs = Vec::new();
     let mut delivery = FindingDelivery::default();
     // Debugging: PTXV_RUN_ONCE_PROGRESS=n prints every n-th action.
@@ -8324,7 +8666,7 @@ pub fn run_once_until(
     let mut n = 0usize;
     let mut sched = DetSched::default();
     let mut faults = FaultLoop::default();
-    let mut stuck = false;
+    let mut stuck = None;
     let mut stopped = false;
     while let Some(a) = sched.pick(&m) {
         if stop(&m) {
@@ -8351,33 +8693,39 @@ pub fn run_once_until(
                 eprintln!("  finding: {}", f.msg.lines().next().unwrap_or(""));
             }
         }
-        stuck = faults.repeats(delivery.fresh(&m)).is_some();
+        stuck = faults.repeats(&m, delivery.fresh(&m));
         delivery.collect(&mut m, &mut fs);
-        if stuck {
+        if stuck.is_some() {
             break;
+        }
+        if faults.stalled() {
+            sched.move_on();
         }
     }
     if stopped {
         delivery.finish(&mut m, &mut fs);
-        return (m, fs, false, true);
+        return (m, fs, RunEnd::Stopped);
     }
-    let ok = m.terminal();
-    if ok {
+    if let Some(why) = stuck {
+        delivery.finish(&mut m, &mut fs);
+        return (m, fs, RunEnd::Stuck(why));
+    }
+    if m.terminal() {
         m.exit_checks();
+        delivery.finish(&mut m, &mut fs);
+        return (m, fs, RunEnd::Terminal);
     }
     delivery.collect(&mut m, &mut fs);
-    if !ok && !stuck {
-        let (sig, msg) = m.deadlock_report();
-        fs.push(Finding {
-            kind: "deadlock".into(),
-            sig,
-            msg,
-            trace: vec![],
-            ..Default::default()
-        });
-    }
+    let (sig, msg) = m.deadlock_report();
+    fs.push(Finding {
+        kind: "deadlock".into(),
+        sig,
+        msg,
+        trace: vec![],
+        ..Default::default()
+    });
     delivery.finish(&mut m, &mut fs);
-    (m, fs, ok, false)
+    (m, fs, RunEnd::Deadlock)
 }
 
 /// One execution under a seeded random scheduler (uniform among the enabled actions), at most
@@ -8407,7 +8755,7 @@ pub fn random_run(
         rng ^= rng << 17;
         let (a, _) = &acts[(rng % acts.len() as u64) as usize];
         m.apply(a);
-        let stuck = faults.repeats(delivery.fresh(&m)).is_some();
+        let stuck = faults.repeats(&m, delivery.fresh(&m)).is_some();
         delivery.collect(&mut m, &mut fs);
         if stuck {
             delivery.finish(&mut m, &mut fs);
@@ -10133,8 +10481,10 @@ impl LaWarp {
                         if c.body.is_some() {
                             return wild("divergence in an elected body");
                         }
+                        // Only a reconvergence point holds them (MISS 81).
                         let bs = |q: u32| {
-                            matches!(code.get(q as usize).map(|i| &i.op), Some(Op::Bsync { .. }))
+                            matches!(code.get(q as usize).map(|i| &i.op),
+                                Some(Op::Bsync { form, .. }) if crate::exec::bsync_holds(*form))
                         };
                         let ones = match t {
                             Av::L(j) => {
@@ -10426,7 +10776,9 @@ fn la_rejoin(m: &Machine, w: u32, ts: &[usize]) -> Option<(u32, u32, u32)> {
                 collective: false,
                 ..
             } => m.rd(t, mask).is_ok_and(|x| x as u32 & live == live),
-            Op::Bsync { b } => m.warps[w as usize].bmask[*b as usize] & live == live,
+            Op::Bsync { b, form } if crate::exec::bsync_holds(*form) => {
+                m.warps[w as usize].bmask[*b as usize] & live == live
+            }
             _ => false,
         }
     };
@@ -10976,6 +11328,7 @@ mod worker_panic_tests {
             indep: false,
             stats: false,
             weak_stop: 0,
+            race_stop: false,
             learned: None,
             sh: Arc::new(Shared {
                 visited: Visited::new(1),
@@ -11216,6 +11569,53 @@ mod bar_cut_tests {
                 .any(|n| n.contains("unconfirmed by the plain model")),
             "{:?}",
             v.notes
+        );
+    }
+
+    /// keep_found's note: a cut rerun that found every finding of the earlier searches itself
+    /// says so (it used to say "0 finding(s) ... are kept, unconfirmed by the plain model");
+    /// one that missed some says how many are kept unconfirmed.
+    #[test]
+    fn keep_found_says_whether_the_rerun_found_everything() {
+        let verdict = |sigs: &[&str], states: usize| Verdict {
+            states,
+            transitions: 0,
+            complete: true,
+            terminal_states: 0,
+            distinct_outputs: 1,
+            findings: sigs
+                .iter()
+                .map(|s| Finding {
+                    kind: "race".into(),
+                    sig: s.to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+            assumptions: vec![],
+            notes: vec![],
+            seconds: 0.0,
+            outputs: vec![],
+        };
+        let first = verdict(&["a", "b"], 500);
+        let mut all = verdict(&["b", "a"], 7);
+        keep_found(&mut all, std::iter::once(&first));
+        assert!(!all.complete);
+        assert_eq!(all.findings.len(), 2);
+        assert_eq!(
+            all.notes,
+            [
+                "the rerun stopped incomplete at 7 states: every finding of the searches with the model reductions (500 states) was found by the plain model too"
+            ]
+        );
+        let mut some = verdict(&["a"], 7);
+        keep_found(&mut some, std::iter::once(&first));
+        assert!(!some.complete);
+        assert_eq!(some.findings.len(), 2);
+        assert_eq!(
+            some.notes,
+            [
+                "the rerun stopped incomplete at 7 states: 1 finding(s) of the searches with the model reductions (500 states) are kept, unconfirmed by the plain model"
+            ]
         );
     }
 

@@ -43,3 +43,5 @@ marker = "@ROLE"
 find = "sub.u32 %r13, %r8, 4;"
 replace = "ld.volatile.global.u32 %r13, [%rd3];"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]

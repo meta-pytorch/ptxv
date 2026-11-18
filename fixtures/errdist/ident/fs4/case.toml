@@ -1,0 +1,43 @@
+name = "rE_fs4"
+description = """The third review's probe (MISS 138): entry rE_fs4 of ../fs4.ptx (see its header): y = RN(floor(|x| / 1024) + v), captured x = 2560, v = 2^40: the probes cross the steps of floor(|x| / 1024) and v absorbs them."""
+ptx = "../fs4.ptx"
+entry = "rE_fs4"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "x.bin"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "v.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

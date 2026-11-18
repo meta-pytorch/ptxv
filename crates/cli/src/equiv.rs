@@ -55,6 +55,9 @@ use ptxv_sim::num::U32;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::compare::down;
+use super::compare::up;
+use super::compare::up_e;
 use super::gpu_env;
 use super::load_with;
 use super::machine;
@@ -211,7 +214,7 @@ fn finite_inputs(case: &Case, launch: &mut ptxv_sim::machine::Launch) -> usize {
         };
         match b.dtype.as_str() {
             "f32" => {
-                for w in a.init.chunks_exact_mut(4) {
+                for w in std::sync::Arc::make_mut(&mut a.init).chunks_exact_mut(4) {
                     let x = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
                     if x & 0x7f80_0000 == 0x7f80_0000 {
                         w.fill(0);
@@ -221,7 +224,7 @@ fn finite_inputs(case: &Case, launch: &mut ptxv_sim::machine::Launch) -> usize {
             }
             "bf16" | "f16" => {
                 let e = if b.dtype == "bf16" { 0x7f80u16 } else { 0x7c00 };
-                for w in a.init.chunks_exact_mut(2) {
+                for w in std::sync::Arc::make_mut(&mut a.init).chunks_exact_mut(2) {
                     if u16::from_le_bytes([w[0], w[1]]) & e == e {
                         w.fill(0);
                         n += 1;
@@ -264,10 +267,24 @@ pub(crate) fn prepare_with(
     // placement and clock-dependent outputs incomplete (smid::check_placements).
     drop(machine(&case, kern.clone())?);
     let make = || machine(&case, kern.clone()).expect("machine");
+    // ASSUME(E-LAUNCH-ORDER), MISS 189: an unknown order of several launches under the strict
+    // reading is also checked in the list's order, for its deadlocks (as `ptxv check`, whose
+    // cached verdict has them already).
+    let serialized = |v: &mut ptxv_sim::explore::Verdict,
+                      run: &dyn Fn(Machine) -> ptxv_sim::explore::Verdict|
+     -> Result<()> {
+        ptxv_sim::serialized_order_deadlocks(v, &case, &kern, &mut |m| run(m))
+    };
     let v = if k.slices {
-        ptxv_sim::smid::check_placements(&make, &mut |mk| {
+        let mut v = ptxv_sim::smid::check_placements(&make, &mut |mk| {
             ptxv_sim::explore::explore_symmetric(mk, max_states, &mut |_, _| {})
-        })
+        });
+        serialized(&mut v, &|m| {
+            ptxv_sim::smid::check_placements(&|| m.clone(), &mut |mk| {
+                ptxv_sim::explore::explore_symmetric(mk, max_states, &mut |_, _| {})
+            })
+        })?;
+        v
     } else if k.certify {
         // `ptxv check --certify` may have run this check already (vcache.rs). Both apply a
         // variant's launch-order edits; the cache still serves only variants without them, so
@@ -289,9 +306,14 @@ pub(crate) fn prepare_with(
             }
             // A cached verdict is `ptxv check`'s, already through smid::check_placements.
             None => {
-                let v = ptxv_sim::smid::check_placements(&make, &mut |mk| {
+                let mut v = ptxv_sim::smid::check_placements(&make, &mut |mk| {
                     ptxv_sim::wellsync::check_certified(mk(), max_states)
                 });
+                serialized(&mut v, &|m| {
+                    ptxv_sim::smid::check_placements(&|| m.clone(), &mut |mk| {
+                        ptxv_sim::wellsync::check_certified(mk(), max_states)
+                    })
+                })?;
                 if let Some(key) = &key {
                     crate::vcache::store(key, max_states, &v);
                 }
@@ -299,7 +321,11 @@ pub(crate) fn prepare_with(
             }
         }
     } else {
-        ptxv_sim::smid::check_placements(&make, &mut |mk| explore(mk(), max_states))
+        let mut v = ptxv_sim::smid::check_placements(&make, &mut |mk| explore(mk(), max_states));
+        serialized(&mut v, &|m| {
+            ptxv_sim::smid::check_placements(&|| m.clone(), &mut |mk| explore(mk(), max_states))
+        })?;
+        v
     };
     // `contract` findings (PTX-contract deviations GB300 tolerates, ASSUMPTIONS.md) do not
     // break the preconditions; they are listed as what the verdict relies on.
@@ -543,6 +569,19 @@ pub(crate) fn prepare_with(
     })
 }
 
+/// The pair's own reliance (`Report::finite_max`, MISS 197, 202): value levels that read a select
+/// or FMNMX.NAN maximum as the maximum of non-NaN values.
+// ASSUME(N-FINITE): see ASSUMPTIONS.md
+fn finite_max_notes(rep: &ptxv_sim::equiv::Report) -> Vec<String> {
+    if rep.finite_max == 0 {
+        return vec![];
+    }
+    vec![format!(
+        "relies on: N-FINITE ({} outputs at a value level read a select or FMNMX.NAN maximum as the maximum of non-NaN values; proven for inputs with finite elements on which no operation overflows)",
+        rep.finite_max
+    )]
+}
+
 /// The output buffer's elements: (bits, node).
 fn outs(m: &Machine) -> Vec<(u32, Option<u32>)> {
     let oi = m.launch.outputs[0];
@@ -576,6 +615,28 @@ fn outs(m: &Machine) -> Vec<(u32, Option<u32>)> {
         .collect()
 }
 
+/// Defense in depth for the node shadow (MISS 177): an output whose node's value is not the
+/// output's simulated bits holds a stale node, one the shadow failed to drop when its memory
+/// changed. Such an output loses the node and counts as input-derived without one (`output_nodes`
+/// makes it an Opaque node: untracked), so the check can only take a level away. A stale node that
+/// equals the output at the captured inputs is not seen. Returns which outputs were stale.
+// ASSUME(N-EQUIV): see ASSUMPTIONS.md
+fn drop_stale_nodes(
+    outputs: &mut [(u32, Option<u32>)],
+    nodes: &[ptxv_sim::num::Node],
+) -> Vec<bool> {
+    outputs
+        .iter_mut()
+        .map(|(bits, node)| {
+            let stale = node.is_some_and(|n| nodes[n as usize].hw != *bits);
+            if stale {
+                *node = None;
+            }
+            stale
+        })
+        .collect()
+}
+
 fn output_nodes(m: &mut Machine) -> Vec<(u32, Option<u32>)> {
     let allocation = m.launch.outputs[0];
     let state = m.num.as_ref().unwrap();
@@ -587,14 +648,16 @@ fn output_nodes(m: &mut Machine) -> Vec<(u32, Option<u32>)> {
         4
     };
     let mut outputs = outs(m);
+    let stale = drop_stale_nodes(&mut outputs, &m.num.as_ref().unwrap().nodes);
     for (index, (bits, node)) in outputs.iter_mut().enumerate() {
-        let input_derived = (0..bytes).any(|byte| {
-            m.num.as_ref().unwrap().taint.memory_unit_input_derived((
-                1,
-                allocation as u64,
-                (index * bytes + byte) as u64,
-            ))
-        });
+        let input_derived = stale[index]
+            || (0..bytes).any(|byte| {
+                m.num.as_ref().unwrap().taint.memory_unit_input_derived((
+                    1,
+                    allocation as u64,
+                    (index * bytes + byte) as u64,
+                ))
+            });
         if node.is_none() && input_derived {
             let state = m.num.as_mut().unwrap();
             let id = state.nodes.len() as u32;
@@ -716,6 +779,8 @@ fn replay(
     let dump = dir.join(format!("{}.witness.bin", run.variant));
     let _ = std::fs::remove_file(&dump);
     let mut args = hw_worker_args(&run.case.dir, &run.cubin, &run.variant, &dump);
+    args.push("--image-fnv".into());
+    args.push(crate::image_fnv(&run.cubin)?);
     for b in &wc.m.buffers {
         if out_only(&wc, &b.name) {
             continue;
@@ -898,6 +963,10 @@ fn elementwise_gpu_check(
                 &run.variant,
                 &dump,
             ))
+            .args([
+                "--image-fnv".to_string(),
+                crate::image_fnv(&run.cubin).map_err(|x| x.to_string())?,
+            ])
             .args(["--input", &format!("{name}={}", ip.display())])
             .env("CUDA_VISIBLE_DEVICES", gpu.to_string())
             .stdout(std::process::Stdio::null())
@@ -1146,32 +1215,32 @@ fn elementwise_pair(
         secs
     );
     println!(
-        "      reference vs candidate: bitwise equal on {} of {} inputs; where both finite: max {} ulp (x = {:e}: {:e} vs {:e}), |C - R| <= {:.3e} (x = {:e}), relative <= {:.3e}; {} special-value mismatches",
+        "      reference vs candidate: bitwise equal on {} of {} inputs; where both finite: max {} ulp (x = {:e}: {:e} vs {:e}), |C - R| <= {} (x = {:e}), relative <= {}; {} special-value mismatches",
         all.bitwise_equal,
         all.inputs,
         all.max_ulps,
         all.at_ulps,
         all.values_at_ulps.0,
         all.values_at_ulps.1,
-        all.max_abs,
+        up_e(all.max_abs, 3),
         all.at_abs,
-        all.max_rel,
+        up_e(all.max_rel, 3),
         all.special_mismatch
     );
     if let (Some(f), Some(a), Some(b)) = (&func, &tr, &tc) {
         println!(
-            "      vs {f}{} in f64, finite inputs: reference |err| <= {:.3e} (x = {:e}), max {:.3} ulp (x = {:e}), {:.3} ulp where |{f}| >= 2^-10; candidate |err| <= {:.3e} (x = {:e}), max {:.3} ulp (x = {:e}), {:.3} ulp where |{f}| >= 2^-10",
+            "      vs {f}{} in f64, finite inputs: reference |err| <= {} (x = {:e}), max {} ulp (x = {:e}), {} ulp where |{f}| >= 2^-10; candidate |err| <= {} (x = {:e}), max {} ulp (x = {:e}), {} ulp where |{f}| >= 2^-10",
             if identified { " (identified)" } else { "" },
-            a.max_abs,
+            up_e(a.max_abs, 3),
             a.at_abs,
-            a.max_ulps,
+            up(a.max_ulps, 3),
             a.at_ulps,
-            a.max_ulps_big,
-            b.max_abs,
+            up(a.max_ulps_big, 3),
+            up_e(b.max_abs, 3),
             b.at_abs,
-            b.max_ulps,
+            up(b.max_ulps, 3),
             b.at_ulps,
-            b.max_ulps_big
+            up(b.max_ulps_big, 3)
         );
     } else if func.is_none() {
         println!(
@@ -1180,7 +1249,7 @@ fn elementwise_pair(
     }
     if let Some(p) = &prod16 {
         println!(
-            "      outputs {}(rn(f(x) * y)), every (x, y) pair ({} pairs): bitwise equal on {}, 1 ulp apart on {}, max {} ulp (x = {:e}, y = {:e}: {:e} vs {:e}), |C - R| <= {:.3e}; {} special-value mismatches; where f and both outputs are normal: max {} ulp (x = {:e}, y = {:e}: {:e} vs {:e})",
+            "      outputs {}(rn(f(x) * y)), every (x, y) pair ({} pairs): bitwise equal on {}, 1 ulp apart on {}, max {} ulp (x = {:e}, y = {:e}: {:e} vs {:e}), |C - R| <= {}; {} special-value mismatches; where f and both outputs are normal: max {} ulp (x = {:e}, y = {:e}: {:e} vs {:e})",
             otr.name(),
             p.pairs,
             p.bitwise_equal,
@@ -1190,7 +1259,7 @@ fn elementwise_pair(
             p.at_ulps.1,
             p.at_ulps.2,
             p.at_ulps.3,
-            p.max_abs,
+            up_e(p.max_abs, 3),
             p.special_mismatch,
             p.max_ulps_normal,
             p.at_ulps_normal.0,
@@ -1331,15 +1400,23 @@ fn strongest(rep: &Report) -> String {
 /// Print the per-output levels and bounds: every output, or runs of consecutive outputs at
 /// the same level with the range of their bounds.
 fn print_outputs(rep: &Report, all: bool) {
-    let show = |b: Option<f64>| b.map_or("-".to_string(), |b| format!("{b:.2}u"));
+    // Bounds print rounded up (`compare::up`, MISS 145).
+    let show = |b: Option<f64>| b.map_or("-".to_string(), |b| format!("{}u", up(b, 2)));
     // The bound's form: sum|terms| for polynomials, y (the exact output) for softmax.
     let form = |o: &OutBound| match (o.form, o.rel_u, o.add_u) {
-        ("softmax", Some(r), Some(a)) => format!("{r:.2}u * y + {a:.2}u"),
+        ("softmax", Some(r), Some(a)) => format!("{}u * y + {}u", up(r, 2), up(a, 2)),
         ("norm", _, _) => norm_form(o),
-        ("round", Some(r), Some(a)) => format!("{r:.0}u * |y| + {a:.2}u * sum|terms|"),
+        ("round", Some(r), Some(a)) => {
+            format!("{}u * |y| + {}u * sum|terms|", up(r, 0), up(a, 2))
+        }
         ("attn", Some(r), Some(a)) => match o.score {
-            Some((kq, _)) => format!("({r:.2} + {kq:.2} Q)u * V1 + {a:.2}u * Vmax"),
-            None => format!("{r:.2}u * V1 + {a:.2}u * Vmax"),
+            Some((kq, _)) => format!(
+                "({} + {} Q)u * V1 + {}u * Vmax",
+                up(r, 2),
+                up(kq, 2),
+                up(a, 2)
+            ),
+            None => format!("{}u * V1 + {}u * Vmax", up(r, 2), up(a, 2)),
         },
         _ => format!("{} * sum|terms|", show(o.bound_u)),
     };
@@ -1351,7 +1428,7 @@ fn print_outputs(rep: &Report, all: bool) {
                 o.level,
                 form(o),
                 if o.abs_extra > 0.0 {
-                    format!(" + {:.1e}", o.abs_extra)
+                    format!(" + {}", up_e(o.abs_extra, 1))
                 } else {
                     String::new()
                 },
@@ -1412,19 +1489,25 @@ fn print_outputs(rep: &Report, all: bool) {
                     .fold(None, |m: Option<(f64, f64)>, s| {
                         Some(m.map_or(s, |m| (m.0.max(s.0), m.1.min(s.1))))
                     });
+                // Bounds rounded up, the condition's limit Q down (`compare::up`, MISS 145).
                 let rel = match kq {
                     Some((k, qm)) => format!(
-                        "({rel:.2} + {k:.2} Q)u * V1 + {add:.2}u * Vmax, Q = max_j sum_d |q_d k_jd| <= {qm:.0}"
+                        "({} + {} Q)u * V1 + {}u * Vmax, Q = max_j sum_d |q_d k_jd| <= {}",
+                        up(rel, 2),
+                        up(k, 2),
+                        up(add, 2),
+                        down(qm, 0)
                     ),
-                    None => format!("{rel:.2}u * V1 + {add:.2}u * Vmax"),
+                    None => format!("{}u * V1 + {}u * Vmax", up(rel, 2), up(add, 2)),
                 };
                 println!(
-                    "      out[{i}..={j}]: {levels}; attention form, |C-R| <= {rel}{} (V1 = sum_j p_j |v_j| <= Vmax = max |v_j|; largest total {hi:.2}u at out[{hi_i}]: reference {}, candidate {})",
+                    "      out[{i}..={j}]: {levels}; attention form, |C-R| <= {rel}{} (V1 = sum_j p_j |v_j| <= Vmax = max |v_j|; largest total {}u at out[{hi_i}]: reference {}, candidate {})",
                     if extra > 0.0 {
-                        format!(" + {extra:.1e}")
+                        format!(" + {}", up_e(extra, 1))
                     } else {
                         String::new()
                     },
+                    up(hi, 2),
                     show(rep.per_output[hi_i].ref_u),
                     show(rep.per_output[hi_i].cand_u),
                 )
@@ -1465,15 +1548,20 @@ fn print_outputs(rep: &Report, all: bool) {
                         b.map(|b| (a.0.min(b.0), a.1.max(b.1)))
                     });
                 let adj = match adj {
+                    // The condition narrowed: k1 rounded down, y1 up.
                     Some((k1, y1)) => format!(
-                        "; C and R are equal or adjacent {fmt} values (<= 1 ulp) for every input with sum|terms| <= {k1:.0} |y| and |y| >= {y1:.1e}"
+                        "; C and R are equal or adjacent {fmt} values (<= 1 ulp) for every input with sum|terms| <= {} |y| and |y| >= {}",
+                        down(k1, 0),
+                        up_e(y1, 1)
                     ),
                     None => format!("; <= 1 {fmt} ulp is not implied for any conditioning"),
                 };
                 println!(
-                    "      out[{i}..={j}]: {levels}; {fmt} output form, |C-R| <= {rel:.0}u * |y| + {add:.2}u * sum|terms|{} (y = exact value; 2 u16 |y| for the two output roundings; per input: the distance between the {fmt} roundings of [y - G_R, y + G_C]{adj}{inner}; largest at out[{ri}]: reference {}, candidate {})",
+                    "      out[{i}..={j}]: {levels}; {fmt} output form, |C-R| <= {}u * |y| + {}u * sum|terms|{} (y = exact value; 2 u16 |y| for the two output roundings; per input: the distance between the {fmt} roundings of [y - G_R, y + G_C]{adj}{inner}; largest at out[{ri}]: reference {}, candidate {})",
+                    up(rel, 0),
+                    up(add, 2),
                     if extra > 0.0 {
-                        format!(" + {extra:.1e}")
+                        format!(" + {}", up_e(extra, 1))
                     } else {
                         String::new()
                     },
@@ -1501,23 +1589,28 @@ fn print_outputs(rep: &Report, all: bool) {
                 let rel = run.iter().filter_map(|o| o.rel_u).fold(0.0, f64::max);
                 let add = run.iter().filter_map(|o| o.add_u).fold(0.0, f64::max);
                 println!(
-                    "      out[{i}..={j}]: {levels}; softmax form, |C-R| <= {rel:.2}u * y + {add:.2}u{} (y = exact output <= 1; largest total {hi:.2}u at out[{hi_i}]: reference {}, candidate {})",
+                    "      out[{i}..={j}]: {levels}; softmax form, |C-R| <= {}u * y + {}u{} (y = exact output <= 1; largest total {}u at out[{hi_i}]: reference {}, candidate {})",
+                    up(rel, 2),
+                    up(add, 2),
                     if extra > 0.0 {
-                        format!(" + {extra:.1e}")
+                        format!(" + {}", up_e(extra, 1))
                     } else {
                         String::new()
                     },
+                    up(hi, 2),
                     show(rep.per_output[hi_i].ref_u),
                     show(rep.per_output[hi_i].cand_u),
                 )
             }
             Some(_) => println!(
-                "      out[{i}..={j}]: {levels}; |C-R| <= k u sum|terms|{}, k from {lo:.2} to {hi:.2} (largest at out[{hi_i}]: reference {}, candidate {})",
+                "      out[{i}..={j}]: {levels}; |C-R| <= k u sum|terms|{}, k from {} to {} (largest at out[{hi_i}]: reference {}, candidate {})",
                 if extra > 0.0 {
-                    format!(" + {extra:.1e}")
+                    format!(" + {}", up_e(extra, 1))
                 } else {
                     String::new()
                 },
+                up(lo, 2),
+                up(hi, 2),
                 show(rep.per_output[hi_i].ref_u),
                 show(rep.per_output[hi_i].cand_u),
             ),
@@ -1535,18 +1628,21 @@ fn norm_form(o: &OutBound) -> String {
     let Some(n) = &o.norm else {
         return "-".into();
     };
+    // Bounds rounded up, the condition's limit kappa_max down (`compare::up`, MISS 145).
     let kappa = if n.kappa_le_1 {
-        format!("kappa <= 1 (proven), so <= {:.2}u * T", n.total_u())
+        format!("kappa <= 1 (proven), so <= {}u * T", up(n.total_u(), 2))
     } else {
         format!(
-            "for kappa <= {:.0} (so <= {:.2}u * T)",
-            n.kappa_max,
-            n.total_u()
+            "for kappa <= {} (so <= {}u * T)",
+            down(n.kappa_max, 0),
+            up(n.total_u(), 2)
         )
     };
     format!(
-        "|C-R| <= ({:.2} + {:.2} kappa)u * |Y1| + {:.2}u * T, {kappa}",
-        n.rel_u, n.kappa_u, n.add_u
+        "|C-R| <= ({} + {} kappa)u * |Y1| + {}u * T, {kappa}",
+        up(n.rel_u, 2),
+        up(n.kappa_u, 2),
+        up(n.add_u, 2)
     )
 }
 
@@ -1956,6 +2052,25 @@ pub(crate) fn gpu_output_f32(case: &Case) -> Option<Vec<f32>> {
     })
 }
 
+/// The raw encodings of a case's captured output 0 (f32 bits, or the 16-bit code of a bf16 /
+/// f16 element), in the order of `gpu_output_f32`: for bitwise comparisons, which the widened
+/// values cannot make (`f16_to_f32` maps every NaN to one f32 NaN; MISS 171).
+pub(crate) fn gpu_output_bits(case: &Case) -> Option<Vec<u32>> {
+    let b = case.buffer(case.m.outputs.first()?).ok()?;
+    let bytes = std::fs::read(b.expect.as_ref()?).ok()?;
+    Some(match b.dtype.as_str() {
+        "f32" => bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect(),
+        "bf16" | "f16" => bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]) as u32)
+            .collect(),
+        _ => return None,
+    })
+}
+
 /// The captured GPU output of a case's output 0 per element of the buffer: (its encoding, its
 /// value as f32; bf16 and f16 widened exactly), None for an element outside the captured bytes
 /// (`expect_offset` and the file's length) or touching `expect_ignore`. None when the case
@@ -1993,6 +2108,11 @@ fn gpu_output_elems(case: &Case) -> Option<Vec<Option<(u32, f32)>>> {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn f16_to_f32_for_tests(h: u16) -> f32 {
+    f16_to_f32(h)
 }
 
 fn f16_to_f32(h: u16) -> f32 {
@@ -2197,7 +2317,7 @@ fn beyond_level_bits(level: &str, r: (u32, f32), c: (u32, f32)) -> bool {
 /// value (both NaN pass). The reason, or None (no captured outputs, other inputs, or a level
 /// that predicts no relation the capture can refute: none, EW (its element functions are
 /// checked against each kernel's captured outputs in `elementwise_pair`)). No exemption: an
-/// fp32 atomic chain is never L0 (its rounding order depends on the schedule), and its bound
+/// fp32 atomic chain whose order the canonical form does not fix is never L0, and its bound
 /// holds for every order (N-ATOMIC), so the GPU's order of the adds cannot excuse a bound
 /// violation.
 fn captured_contradicts(cv: &serde_json::Value, level: &str) -> Option<String> {
@@ -2508,15 +2628,40 @@ pub fn cmd_equiv(
             && cand.pre.is_empty()
             && pre_pair.is_empty()
             && rep.untracked.is_none();
+        // L3's tolerance holds up to the bound's absolute term A, which it does not compare: where
+        // it holds, the line says "+ A" and gives A (MISS 143: until 2026-11-12 it read "L3
+        // tolerance (4u) PROVEN" where GB300's |C - R| exceeds 4u sum|terms|, within A).
+        let abs_max = rep
+            .per_output
+            .iter()
+            .map(|o| o.abs_extra)
+            .fold(0.0, f64::max);
         for l in &rep.levels {
+            let l3a = l.level.starts_with("L3") && l.holds && abs_max > 0.0;
+            let name = if l3a {
+                l.level.replacen("u)", "u + A)", 1)
+            } else {
+                l.level.clone()
+            };
             println!(
                 "    {:<24} {}{}",
-                l.level,
+                name,
                 if l.holds {
-                    if proven {
-                        "PROVEN".to_string()
+                    let a = if l3a {
+                        format!(
+                            " (A = {}, the bound's absolute term: |C - R| <= {}u * sum|terms| + A)",
+                            up_e(abs_max, 1),
+                            f.tau_k.unwrap_or(0.0)
+                        )
                     } else {
-                        "holds (preconditions not all met: for the captured inputs only)".into()
+                        String::new()
+                    };
+                    if proven {
+                        format!("PROVEN{a}")
+                    } else {
+                        format!(
+                            "holds (preconditions not all met: for the captured inputs only){a}"
+                        )
                     }
                 } else {
                     format!(
@@ -2544,13 +2689,17 @@ pub fn cmd_equiv(
             println!("    untracked: {u}");
         }
         if let Some(u) = &rep.unordered {
-            println!("    schedule-dependent order: {u}");
+            println!("    order-dependent atomic adds (not L0): {u}");
         }
         if let Some(u) = &rep.softmax {
             println!("    {u}");
         }
         for c in &rep.conditions {
             println!("    condition: {c}");
+        }
+        let pair_notes = finite_max_notes(&rep);
+        for n in &pair_notes {
+            println!("    {n}");
         }
         println!("    per output (level, bound achieved |C - R| <= k u sum_m a_m |x_m|):");
         print_outputs(&rep, all_outputs);
@@ -2589,12 +2738,17 @@ pub fn cmd_equiv(
                 .iter()
                 .filter_map(|o| o.score.map(|s| s.1))
                 .fold(f64::INFINITY, f64::min);
+            // The conditions' limits print rounded down, the bounds up (MISS 145).
             let inputs = if kmax.is_finite() {
                 format!(
-                    "every input with kappa <= {kmax:.0} (beyond: the exact per-input bound, for A's relative error <= 1/2)"
+                    "every input with kappa <= {} (beyond: the exact per-input bound, for A's relative error <= 1/2)",
+                    down(kmax, 0)
                 )
             } else if qmax.is_finite() {
-                format!("every input with Q <= {qmax:.0} (beyond: the exact per-input bound)")
+                format!(
+                    "every input with Q <= {} (beyond: the exact per-input bound)",
+                    down(qmax, 0)
+                )
             } else {
                 "every input".into()
             };
@@ -2610,9 +2764,9 @@ pub fn cmd_equiv(
                     .iter()
                     .filter_map(|o| o.rel_u)
                     .fold(0.0, f64::max);
-                format!("{rel:.0}u * |y| + {add:.2}u")
+                format!("{}u * |y| + {}u", up(rel, 0), up(add, 2))
             } else {
-                format!("{k:.2}u")
+                format!("{}u", up(k, 2))
             };
             let scale = if round_all {
                 " * sum|terms| (16-bit outputs: y the exact value, 2 u16 |y| for the two output roundings; per input: the distance between the roundings of [y - G_R, y + G_C])"
@@ -2622,7 +2776,7 @@ pub fn cmd_equiv(
             println!(
                 "    bound: |C - R| <= {k_txt}{scale}{} for every output and {inputs}{}",
                 if extra > 0.0 {
-                    format!(" + {extra:.1e}")
+                    format!(" + {}", up_e(extra, 1))
                 } else {
                     String::new()
                 },
@@ -2645,7 +2799,7 @@ pub fn cmd_equiv(
             }
             println!(
                 "    trials: {} random inputs and schedules, {} output-trials, {} over the bound\n      \
-                 |C - R| used at most {:.4} of the bound (observed k {:.2}u, proven {:.2}u)\n      \
+                 |C - R| used at most {:.4} of the bound (observed k {:.2}u, proven {}u)\n      \
                  each kernel vs exact: at most {:.4} (reference) / {:.4} (candidate) of its own \
                  bound; {} outputs differed bitwise in some trial",
                 t.trials,
@@ -2653,7 +2807,7 @@ pub fn cmd_equiv(
                 t.violations,
                 t.max_used,
                 t.max_observed_u,
-                max_k.unwrap_or(f64::NAN),
+                up(max_k.unwrap_or(f64::NAN), 2),
                 t.max_used_ref,
                 t.max_used_cand,
                 t.differing
@@ -2841,7 +2995,7 @@ pub fn cmd_equiv(
             "strongest": got,
             "proven": proven,
             "preconditions": r.pre.iter().chain(&cand.pre).collect::<Vec<_>>(),
-            "relies_on": r.notes.iter().chain(&cand.notes).collect::<Vec<_>>(),
+            "relies_on": r.notes.iter().chain(&cand.notes).chain(&pair_notes).collect::<Vec<_>>(),
             "untracked_reference": untracked_count(&r.m),
             "untracked_candidate": untracked_count(&cand.m),
             "notes_reference": r.notes,
@@ -3134,6 +3288,41 @@ mod captured_tests {
             assert!(!pair_against_level(f(inf), f(inf), b).2);
         }
     }
+
+    /// MISS 177 (defense in depth): an output whose node holds another value than the output's
+    /// bits (a stale node) loses it and counts as input-derived; an output whose node holds its
+    /// bits keeps it, and one without a node stays without.
+    #[test]
+    fn stale_output_nodes_are_dropped() {
+        let node = |hw: u32| ptxv_sim::num::Node {
+            kind: ptxv_sim::num::NodeKind::Opaque,
+            hw,
+            exact: ptxv_sim::exact::from(f32::from_bits(hw) as f64),
+            err: vec![],
+            pc: 0,
+        };
+        let (x, two, nx) = (1.5f32.to_bits(), 2f32.to_bits(), (-1.5f32).to_bits());
+        let nodes = [node(x), node(0)];
+        let mut outs = vec![
+            (x, Some(0)),
+            (0, Some(0)),
+            (0, Some(1)),
+            (two, None),
+            (nx, Some(0)),
+        ];
+        let stale = drop_stale_nodes(&mut outs, &nodes);
+        assert_eq!(stale, [false, true, false, false, true]);
+        assert_eq!(
+            outs,
+            [
+                (x, Some(0)),
+                (0, None),
+                (0, Some(1)),
+                (two, None),
+                (nx, None)
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3154,7 +3343,12 @@ mod launch_order_tests {
             Path::new("out.bin"),
         );
         let cli =
-            crate::Cli::try_parse_from(std::iter::once("ptxv".to_string()).chain(args)).unwrap();
+            crate::Cli::try_parse_from(
+                std::iter::once("ptxv".to_string())
+                    .chain(args)
+                    .chain(["--image-fnv".to_string(), "0".to_string()]),
+            )
+            .unwrap();
         match cli.cmd {
             crate::Cmd::HwWorker {
                 case,

@@ -1,0 +1,102 @@
+name = "e_lane_order_ticket"
+description = """
+Atomics of one instruction by several lanes on one shared word whose results are read (MISS
+74; grid 1, block 32). Under the PTX model the lanes are threads, so the atomics take effect
+in any order. good: tickets of atom.add by every lane, each lane writes its tid at its ticket
+(the soundness audit repro): the PTX front explores lane order and its reverse of the 32!
+orders, nondeterministic, with a lane-order-bound note (the launch check's verdict is
+incomplete). THREE: tickets of lanes 0..2, all 6 orders. CAS3: atom.cas of lanes 0..2 (the
+first wins), all 6 orders. EXCHLIVE: atom.exch by every lane with the old value stored, two
+orders and the note. FADD3: red.add.f32 of 2^24, 1, 1 by lanes 0..2 (the rounding depends on
+the order), all 6 orders. VEC2: red.global.add.v2.f32 of {1, 2^24} (lane 0) and {1, 1}
+(lanes 1, 2): the first elements are equal, the second's rounding depends on the order, all 6
+orders. VECX: red.global.add.v2.f32 of {tid, 1} by every lane: every partial sum is exact, so
+lane order covers every order (complete, no note). Before, lane order only: clean (VEC2: the
+lane orders compared only the first element). The SASS front keeps lane order;
+ptxas aggregates the tickets (one ATOMS per warp and a prefix sum), and GB300's tickets of good
+follow lane order (500 of 500 runs)."""
+ptx = "kernel.ptx"
+entry = "e_lane_order_ticket"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "tickets of atom.add by every lane"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "THREE"
+summary = "tickets of lanes 0..2"
+edits = [
+  { marker = "@ATOM", find = "atom.shared.add.u32 %r4, [%r2], 1;", replace = "setp.lt.u32 %p3, %r1, 3; @%p3 atom.shared.add.u32 %r4, [%r2], 1;" },
+  { marker = "@OUT3", find = "st.global.u32 [%rd3], %r1;", replace = "@%p3 st.global.u32 [%rd3], %r1;" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "CAS3"
+summary = "atom.cas 0 -> tid + 1 by lanes 0..2, each stores the old value it saw at out[tid]"
+edits = [
+  { marker = "@ATOM", find = "atom.shared.add.u32 %r4, [%r2], 1;", replace = "setp.lt.u32 %p3, %r1, 3; add.u32 %r6, %r1, 1; @%p3 atom.shared.cas.b32 %r4, [%r2], 0, %r6;" },
+  { marker = "@OUT1", find = "mul.wide.u32 %rd2, %r4, 4;", replace = "mul.wide.u32 %rd2, %r1, 4;" },
+  { marker = "@OUT3", find = "st.global.u32 [%rd3], %r1;", replace = "@%p3 st.global.u32 [%rd3], %r4;" },
+]
+expect = ["nondeterministic", "unmodeled"]
+expect_sass = ["unmodeled"]
+
+[[variants]]
+id = "EXCHLIVE"
+summary = "atom.exch of tid by every lane, each stores the old value at out[tid]"
+edits = [
+  { marker = "@ATOM", find = "atom.shared.add.u32 %r4, [%r2], 1;", replace = "atom.shared.exch.b32 %r4, [%r2], %r1;" },
+  { marker = "@OUT1", find = "mul.wide.u32 %rd2, %r4, 4;", replace = "mul.wide.u32 %rd2, %r1, 4;" },
+  { marker = "@OUT3", find = "st.global.u32 [%rd3], %r1;", replace = "st.global.u32 [%rd3], %r4;" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["unlifted"]
+
+[[variants]]
+id = "FADD3"
+summary = "red.add.f32 of 2^24 (lane 0), 1, 1 (lanes 1, 2); lane 0 stores the sum's bits"
+edits = [
+  { marker = "@ATOM", find = "atom.shared.add.u32 %r4, [%r2], 1;", replace = "setp.lt.u32 %p3, %r1, 3; setp.eq.u32 %p4, %r1, 0; selp.f32 %f1, 0f4B800000, 0f3F800000, %p4; @%p3 red.shared.add.f32 [%r2], %f1; bar.warp.sync -1; ld.volatile.shared.u32 %r4, [%r2];" },
+  { marker = "@OUT1", find = "mul.wide.u32 %rd2, %r4, 4;", replace = "mul.wide.u32 %rd2, %r1, 4;" },
+  { marker = "@OUT3", find = "st.global.u32 [%rd3], %r1;", replace = "@!%p1 st.global.u32 [%rd3], %r4;" },
+]
+expect = ["nondeterministic", "unmodeled"]
+expect_sass = ["unmodeled"]
+
+[[variants]]
+id = "VEC2"
+summary = "red.global.add.v2.f32 of {1, 2^24} (lane 0), {1, 1} (lanes 1, 2) into out[30..31]"
+edits = [
+  { marker = "@ATOM", find = "atom.shared.add.u32 %r4, [%r2], 1;", replace = "setp.lt.u32 %p3, %r1, 3; setp.eq.u32 %p4, %r1, 0; selp.f32 %f1, 0f4B800000, 0f3F800000, %p4; mov.f32 %f2, 0f3F800000; @%p3 red.global.add.v2.f32 [%rd1+120], {%f2, %f1};" },
+  { marker = "@OUT1", find = "mul.wide.u32 %rd2, %r4, 4;", replace = "mul.wide.u32 %rd2, %r1, 4;" },
+  { marker = "@OUT3", replace = "<delete>" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "VECX"
+summary = "red.global.add.v2.f32 of {tid, 1} by every lane into out[30..31]: exact in every order"
+edits = [
+  { marker = "@ATOM", find = "atom.shared.add.u32 %r4, [%r2], 1;", replace = "cvt.rn.f32.u32 %f1, %r1; mov.f32 %f2, 0f3F800000; red.global.add.v2.f32 [%rd1+120], {%f1, %f2};" },
+  { marker = "@OUT1", find = "mul.wide.u32 %rd2, %r4, 4;", replace = "mul.wide.u32 %rd2, %r1, 4;" },
+  { marker = "@OUT3", replace = "<delete>" },
+]
+expect = ["clean"]

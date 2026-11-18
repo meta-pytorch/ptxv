@@ -65,7 +65,7 @@ patch = [{ at = "@0x420", nop = true }, { at = "@0x5a0", nop = true }]
 
 [[variants]]
 expect = ["clean"]
-hw_note = "GB300 10 runs: 0 early passes"
+hw_note = "GB300 10,000/10,000 runs: 0 early passes (clock spin, no yield, ptxas's BSSY.RECONVERGENT / BSYNC.RECONVERGENT kept)"
 id = "late_reconv"
 summary = "negative control under delay: the 20,000-cycle spin with ptxas's reconvergence kept"
 marker = "@DELAY"
@@ -104,13 +104,28 @@ marker = "@ARRIVE"
 replace = "<delete>"
 
 [[variants]]
-expect = ["clean"]
-hw_note = "GB300 10,000/10,000 runs wrong as late_sleep: ptxas's non-reconvergent BSSY B0 / BSYNC B0 does not hold the waiting lanes while the elected lane sleeps (the SASS front is clean: a miss)"
+expect = ["race"]
+hw_note = "GB300 10,000/10,000 runs wrong as late_sleep: ptxas's non-reconvergent BSSY B0 / BSYNC B0 does not hold the waiting lanes while the elected lane sleeps (the SASS front was clean before MISS 81)"
 id = "late_sleep_reconv"
 summary = "negative control under yield: the nanosleep spin with ptxas's BSSY / BSYNC kept"
 marker = "@DELAY"
 find = "%r24, 0;"
 replace = "%r24, 20000;"
+
+[[variants.edits]]
+marker = "@SLEEP"
+find = "// @SLEEP"
+replace = "nanosleep.u32 1000;"
+
+[[variants]]
+expect = ["race"]
+hw_note = "GB300 10,000/10,000 runs wrong as late_sleep (32,736 of 33,792 words in every run): BSYNC.RECONVERGENT does not hold the waiting lanes while the elected lane sleeps either (the SASS front was clean before gap G1 was closed)"
+id = "late_sleep_reconvform"
+summary = "late_sleep_reconv with ptxas's BSSY B0 at 0x460 and BSYNC B0 at 0x5b0 set to the .RECONVERGENT form (bits 72-73 = 2): does a BSYNC.RECONVERGENT hold the waiting lanes while the elected lane of its mask sleeps (E-BSYNC gap G1)"
+marker = "@DELAY"
+find = "%r24, 0;"
+replace = "%r24, 20000;"
+patch = [{ at = "@0x460", bits = [[72, 2, 2]], expect = "BSSY.RECONVERGENT B0, `(.L_x_5)" }, { at = "@0x5b0", bits = [[72, 2, 2]], expect = "BSYNC.RECONVERGENT B0" }]
 
 [[variants.edits]]
 marker = "@SLEEP"

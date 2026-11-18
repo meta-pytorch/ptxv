@@ -1,0 +1,33 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPCLASS, E-HW-SB-QUEUE): REDUX in issue order. Three REDUX.SUM.S32 into uniform
+// registers; the variants take the first one's write scoreboard away and let its reader wait
+// on the second REDUX's scoreboard only (COVER) or on nothing (NOWAIT, the positive control).
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry redux_queue(.param .u64 in_p, .param .u64 out_p)
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 16;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.v4.u32 {%r2, %r3, %r4, %r5}, [%rd4];
+    redux.sync.add.s32 %r6, %r2, -1;
+    redux.sync.add.s32 %r7, %r3, -1;
+    redux.sync.add.s32 %r8, %r4, -1;
+    add.s32 %r9, %r6, %r5;
+    add.s32 %r10, %r7, %r8;
+    add.s32 %r11, %r9, %r10;
+    st.global.v4.u32 [%rd5], {%r6, %r9, %r10, %r11};
+    ret;
+}

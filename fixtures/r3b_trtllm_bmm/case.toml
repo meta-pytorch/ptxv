@@ -258,6 +258,8 @@ id = "B25"
 summary = "B25: the token loader arms its stage mbarrier with expect_tx(512) where the two gather4 loads deliver 1024 bytes"
 patch = [{ at = "@0x15d0", bits = [[32, 32, 512]], expect = "IMAD.MOV.U32 R0, RZ, RZ, 0x200" }]
 expect = ["race", "violation"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract", "race", "violation"]
 hw_note = "the phase completes after one gather: the MMA reads unwritten stage bytes (race) and the other gather may land after exit (violation); GB300 hangs every run"
 
 [[variants]]
@@ -265,6 +267,8 @@ id = "B27"
 summary = "B27: the first epilogue half computes its token offset as ctaid.y * 4 (not * 8): neighbouring CTAs store overlapping rows"
 patch = [{ at = "@0x2870", bits = [[32, 32, 2]], expect = "USHF.L.U32 UR4, UR13, 0x2, URZ" }]
 expect = ["race"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract", "race"]
 hw_note = "races inside a CTA (scale STGs) and across CTAs (--slices); GB300 wrong 100/100, 6 distinct outputs"
 
 [[variants]]
@@ -272,6 +276,8 @@ id = "B28"
 summary = "B28: the first MMA of the second K-block accumulates (enable_input_d) instead of starting its TMEM accumulator fresh"
 patch = [{ at = "@0x4ad0", bits = [[90, 1, 0]], expect = "UTCQMMA gdesc[UR4], gdesc[UR6], tmem[UR13], tmem[UR10], idesc[UR11], UPT" }]
 expect = ["violation"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract", "violation"]
 hw_note = "accumulates into never-written TMEM; GB300 wrong 99/100 (run 0 correct: TMEM starts zeroed)"
 
 [[variants]]

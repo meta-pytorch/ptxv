@@ -128,13 +128,30 @@ fn param_tmap_geometry(
 }
 
 pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
+    build_launch_reading(case, k, unrecorded_ordered()?)
+}
+
+/// The reading of an unknown launch order (`PTXV_UNRECORDED_ORDER`, E-LAUNCH-ORDER): true for
+/// `ordered` (E-PDL's order of the list), false for the strict reading (unset or `concurrent`);
+/// any other value is an error.
+pub fn unrecorded_ordered() -> Result<bool> {
+    match std::env::var("PTXV_UNRECORDED_ORDER").as_deref() {
+        Ok("ordered") => Ok(true),
+        Err(_) | Ok("concurrent") => Ok(false),
+        Ok(x) => bail!("PTXV_UNRECORDED_ORDER={x}: expected ordered or concurrent"),
+    }
+}
+
+/// `build_launch` with the reading of an unknown launch order given (`ordered`: E-PDL's order
+/// of the list; else the strict reading), whatever `PTXV_UNRECORDED_ORDER` says.
+pub fn build_launch_reading(case: &Case, k: &Kernel, ordered: bool) -> Result<Launch> {
     let m = &case.m;
     let mut allocs = Vec::new();
     for (i, b) in m.buffers.iter().enumerate() {
         allocs.push(Alloc {
             name: b.name.clone(),
             base: GLOBAL_BASE + ((i as u64) << 32),
-            init: b.init_bytes(),
+            init: std::sync::Arc::new(b.init_bytes()),
             undef: b.init == "undef",
             dead: b.init == "undef" && b.scratch && !m.outputs.contains(&b.name),
         });
@@ -271,7 +288,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
     // Pointer tables (`ptrs`): filled in now that every buffer has its address.
     for (i, b) in m.buffers.iter().enumerate() {
         if !b.ptrs.is_empty() {
-            allocs[i].init = b.init_bytes_with(base_of)?;
+            allocs[i].init = std::sync::Arc::new(b.init_bytes_with(base_of)?);
         }
     }
     let launches = m.all_launches();
@@ -295,6 +312,23 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
             bail!("capture mismatch: launch of {}: {why}", l.entry);
         }
     }
+    // MISS 209: the cluster launch, from the case and the kernel's compiled-in declaration.
+    let clusters: Vec<Option<[u32; 3]>> = {
+        let decls: Vec<Option<ptxv_ir::ClusterDecl>> = if k.parts.is_empty() {
+            vec![k.cluster]
+        } else {
+            k.parts.iter().map(|p| p.cluster).collect()
+        };
+        launches
+            .iter()
+            .zip(decls.iter().chain(std::iter::repeat(&None)))
+            .map(|(l, &d)| {
+                ptxv_ir::ClusterDecl::resolve(d, l.cluster).map_err(|why| {
+                    anyhow::anyhow!("capture mismatch: launch of {}: {why}", l.entry)
+                })
+            })
+            .collect::<Result<_>>()?
+    };
     if parts.len() != launches.len() {
         bail!(
             "kernel has {} parts, case launches {} kernels",
@@ -455,7 +489,8 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
                 }
             }
         }
-        let cluster = l.cluster.unwrap_or([1, 1, 1]);
+        let lcluster = clusters[gi];
+        let cluster = lcluster.unwrap_or([1, 1, 1]);
         if (0..3).any(|d| cluster[d] == 0 || l.grid[d] % cluster[d] != 0) {
             bail!(
                 "grid {:?} is not a multiple of the cluster shape {:?}",
@@ -467,12 +502,12 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         // regular one, so that every group of CTAs is one preferred cluster or a whole number
         // of regular ones.
         if let Some(p) = l.preferred_cluster {
-            if l.cluster.is_none()
+            if lcluster.is_none()
                 || (0..3).any(|d| p[d] == 0 || p[d] % cluster[d] != 0 || l.grid[d] % p[d] != 0)
             {
                 bail!(
                     "preferred cluster {p:?}: must be a multiple of the cluster shape {:?} and divide the grid {:?}",
-                    l.cluster,
+                    lcluster,
                     l.grid
                 );
             }
@@ -481,7 +516,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
             grid: l.grid,
             block: l.block,
             cluster,
-            explicit_cluster: l.cluster.is_some(),
+            explicit_cluster: lcluster.is_some(),
             preferred: l.preferred_cluster.filter(|&p| p != cluster),
             cga_shape: 0,
             params,
@@ -525,7 +560,7 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         cta0 += g.ctas();
         grids.push(g);
     }
-    let order_recorded = launch_order(m, &launches, &mut grids)?;
+    let order_recorded = launch_order(m, &launches, &mut grids, ordered)?;
     let notes = global_buffers(case, k, &mut allocs, &mut grids)?;
     let outputs = m
         .outputs
@@ -666,6 +701,9 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
         hw_split_ur: false,
         hw_order: false,
         hw_bsync_coll: false,
+        hw_bsync_yield: false,
+        hw_sts_lowest: false,
+        hw_stg_lowest: false,
         tc_fence_implied: false,
         async_mb_dest: false,
         refuted_opt_in,
@@ -681,12 +719,13 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
 /// Unknown: false, and the grids of a multi-grid case lose their predecessors (`after = -1`,
 /// no `waits`): every grid may run at the same time as every other, the strict reading of a
 /// list whose order nobody recorded (default, `PTXV_UNRECORDED_ORDER=concurrent`). With
-/// `PTXV_UNRECORDED_ORDER=ordered`, an unknown order keeps E-PDL's order (each grid after the
-/// previous one on its GPU) and only drops the launch-order exclusions.
+/// `ordered` (`PTXV_UNRECORDED_ORDER=ordered`), an unknown order keeps E-PDL's order (each grid
+/// after the previous one on its GPU) and only drops the launch-order exclusions.
 fn launch_order(
     m: &ptxv_case::Manifest,
     launches: &[ptxv_case::LaunchSpec],
     grids: &mut [Grid],
+    ordered: bool,
 ) -> Result<bool> {
     let recorded = m.launch_order_recorded()?;
     if recorded {
@@ -708,21 +747,101 @@ fn launch_order(
             }
         }
     }
-    match std::env::var("PTXV_UNRECORDED_ORDER").as_deref() {
-        Ok("ordered") => {}
-        Err(_) | Ok("concurrent") => {
-            // One grid has no predecessor to drop: it keeps the default (`after` None), the
-            // launch shape strict admission accepts (`strict_memory_admission`).
-            if !recorded && grids.len() > 1 {
-                for g in grids.iter_mut() {
-                    g.after = Some(None);
-                    g.waits.clear();
-                }
-            }
+    // One grid has no predecessor to drop: it keeps the default (`after` None), the launch
+    // shape strict admission accepts (`strict_memory_admission`).
+    if !ordered && !recorded && grids.len() > 1 {
+        for g in grids.iter_mut() {
+            g.after = Some(None);
+            g.waits.clear();
         }
-        Ok(x) => bail!("PTXV_UNRECORDED_ORDER={x}: expected ordered or concurrent"),
     }
     Ok(recorded)
+}
+
+/// ASSUME(E-LAUNCH-ORDER), MISS 189: the strict reading of an unknown launch order lets every
+/// grid run at the same time as every other, which loses the hangs of a serialized order. A grid
+/// that waits for a later grid of its list never completes when the GPU runs the list in order
+/// (one stream: the later grid starts after it ends), while under the strict reading the later
+/// grid runs alongside and lets it finish. So for an unknown order of several launches checked
+/// under the strict reading, the list's order (E-PDL's order: `build_launch_reading(.., true)`)
+/// is checked too, through `check`, and its deadlocks join the verdict as `list-order:`
+/// findings, except those whose signature the verdict already has: a deadlock the strict
+/// reading reaches too is reported once, by the strict reading (probes/miss189_dupsig), and one
+/// an earlier run of this pass added is not added again. Its other findings are left out, since
+/// its schedules are some of the strict reading's with more ordering (no new race or stale
+/// read). Other serializations of the list are not checked. When a deadlock is added,
+/// E-WELLSYNC leaves the verdict's assumptions (no certificate of the case); a pass that does
+/// not finish without a deadlock makes the verdict incomplete (deadlock-freedom under the
+/// list's order is not shown).
+pub fn serialized_order_deadlocks(
+    v: &mut explore::Verdict,
+    case: &Case,
+    k: &Kernel,
+    check: &mut dyn FnMut(Machine) -> explore::Verdict,
+) -> Result<()> {
+    if case.m.launch_order_recorded()? || unrecorded_ordered()? || case.m.all_launches().len() < 2 {
+        return Ok(());
+    }
+    let launch = build_launch_reading(case, k, true)?;
+    let vo = check(Machine::new(
+        std::sync::Arc::new(k.clone()),
+        std::sync::Arc::new(launch),
+    ));
+    let mut n = 0;
+    // Deadlocks of the list's order the verdict already has: the strict reading's (the same
+    // signature), and this pass's from an earlier run.
+    let (mut strict, mut again) = (0, 0);
+    for f in vo.findings.iter().filter(|f| f.kind == "deadlock") {
+        let sig = format!("list-order:{}", f.sig);
+        if v.findings.iter().any(|x| x.sig == f.sig) {
+            strict += 1;
+            continue;
+        }
+        if v.findings.iter().any(|x| x.sig == sig) {
+            again += 1;
+            continue;
+        }
+        let mut f = f.clone();
+        f.sig = sig;
+        f.msg = format!(
+            "under the list's order (E-LAUNCH-ORDER: the launch order is unknown, and a GPU that runs the list in order, as one stream does, hangs here; the strict reading lets the later grids run alongside): {}",
+            f.msg
+        );
+        v.findings.push(f);
+        n += 1;
+    }
+    if n > 0 {
+        v.assumptions.retain(|a| a != "E-WELLSYNC");
+        v.notes.push(format!(
+            "E-LAUNCH-ORDER: {n} deadlock(s) under the list's order ({} states), which the strict reading of the unknown order does not reach{}",
+            vo.states,
+            if strict > 0 {
+                format!("; {strict} more that it reaches too")
+            } else {
+                String::new()
+            }
+        ));
+    } else if again > 0 {
+        // An earlier run of the pass added them, and its note stands.
+    } else if strict > 0 {
+        v.notes.push(format!(
+            "E-LAUNCH-ORDER: {strict} deadlock(s) under the list's order ({} states{}), all also reached by the strict reading",
+            vo.states,
+            if vo.complete { "" } else { ", the check did not finish" }
+        ));
+    } else if !vo.complete {
+        v.complete = false;
+        v.notes.push(format!(
+            "E-LAUNCH-ORDER: the deadlock check of the list's order did not finish ({} states): deadlock-freedom under it is not shown",
+            vo.states
+        ));
+    } else {
+        v.notes.push(format!(
+            "E-LAUNCH-ORDER: the list's order checked for deadlocks ({} states): none",
+            vo.states
+        ));
+    }
+    Ok(())
 }
 
 /// S-INIT, scratch buffers (`Buffer::scratch`, allocated inside the captured region): one
@@ -838,7 +957,7 @@ fn global_buffers(
                             allocs.push(Alloc {
                                 name,
                                 base: GLOBAL_BASE + ((allocs.len() as u64) << 32),
-                                init: g.init.clone().unwrap_or_else(|| vec![0; g.size as usize]),
+                                init: std::sync::Arc::new(g.init.clone().unwrap_or_else(|| vec![0; g.size as usize])),
                                 undef: false,
                                 dead: false,
                             });

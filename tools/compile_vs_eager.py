@@ -1023,8 +1023,11 @@ def report(a):  # noqa: C901 (report printer: one branch per pair status)
             counts["not proven"] = counts.get("not proven", 0) + 1
             etxt = short(h, 110)
         g = r.get("gpu") or {}
+        # Outputs of two dtypes have no bitwise count (`widened_equal` instead).
         gtxt = (
             f"{g['max_abs_diff']:.2e} ({g['bitwise_equal']}/{g['outputs']})"
+            if g.get("outputs") and "bitwise_equal" in g
+            else f"{g['max_abs_diff']:.2e} (dtypes differ)"
             if g.get("outputs")
             else "-"
         )

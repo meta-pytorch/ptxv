@@ -1,0 +1,275 @@
+name = "e_stg_keep"
+description = """
+MISS 168 (STG lane order; review repro): the 32 lanes of one st.relaxed.gpu.global write their
+tid to one global word; after bar.warp.sync every lane reads the word with ld.relaxed.gpu and
+traps on lane 0's value. Under the PTX model the stores are 32 morally strong writes in some
+coherence order, so any lane's value may remain (MISS 74 explores them on the PTX front). GB300
+keeps the lowest active lane's value of one 32-bit STG in every form measured but MMIO (plain
+STG.E, .STRONG.SM, .GPU, .SYS, .EF, .NA, after a MEMBAR): good traps in every launch; HIGH,
+OUT, PLAIN, SYS, CTA, REL, VOL, CS, WT and NA write all zeros, HALF, PLAIN_HALF and SYS_HALF
+(lanes 8..23) all 8, ODD all 1, SPLIT and SPLIT_ODD (two words) lane 0's value in w[0] (500 of
+500 runs each). STG.E.MMIO.SYS keeps the highest active lane's value: MMIO and MMIO_ODD all
+31, MMIO_HALF all 23 (500 of 500 runs each), MMIO_TRAP31 traps in 20 of 20 launches,
+MMIO_TRAP0 in none. W64 (STG.64) keeps lane 16's and U8 lane 0's, one shape each; neither they
+nor MMIO are encoded. The SASS front kept lane order (lane 31's value) at both levels; now the
+strict SASS level takes one order per distinct value and the gb300 profile the measured order
+for 32-bit STG other than MMIO (E-HW-STG-LOWEST). grid 1, block 32."""
+ptx = "kernel.ptx"
+entry = "e_stg_keep"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "trap if lane 0's value remains (GB300's outcome)"
+hw_note = "GB300: 5 of 5 launches trap here, 20 of 20 in review (ptxv hw, one run per launch)"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "HIGH"
+summary = "trap if lane 31's value remains (the SASS front's outcome)"
+marker = "@CMP"
+find = "setp.eq.u32 %p1, %r3, 0;"
+replace = "setp.eq.u32 %p1, %r3, 31;"
+hw_note = "GB300: 500 of 500 runs without a trap, out all zeros (ptxv hw --runs 500)"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "OUT"
+summary = "no trap: out[tid] = the word"
+marker = "@TRAP"
+find = "@%p1 trap;"
+replace = "// no trap"
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "HALF"
+summary = "st.relaxed.gpu.global of tid by lanes 8..23, no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "sub.u32 %r6, %r1, 8; setp.lt.u32 %p3, %r6, 16; @%p3 st.relaxed.gpu.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 8, lane 8's value (ptxv hw --runs 500)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "ODD"
+summary = "st.relaxed.gpu.global of tid by the odd lanes, no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "and.b32 %r6, %r1, 1; setp.eq.u32 %p3, %r6, 1; @%p3 st.relaxed.gpu.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 1, lane 1's value (ptxv hw --runs 500)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "PLAIN"
+summary = "plain st.global of tid by every lane, no trap: out[tid] = the word (a write-write race at both levels)"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500)"
+expect = ["race"]
+
+[[variants]]
+id = "PLAIN_HALF"
+summary = "plain st.global of tid by lanes 8..23, no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "sub.u32 %r6, %r1, 8; setp.lt.u32 %p3, %r6, 16; @%p3 st.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 8, lane 8's value (ptxv hw --runs 500)"
+expect = ["race"]
+
+[[variants]]
+id = "W64"
+summary = "st.relaxed.gpu.global.v2 {tid, tid + 100} by every lane (STG.64), no trap: out[tid] = the first word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.relaxed.gpu.global.v2.u32 [%rd4], {%r1, %r7};"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 16, lane 16's value (ptxv hw --runs 500); not encoded"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "U8"
+summary = "st.relaxed.gpu.global.u8 of tid + 1 by every lane, no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "add.u32 %r6, %r1, 1; st.relaxed.gpu.global.u8 [%rd4], %r6;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 1, lane 0's byte (ptxv hw --runs 500); not encoded"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "SYS"
+summary = "st.relaxed.sys.global of tid by every lane (STG.E.STRONG.SYS), no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.relaxed.sys.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "SYS_HALF"
+summary = "st.relaxed.sys.global of tid by lanes 8..23 (STG.E.STRONG.SYS), no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "sub.u32 %r6, %r1, 8; setp.lt.u32 %p3, %r6, 16; @%p3 st.relaxed.sys.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 8, lane 8's value (ptxv hw --runs 500)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "CTA"
+summary = "st.relaxed.cta.global of tid by every lane (STG.E.STRONG.SM), no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.relaxed.cta.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "MMIO"
+summary = "st.mmio.relaxed.sys.global of tid by every lane (STG.E.MMIO.SYS), no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.mmio.relaxed.sys.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 31, lane 31's value (ptxv hw --runs 500 --scrub; STG.E.MMIO.SYS); not encoded"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "MMIO_HALF"
+summary = "st.mmio.relaxed.sys.global of tid by lanes 8..23 (STG.E.MMIO.SYS), no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "sub.u32 %r6, %r1, 8; setp.lt.u32 %p3, %r6, 16; @%p3 st.mmio.relaxed.sys.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 23, lane 23's value (ptxv hw --runs 500 --scrub); not encoded"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "MMIO_ODD"
+summary = "st.mmio.relaxed.sys.global of tid by the odd lanes (STG.E.MMIO.SYS), no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "and.b32 %r6, %r1, 1; setp.eq.u32 %p3, %r6, 1; @%p3 st.mmio.relaxed.sys.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all 31, lane 31's value (ptxv hw --runs 500 --scrub); not encoded"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "MMIO_TRAP31"
+summary = "st.mmio.relaxed.sys.global of tid by every lane; trap if lane 31's value remains (GB300's outcome for MMIO)"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.mmio.relaxed.sys.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@CMP", find = "setp.eq.u32 %p1, %r3, 0;", replace = "setp.eq.u32 %p1, %r3, 31;" }]
+hw_note = "GB300: 20 of 20 launches trap (ptxv hw, one run per launch)"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "MMIO_TRAP0"
+summary = "st.mmio.relaxed.sys.global of tid by every lane; trap if lane 0's value remains"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.mmio.relaxed.sys.global.u32 [%rd4], %r1;"
+hw_note = "GB300: 0 of 20 launches trap (ptxv hw, one run per launch)"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "REL"
+summary = "st.release.gpu.global of tid by every lane (MEMBAR, STG.E.STRONG.GPU), no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.release.gpu.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500 --scrub; MEMBAR.ALL.GPU, STG.E.STRONG.GPU)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "VOL"
+summary = "st.volatile.global of tid by every lane (STG.E.STRONG.SYS), no trap: out[tid] = the word"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.volatile.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500 --scrub; STG.E.STRONG.SYS)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "CS"
+summary = "plain st.global.cs of tid by every lane (STG.E.EF), no trap: out[tid] = the word (a write-write race)"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.global.cs.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500 --scrub; STG.E.EF)"
+expect = ["race"]
+
+[[variants]]
+id = "WT"
+summary = "plain st.global.wt of tid by every lane, no trap: out[tid] = the word (a write-write race on PTX; ptxas emits STG.E.STRONG.SYS, strong on SASS)"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.global.wt.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500 --scrub; STG.E.STRONG.SYS)"
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "NA"
+summary = "plain st.global.L1::no_allocate of tid by every lane (STG.E.NA), no trap: out[tid] = the word (a write-write race)"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.global.L1::no_allocate.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value (ptxv hw --runs 500 --scrub; STG.E.NA)"
+expect = ["race"]
+
+[[variants]]
+id = "SPLIT"
+summary = "st.relaxed.gpu.global of tid: lanes 0..15 to w[0], lanes 16..31 to w[1]; no trap: out[tid] = w[0]"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "setp.ge.u32 %p3, %r1, 16; selp.u32 %r6, 4, 0, %p3; cvt.u64.u32 %rd5, %r6; add.s64 %rd6, %rd4, %rd5; st.relaxed.gpu.global.u32 [%rd6], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value in w[0] (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "SPLIT_ODD"
+summary = "st.relaxed.gpu.global of tid: even lanes to w[0], odd lanes to w[1]; no trap: out[tid] = w[0]"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "and.b32 %r6, %r1, 1; shl.b32 %r6, %r6, 2; cvt.u64.u32 %rd5, %r6; add.s64 %rd6, %rd4, %rd5; st.relaxed.gpu.global.u32 [%rd6], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+hw_note = "GB300: 500 of 500 runs out all zeros, lane 0's value in w[0] (ptxv hw --runs 500 --scrub)"
+expect = ["nondeterministic"]

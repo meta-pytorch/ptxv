@@ -1,0 +1,126 @@
+name = "e_mbar_sts_live"
+description = """
+mbarrier re-initialization over a live object without an inval, and plain shared stores over a
+live mbarrier (MISS 218). ptxas lowers a per-thread-address mbarrier.init to `STS.64` of the
+state word plus `SYNCS.CCTL.IVALL`; with no inval in the PTX there is no `SYNCS.CCTL.IV`. The PTX
+front re-initializes the object; before 2026-11-12 the SASS front kept the old object (count,
+phase, waits) under the store: good (count 2 re-initialized to 1: race, deadlock) and CNT2
+(count 1 re-initialized to 2: deadlock) were clean on SASS. UNIF (SYNCS.EXCH.64) and INV
+(SYNCS.CCTL.IV + STS.64) are the controls, caught on both fronts. PLAIN / CNT2PLAIN store the
+state word with st.shared.u64 and ZERO stores zero over the live object: PTX requires an inval
+before the object's memory is reused (contract finding on the PTX front); on SASS an STS.64 of
+a state word is the lowered init (re-initialization), any other store over a live mbarrier is
+reported. PRE (zero store before the first init), CLEAN (inval, then the per-thread re-init)
+and REUSE (inval, a zero store, a uniform re-init) are legal and clean. WARP: the 32 lanes of
+warp 0 re-initialize `a` with its count through a per-thread address equal to `a`: PTX races
+(32 threads' inits, unordered), SASS is one STS.64 of one state word (clean)."""
+ptx = "kernel.ptx"
+entry = "e_mbar_sts_live"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "per-thread-address mbarrier.init with count 1 over the live count-2 a, no inval (SASS: STS.64 + SYNCS.CCTL.IVALL)"
+expect = ["deadlock", "race"]
+expect_sass = ["deadlock", "nondeterministic"]
+
+[[variants]]
+id = "UNIF"
+summary = "control: uniform-address re-init over the live a (SASS: SYNCS.EXCH.64)"
+marker = "@REINIT"
+find = "[%r26], 1;"
+replace = "[%r2], 1;"
+expect = ["deadlock", "race"]
+expect_sass = ["deadlock", "nondeterministic"]
+
+[[variants]]
+id = "INV"
+summary = "control: mbarrier.inval before the per-thread re-init (SASS: SYNCS.CCTL.IV + STS.64)"
+marker = "@REINIT"
+find = "mbarrier.init.shared::cta.b64 [%r26], 1;"
+replace = "mbarrier.inval.shared::cta.b64 [%r2]; mbarrier.init.shared::cta.b64 [%r26], 1;"
+expect = ["deadlock", "race"]
+expect_sass = ["deadlock", "nondeterministic"]
+
+[[variants]]
+id = "PLAIN"
+summary = "plain st.shared.u64 of the count-1 state word over the live a"
+marker = "@REINIT"
+find = "mbarrier.init.shared::cta.b64 [%r26], 1;"
+replace = "mov.b64 %rd5, 0x7ffff800001ffffe; st.shared.u64 [%r26], %rd5;"
+expect = ["violation"]
+expect_sass = ["deadlock", "nondeterministic"]
+
+[[variants]]
+id = "ZERO"
+summary = "plain st.shared.u64 of zero over the live a"
+marker = "@REINIT"
+find = "mbarrier.init.shared::cta.b64 [%r26], 1;"
+replace = "mov.b64 %rd5, 0; st.shared.u64 [%r26], %rd5;"
+expect = ["violation"]
+
+[[variants]]
+id = "PRE"
+summary = "legal: st.shared.u64 of zero over a before its first init; no re-init"
+edits = [{ marker = "@PRE", find = "mov.b64 %rd6, 0;", replace = "mov.b64 %rd6, 0; st.shared.u64 [%r2], %rd6;" }, { marker = "@REINIT", replace = "<delete>" }]
+expect = ["clean"]
+
+[[variants]]
+id = "CLEAN"
+summary = "legal: inval, then the per-thread re-init with count 2 (SASS: SYNCS.CCTL.IV + STS.64)"
+marker = "@REINIT"
+find = "mbarrier.init.shared::cta.b64 [%r26], 1;"
+replace = "mbarrier.inval.shared::cta.b64 [%r2]; mbarrier.init.shared::cta.b64 [%r26], 2;"
+expect = ["clean"]
+
+[[variants]]
+id = "REUSE"
+summary = "legal: inval, a zero store over a's memory, a uniform re-init with count 2"
+marker = "@REINIT"
+find = "mbarrier.init.shared::cta.b64 [%r26], 1;"
+replace = "mbarrier.inval.shared::cta.b64 [%r2]; mov.b64 %rd5, 0; st.shared.u64 [%r26], %rd5; mbarrier.init.shared::cta.b64 [%r2], 2;"
+expect = ["clean"]
+
+[[variants]]
+id = "CNT2"
+summary = "a starts with count 1, per-thread re-init with count 2 over the live object; one arrival (deadlock)"
+edits = [{ marker = "@INIT", find = "[%r2], 2;", replace = "[%r2], 1;" }, { marker = "@REINIT", find = "[%r26], 1;", replace = "[%r26], 2;" }, { marker = "@ONEPROD", find = "%r5, 2;", replace = "%r5, 1;" }]
+expect = ["deadlock"]
+
+[[variants]]
+id = "CNT2INV"
+summary = "control: CNT2 with an inval first (SASS: SYNCS.CCTL.IV + STS.64)"
+edits = [{ marker = "@INIT", find = "[%r2], 2;", replace = "[%r2], 1;" }, { marker = "@REINIT", find = "mbarrier.init.shared::cta.b64 [%r26], 1;", replace = "mbarrier.inval.shared::cta.b64 [%r2]; mbarrier.init.shared::cta.b64 [%r26], 2;" }, { marker = "@ONEPROD", find = "%r5, 2;", replace = "%r5, 1;" }]
+expect = ["deadlock"]
+
+[[variants]]
+id = "CNT2UNIF"
+summary = "control: CNT2 with a uniform-address re-init (SASS: SYNCS.EXCH.64)"
+edits = [{ marker = "@INIT", find = "[%r2], 2;", replace = "[%r2], 1;" }, { marker = "@REINIT", find = "[%r26], 1;", replace = "[%r2], 2;" }, { marker = "@ONEPROD", find = "%r5, 2;", replace = "%r5, 1;" }]
+expect = ["deadlock"]
+
+[[variants]]
+id = "CNT2PLAIN"
+summary = "CNT2 with a plain st.shared.u64 of the count-2 state word"
+edits = [{ marker = "@INIT", find = "[%r2], 2;", replace = "[%r2], 1;" }, { marker = "@REINIT", find = "mbarrier.init.shared::cta.b64 [%r26], 1;", replace = "mov.b64 %rd5, 0x7ffff000001ffffc; st.shared.u64 [%r26], %rd5;" }, { marker = "@ONEPROD", find = "%r5, 2;", replace = "%r5, 1;" }]
+expect = ["violation"]
+expect_sass = ["deadlock"]
+
+[[variants]]
+id = "WARP"
+summary = "all lanes of warp 0 re-init a with count 2 through a per-thread address equal to a (SASS: one STS.64, the lanes in lockstep)"
+edits = [{ marker = "@RG", find = "@%p2 bra AFTER_REINIT;", replace = "setp.ge.u32 %p7, %r1, 32; @%p7 bra AFTER_REINIT;" }, { marker = "@RADDR", find = "shl.b32 %r25, %r1, 3;", replace = "and.b32 %r25, %r1, 32;" }, { marker = "@REINIT", find = "[%r26], 1;", replace = "[%r26], 2;" }]
+expect = ["race"]
+expect_sass = ["clean"]

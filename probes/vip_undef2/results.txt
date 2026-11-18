@@ -1,0 +1,23 @@
+# repro.sh, 2026-11-13, at b66fd47b (before the MISS 282 fix): exit 1
+PART ptx vip_undef2 unreduced [violation]/outputs=1                default [clean]/outputs=1                    dpor [violation]/outputs=1                DIFF
+PART sass vip_undef2 unreduced [violation]/outputs=1                default [clean]/outputs=1                    dpor [violation]/outputs=1                DIFF
+SYS ptx vip_undef2 unreduced [violation]/outputs=1                default [clean]/outputs=1                    dpor [violation]/outputs=1                DIFF
+SYS sass vip_undef2 unreduced [violation]/outputs=1                default [clean]/outputs=1                    dpor [violation]/outputs=1                DIFF
+SUB8 ptx vip_undef2 unreduced [race,violation]/outputs=1           default [race,violation]/outputs=1           dpor [race,violation]/outputs=1           ok
+SUB8 sass vip_undef2 unreduced [violation]/outputs=1                default [undef-insensitive]/outputs=1        dpor [violation]/outputs=1                DIFF
+TMAU ptx vip_undef2 unreduced [contract,violation]/outputs=1       default [contract,violation]/outputs=1       dpor [contract,violation]/outputs=1       ok
+TMAU sass vip_undef2 unreduced [contract,violation]/outputs=1       default [contract,violation]/outputs=1       dpor [contract,violation]/outputs=1       ok
+TMAS ptx vip_undef2 unreduced [contract,violation]/outputs=1       default [contract,violation]/outputs=1       dpor [contract,violation]/outputs=1       ok
+TMAS sass vip_undef2 unreduced [contract,violation]/outputs=1       default [contract,violation]/outputs=1       dpor [contract,violation]/outputs=1       ok
+
+# at 94e057e8 (after the fix): exit 0
+PART ptx vip_undef2 unreduced [violation]/outputs=1                default [violation]/outputs=1                dpor [violation]/outputs=1                ok
+PART sass vip_undef2 unreduced [violation]/outputs=1                default [violation]/outputs=1                dpor [violation]/outputs=1                ok
+SYS ptx vip_undef2 unreduced [violation]/outputs=1                default [violation]/outputs=1                dpor [violation]/outputs=1                ok
+SYS sass vip_undef2 unreduced [violation]/outputs=1                default [violation]/outputs=1                dpor [violation]/outputs=1                ok
+SUB8 ptx vip_undef2 unreduced [race,violation]/outputs=1           default [race,violation]/outputs=1           dpor [race,violation]/outputs=1           ok
+SUB8 sass vip_undef2 unreduced [violation]/outputs=1                default [violation]/outputs=1                dpor [violation]/outputs=1                ok
+TMAU ptx vip_undef2 unreduced [contract,violation]/outputs=1       default [contract,violation]/outputs=1       dpor [contract,violation]/outputs=1       ok
+TMAU sass vip_undef2 unreduced [contract,violation]/outputs=1       default [contract,violation]/outputs=1       dpor [contract,violation]/outputs=1       ok
+TMAS ptx vip_undef2 unreduced [contract,violation]/outputs=1       default [contract,violation]/outputs=1       dpor [contract,violation]/outputs=1       ok
+TMAS sass vip_undef2 unreduced [contract,violation]/outputs=1       default [contract,violation]/outputs=1       dpor [contract,violation]/outputs=1       ok

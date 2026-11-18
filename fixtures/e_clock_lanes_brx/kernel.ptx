@@ -1,0 +1,59 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CLOCK MISS 76 follow-up (SASS front): the warp splits on a lane-varying brx.idx (lane & 1);
+// only the odd lanes' target reads %clock into v (the even lanes keep v = v0 = 2). After the join, a
+// branch on v & 1 splits the warp on hardware whenever the odd lanes' clock is odd.
+// lane_varying_choices starts lane-varying regions at guarded Bra / Brx only (an unguarded
+// brx.idx with a lane-varying index starts none, and elect_lanes::Cfg does not follow BRX
+// targets), and the SASS clock read is not lane-varying by itself (E-LOCKSTEP).
+// Taken side: out[lane] = 1; fall-through: out[lane ^ 1] = 1. v starts at the u32 parameter v0 = 2;
+// the index is stored to aux after the join so that ptxas gives v its own register. All one way: all 1.
+// Split (odd take, even fall): odd words 1, even words 0.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_lanes_brx(.param .u64 out_p, .param .u32 v0, .param .u64 aux_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    ld.param.u32 %r5, [v0];
+    and.b32 %r11, %r1, 1;
+$L_brx_0: .branchtargets
+        TA,
+        TB;
+    brx.idx %r11, $L_brx_0;
+TA:
+    bra.uni JOIN0;
+TB:
+    mov.u32 %r5, %clock;
+JOIN0:
+    bar.warp.sync -1;
+    and.b32 %r6, %r5, 1;
+    setp.eq.u32 %p1, %r6, 0;
+    mov.u32 %r7, 1;
+    ld.param.u64 %rd6, [aux_p];
+    cvta.to.global.u64 %rd6, %rd6;
+    mul.wide.u32 %rd7, %r1, 4;
+    add.s64 %rd6, %rd6, %rd7;
+    st.global.u32 [%rd6], %r11;          // keeps the brx index live past the join
+    @%p1 bra FALL;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r7;
+    bra.uni JOIN;
+FALL:
+    xor.b32 %r8, %r1, 1;
+    mul.wide.u32 %rd2, %r8, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r7;
+JOIN:
+    ret;
+}

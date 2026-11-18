@@ -1,0 +1,30 @@
+name = "probe_dpor_pipe_issue_order_sass"
+description = """
+DPOR repro (MISS 222), the SASS case: two lanes of rank 0's warp issue remote arrivals into one
+pipe (rank 1's M1) in either order and leave on their own paths; the draining lane's fence
+lands the pipe prefix up to its own op, so only one issue order leaves the other lane's op in
+flight at its release, which rank 1's test_wait observes. run.sh pins every explorer's classes
+(expected/classes.txt); fixtures.rs `dpor_reverses_issues_into_one_pipe` cross-checks DPOR
+against the stateful search.
+"""
+ptx = "kernel.ptx"
+entry = "dpor_pipe_issue_order_sass"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "out = rank 1's test_wait of M1: 1 or 0 (issue order Y,X only)"
+expect = ["nondeterministic"]

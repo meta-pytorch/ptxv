@@ -1,0 +1,7 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+good ptx  stateful [nondeterministic]
+good ptx  dpor     [nondeterministic]
+good ptx  certify  [nondeterministic]
+good sass stateful [nondeterministic]
+good sass dpor     [nondeterministic]
+good sass certify  [nondeterministic]

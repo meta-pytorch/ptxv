@@ -1,0 +1,10 @@
+# GB300 (one GPU, GPU 3), 2026-11-12, measured by the RVS2 review on a build of 6d676091:
+# PTXV_HW_EXPECT=variant ptxv hw --runs 1000 --scrub (the patched image checked by --image-fnv); grid 1x1x1, block 256
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw C_SHFL_OFF [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw C_SHFL_OFF_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 256)] fi
+hw C_LDS_OFF [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw C_LDS_ON [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw C_LDS_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 256)] first f
+# Guarded-off covers (`@!PT SHFL`, `@!PT LDS`) and LDS by LDS: 0 / 1000 (bounds), the NOWAIT
+# controls 1000 / 1000. MERGE_FALSEV is static only.

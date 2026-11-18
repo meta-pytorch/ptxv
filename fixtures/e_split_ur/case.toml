@@ -1,0 +1,37 @@
+name = "e_split_ur"
+description = """
+E-HW-SPLIT-UR (MISS 52's kind; the killer of srcmut split-ur-ungated since MISS 81): one warp's
+lanes 0-3 (grid 1, block 4). Even and odd lanes take separate paths; each adds its value to its
+own shared word (`ATOMS.ADD`), synchronizes with its pair through ptxas's `bar.warp.sync` fast
+path and reads the partner's word. The fast path keeps the split's lane mask in UR8 from
+`VOTEU.ANY` across the atomic to the `LOP3` that tests it. The strict level switches splits
+anywhere: the other split's `VOTEU.ANY UR8` lands between a split's own and its `LOP3`, which
+then finds the pair converged, skips the slow path's `WARPSYNC.COLLECTIVE` and reads the
+partner's word before the partner's atomic (0): nondeterministic, three outputs. Under the GB300
+profile a split inside the window runs to its read first (urwin.rs): clean, GB300's output.
+PTX: clean. The certificate and DPOR come out clean on SASS (MISS 150: they treat the splits as
+independent through the warp's uniform registers), pinned in the fixture's test."""
+ptx = "kernel.ptx"
+entry = "ur_window_split"
+ptxas_toolkit = "13.0"
+grid = [1, 1, 1]
+block = [4, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "each split keeps its VOTEU.ANY lane mask in UR8 across its ATOMS.ADD to the LOP3 of its pair sync"
+hw_note = "GB300 10,000 runs: all bitwise equal to expected/ (ptxv hw --runs 10000)"
+expect = ["clean"]
+expect_sass = ["nondeterministic"]

@@ -1,0 +1,44 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// RMK4 A1: a store over an mbarrier's bytes unordered with its first init, hidden from
+// mbar_init's last-write check by a later write of the initializing thread that does not
+// cover it (S-SAME-VALUE plain write of the same value, or a morally strong write).
+// Thread INT writes zero over `a` (its own write, program-ordered before its init), then
+// initializes `a`; thread OTH stores zero over `a`. Nothing orders OTH's store with the init.
+// In the order init-then-store the store lands on the live object (MISS 218 violation).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_hidden_write(.param .u64 out_p)
+.maxntid 64, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b8 a[8];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, a;
+    mov.b64 %rd5, 0;
+    setp.eq.u32 %p2, %r1, 32;                          // @OTH
+    @!%p2 bra NOOTH;
+    st.shared.u64 [%r2], %rd5;                         // @OST
+NOOTH:
+    setp.eq.u32 %p3, %r1, 0;                           // @INT
+    @!%p3 bra NOINIT;
+    st.shared.u64 [%r2], %rd5;                         // @IST
+    mbarrier.init.shared::cta.b64 [%r2], 1;            // @INIT
+NOINIT:
+    bar.sync 0;
+    setp.ne.u32 %p5, %r1, 0;
+    @%p5 bra DONE;
+    mov.u32 %r9, 1;
+    st.global.u32 [%rd1], %r9;
+DONE:
+    ret;
+}

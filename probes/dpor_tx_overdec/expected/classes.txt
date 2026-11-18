@@ -1,0 +1,13 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+good ptx  stateful [deadlock,nondeterministic,race]
+good ptx  dpor     [deadlock,nondeterministic,race]
+good ptx  certify  [deadlock,nondeterministic,race]
+good sass stateful [deadlock,nondeterministic]
+good sass dpor     [deadlock,nondeterministic]
+good sass certify  [deadlock,nondeterministic]
+BAL  ptx  stateful [clean]
+BAL  ptx  dpor     [clean]
+BAL  ptx  certify  [clean]
+BAL  sass stateful [clean]
+BAL  sass dpor     [clean]
+BAL  sass certify  [clean]

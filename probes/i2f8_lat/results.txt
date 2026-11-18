@@ -1,0 +1,342 @@
+# GB300 (one GPU, GPU 3), 2026-11-12, rev 6d676091 + this probe (agentSND-probes2): PTXV_HW_EXPECT=variant
+# ptxv hw --runs 1000 --scrub (the patched image checked by --image-fnv); grid 1x1x1, block 256.
+# Variant names: K<k>_D<d>_<NOWAIT|COVER|OWN>[_F<follower stall>][_G<gap to the first follower>][_S8: I2F.S8 followers].
+# Summary (N<wrong>/C<wrong>/O<wrong> of 1000 unless /n given; max failing NOWAIT distance per layout):
+#   K0: max failing NOWAIT D=16 | D6:N498,O0 D8:N461 D10:N999 D12:N1000 D14:N1000 D16:N1 D18:N0 D20:N0 D24:N0 D28:N0 D33:N0 D40:N0
+#   K1: max failing NOWAIT D=18 | D6:N0/2000,C0/2000,O0/2000 D8:N448,C0 D10:N999,C0 D12:N1000,C0 D14:N1000,C0 D16:N404,C0 D17:N331 D18:N324,C0 D19:N0 D20:N0,C0 D21:N0 D22:N0 D23:N0 D24:N0,C0 D26:N0 D28:N0,C0 D30:N0 D33:N0,C0 D40:N0,C0
+#   K2: max failing NOWAIT D=14 | D6:N0,C0,O0 D8:N455,C0 D10:N999,C0 D12:N1000,C0 D14:N1000,C0 D16:N0,C0 D18:N0,C0 D20:N0,C0 D24:N0,C0 D28:N0,C0 D33:N0,C0 D40:N0,C0
+#   K4: max failing NOWAIT D=None | D10:N0,C0,O0 D12:N0,C0 D14:N0,C0 D16:N0,C0 D18:N0,C0 D20:N0,C0 D24:N0,C0 D28:N0,C0 D33:N0,C0 D40:N0,C0
+#   K8: max failing NOWAIT D=None | D18:N0,C0,O0 D20:N0,C0 D24:N0,C0 D28:N0,C0 D33:N0,C0 D40:N0,C0
+#   K1_F4: max failing NOWAIT D=18 | D6:N0,C0 D8:N454 D10:N999 D12:N1000 D14:N1000 D16:N395 D18:N332 D20:N0 D24:N0 D28:N0 D33:N0 D40:N0 D48:N0
+#   K2_F4: max failing NOWAIT D=16 | D10:N999,C0 D12:N698 D14:N1000 D16:N346 D18:N0 D20:N0 D22:N0 D24:N0/2000 D28:N0 D33:N0 D40:N0 D48:N0
+#   K4_F4: max failing NOWAIT D=None | D18:N0,C0 D20:N0 D24:N0 D28:N0 D33:N0 D40:N0 D48:N0
+#   K2_F6: max failing NOWAIT D=18 | D14:N199 D16:N340 D18:N344 D20:N0 D22:N0 D24:N0 D26:N0
+#   K3_F6: max failing NOWAIT D=None | D20:N0 D22:N0 D24:N0 D26:N0 D28:N0
+#   K1_F8: max failing NOWAIT D=18 | D10:N999,C0 D12:N1000 D14:N1000 D16:N412 D18:N327 D20:N0 D24:N0 D28:N0 D33:N0 D40:N0 D48:N0
+#   K2_F8: max failing NOWAIT D=21 | D18:N339,C0 D20:N343 D21:N343 D22:N0 D23:N0 D24:N0/2000 D26:N0 D28:N0/2000 D33:N0 D40:N0 D48:N0
+#   K3_F8: max failing NOWAIT D=None | D26:N0 D28:N0 D30:N0 D32:N0 D36:N0
+#   K4_F8: max failing NOWAIT D=None | D34:N0,C0 D36:N0 D38:N0 D40:N0 D48:N0
+#   K1_G10: max failing NOWAIT D=18 | D16:N353,C0 D18:N348,C0 D20:N0,C0 D22:N0,C0 D24:N0,C0 D28:N0,C0
+#   K1_G4: max failing NOWAIT D=22 | D16:N377,C0 D18:N325,C0 D20:N1,C0 D21:N0 D22:N1,C0 D23:N0 D24:N0,C0 D28:N0,C0
+#   K1_G6: max failing NOWAIT D=20 | D16:N380,C0 D18:N329,C0 D20:N1,C0 D22:N0,C0 D24:N0,C0 D28:N0,C0
+#   K1_G8: max failing NOWAIT D=18 | D16:N405,C0 D18:N359,C0 D20:N0,C0 D22:N0,C0 D24:N0,C0 D28:N0,C0
+#   K1_S8: max failing NOWAIT D=20 | D6:N0 D8:N458 D10:N999 D12:N1000 D14:N1000 D16:N75 D18:N324 D20:N1 D24:N0 D28:N0 D33:N0 D40:N0
+#   K2_S8: max failing NOWAIT D=14 | D6:N0 D8:N452 D10:N999 D12:N1000 D14:N1000 D16:N0 D18:N0 D20:N0 D24:N0 D28:N0 D33:N0 D40:N0
+#   K4_S8: max failing NOWAIT D=None | D10:N0 D12:N0 D14:N0 D16:N0 D18:N0 D20:N0 D24:N0 D28:N0 D33:N0 D40:N0
+# WAW (SND3, 2026-11-12, GPU 0, the same shape and runs; the FMUL writes the I2F.S8's register from R6, no wait; the
+# I2F's later write is what the STG stores): K0: D6:W501 D8:W1000 D10:W1 D12..D33:W0;
+# K1: D6:W1000 D8:W1000 D10:W936 D12:W904 D14:W500 D16:W500 D18..D33:W0. The overwrite is lost up
+# to 16 stall cycles after the I2F (one follower), as the read: CONV_WRONG_CYC covers the WAW too.
+# Reading: the FMUL reads the I2F.S8's register stale (the integer bits) up to D = 14 in nearly
+# every run, at 16 in 1 of 1000 with no follower; one I2F.S16 issued 2 to 10 stall cycles after
+# it (or two spaced 8 apart) delays its writeback: wrong in about a third of the runs at D = 16 to
+# 21, 1 of 1000 at 20 and 22 (K1_G4), 0 / 1000 from D = 23 in every layout. Dense followers
+# (stall 2, K >= 2) throttle the reader's issue, so their stall distance understates the elapsed
+# time. COVER (the FMUL waits on the followers' scoreboard only) is 0 / 1000 in every layout
+# here, unlike probes/i2f8_queue and i2f8_same COVER (an STG reader): not evidence for a cover.
+# Distances are stall cycles from the I2F.S8 to the FMUL, a lower bound on elapsed cycles.
+# Full occupancy: probes/i2f8_lat_occ. The captured dequantize_kv kernel
+# (mslk fa4.triton.dequantize_kv.mxint8_bf16.64x128_g32, `I2F.S8 R12` at 0x870 read by FMUL2 at
+# 0x950), its stalls at 0x870 / 0x890 / 0x8a0 / 0x8b0 patched to distances 14 .. 47 (as captured:
+# 33), ptxv hw --no-num --runs 1000 --scrub, grid 4 x 128: 0 / 1000 at every distance (14, 16, 18,
+# 21, 24, 28, 33, 40, 47). Not discriminating: the FADDs between wait on later conversions' and
+# MUFUs' scoreboards (SB0 .. SB4), so the elapsed time does not follow the stall distance.
+# Raw rows:
+hw K0_D6_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D6_NOWAIT [scrubbed smem] 498/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinct,
+hw K0_D8_NOWAIT [scrubbed smem] 461/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinct, 
+hw K0_D10_NOWAIT [scrubbed smem] 999/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 11 distinct
+hw K0_D12_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 distinc
+hw K0_D14_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 16 distinc
+hw K0_D16_NOWAIT [scrubbed smem] 1/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): [(999, 0), (1
+hw K0_D18_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D20_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D24_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D28_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D33_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D40_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D8_NOWAIT [scrubbed smem] 448/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 8 distinct, 
+hw K1_D8_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D10_NOWAIT [scrubbed smem] 999/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 16 distinct
+hw K1_D10_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D12_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 16 distinc
+hw K1_D12_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D14_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 14 distinc
+hw K1_D14_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D16_NOWAIT [scrubbed smem] 404/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 7 distinct,
+hw K1_D16_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D18_NOWAIT [scrubbed smem] 324/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 5 distinct,
+hw K1_D18_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D33_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D33_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D40_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D40_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D6_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D6_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D6_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D8_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.9s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D12_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 16 distinc
+hw K2_D12_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D14_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 distinc
+hw K2_D14_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D16_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D16_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D18_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D18_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D20_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D20_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D24_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D24_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D28_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D28_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D33_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D33_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D40_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D40_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D10_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D10_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D10_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D12_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D14_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D14_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D16_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D16_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D18_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D18_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D20_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D20_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D24_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D24_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D28_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D28_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.8s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D33_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D33_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D40_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D40_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D18_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D18_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D18_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D20_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D20_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D24_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D24_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D28_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D28_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D33_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D33_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D40_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K8_D40_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D10_COVER_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D10_NOWAIT_S8 [scrubbed smem] 999/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 disti
+hw K1_D12_NOWAIT_F4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 17 dist
+hw K1_D12_NOWAIT_F8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 dist
+hw K1_D12_NOWAIT_S8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 dist
+hw K1_D14_NOWAIT_F4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 17 dist
+hw K1_D14_NOWAIT_F8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 17 dist
+hw K1_D14_NOWAIT_S8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 14 dist
+hw K1_D16_COVER_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D16_COVER_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D16_COVER_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D16_COVER_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D16_NOWAIT_F4 [scrubbed smem] 395/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(605, 0
+hw K1_D16_NOWAIT_G10 [scrubbed smem] 353/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): [(647, 
+hw K1_D16_NOWAIT_G6 [scrubbed smem] 380/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(620, 0
+hw K1_D16_NOWAIT_G8 [scrubbed smem] 405/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distin
+hw K1_D16_NOWAIT_S8 [scrubbed smem] 75/1000 runs differ from the correct output (1000 runs, 1.0s) distinct outputs (count, words differing): 7 distinc
+hw K1_D17_NOWAIT [scrubbed smem] 331/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(669, 0), 
+hw K1_D18_COVER_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D18_COVER_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D18_COVER_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D18_COVER_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D18_NOWAIT_F4 [scrubbed smem] 332/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(668, 0
+hw K1_D18_NOWAIT_F8 [scrubbed smem] 327/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(673, 0
+hw K1_D18_NOWAIT_G10 [scrubbed smem] 348/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(652, 
+hw K1_D18_NOWAIT_G4 [scrubbed smem] 325/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 5 distin
+hw K1_D18_NOWAIT_G6 [scrubbed smem] 329/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(671, 0
+hw K1_D18_NOWAIT_G8 [scrubbed smem] 359/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 6 distin
+hw K1_D18_NOWAIT_S8 [scrubbed smem] 324/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 5 distin
+hw K1_D20_COVER_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_COVER_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_COVER_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_NOWAIT_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_NOWAIT_G4 [scrubbed smem] 1/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(999, 0),
+hw K1_D20_NOWAIT_G6 [scrubbed smem] 1/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(999, 0),
+hw K1_D20_NOWAIT_S8 [scrubbed smem] 1/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(999, 0),
+hw K1_D21_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D22_COVER_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D22_COVER_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D22_COVER_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D22_COVER_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D22_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.9s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D22_NOWAIT_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.8s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D22_NOWAIT_G4 [scrubbed smem] 1/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(999, 0),
+hw K1_D22_NOWAIT_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D22_NOWAIT_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D23_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_COVER_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_COVER_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_COVER_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_COVER_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_NOWAIT_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_NOWAIT_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_NOWAIT_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_NOWAIT_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D26_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_COVER_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_COVER_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_COVER_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_COVER_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_NOWAIT_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_NOWAIT_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_NOWAIT_G6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_NOWAIT_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D30_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D33_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D33_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D33_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D40_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D40_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D40_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D48_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D48_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_COVER_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D8_NOWAIT_F4 [scrubbed smem] 454/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinc
+hw K1_D8_NOWAIT_S8 [scrubbed smem] 458/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinc
+hw K2_D10_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D10_COVER_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D10_NOWAIT [scrubbed smem] 999/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 distinct
+hw K2_D10_NOWAIT_F4 [scrubbed smem] 999/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 disti
+hw K2_D10_NOWAIT_S8 [scrubbed smem] 999/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 disti
+hw K2_D12_NOWAIT_F4 [scrubbed smem] 698/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 disti
+hw K2_D12_NOWAIT_S8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 dist
+hw K2_D14_NOWAIT_F4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 dist
+hw K2_D14_NOWAIT_S8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 dist
+hw K2_D16_NOWAIT_F4 [scrubbed smem] 346/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 5 distin
+hw K2_D16_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D18_COVER_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D18_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D18_NOWAIT_F8 [scrubbed smem] 339/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(661, 0
+hw K2_D18_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D20_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D20_NOWAIT_F8 [scrubbed smem] 343/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(657, 0
+hw K2_D20_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D24_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D24_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D24_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D28_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D28_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D28_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D33_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D33_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D33_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D40_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D40_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D40_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D48_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D48_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D6_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D8_NOWAIT [scrubbed smem] 455/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinct, 
+hw K2_D8_NOWAIT_S8 [scrubbed smem] 452/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinc
+hw K4_D10_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D12_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D12_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D14_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D16_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D18_COVER_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D18_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D18_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D20_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D20_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D24_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D24_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D28_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D28_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D33_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D33_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D34_COVER_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D40_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D40_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D40_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D48_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D48_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D10_NOWAIT_F4 [scrubbed smem] 999/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 13 disti
+hw K1_D10_NOWAIT_F8 [scrubbed smem] 999/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 disti
+hw K1_D16_NOWAIT_F8 [scrubbed smem] 412/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 7 distin
+hw K1_D16_NOWAIT_G4 [scrubbed smem] 377/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(623, 0
+hw K1_D19_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_COVER_G10 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_NOWAIT_G8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D21_NOWAIT_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D23_NOWAIT_G4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D14_NOWAIT_F6 [scrubbed smem] 199/1000 runs differ from the correct output (1000 runs, 0.6s) distinct outputs (count, words differing): 10 disti
+hw K2_D16_NOWAIT_F6 [scrubbed smem] 340/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 5 distin
+hw K2_D18_NOWAIT_F6 [scrubbed smem] 344/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 5 distin
+hw K2_D20_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D21_NOWAIT_F8 [scrubbed smem] 343/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(657, 0
+hw K2_D22_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D22_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D22_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D23_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D24_NOWAIT_F4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D24_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D24_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D26_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D26_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K2_D28_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D20_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D22_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D24_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D26_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D26_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D28_NOWAIT_F6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D28_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D30_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D32_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K3_D36_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D34_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D36_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K4_D38_NOWAIT_F8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D6_WAW [scrubbed smem] 501/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(501, 255), (499, 0)] first failing runs: [0, 1, 2, 5, 6, 9, 10,
+hw K0_D8_WAW [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 11 distinct, first: [(327, 127), (325, 128), (94, 192), (65, 255
+hw K0_D10_WAW [scrubbed smem] 1/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(999, 0), (1, 255)] first failing runs: [0]
+hw K0_D12_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D14_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D16_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D18_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D20_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D24_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D28_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D33_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D6_WAW [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 255)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+hw K1_D8_WAW [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(564, 255), (310, 128), (94, 192), (32, 191)] first failing run
+hw K1_D10_WAW [scrubbed smem] 936/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 12 distinct, first: [(637, 128), (94, 64), (64, 0), (47, 127)] f
+hw K1_D12_WAW [scrubbed smem] 904/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinct, first: [(404, 64), (327, 128), (96, 0), (47, 127)] 
+hw K1_D14_WAW [scrubbed smem] 500/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 9 distinct, first: [(500, 0), (327, 128), (47, 127), (46, 128)] 
+hw K1_D16_WAW [scrubbed smem] 500/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 9 distinct, first: [(500, 0), (327, 128), (47, 127), (46, 128)] 
+hw K1_D18_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D20_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D24_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D28_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D33_WAW [scrubbed smem] matches simulator bitwise (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 0)]

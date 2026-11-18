@@ -16,6 +16,12 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Third-party kernel binaries are not distributed (fixtures/VENDOR_FIXTURES.toml): true, with a
+/// message on stderr, when a file of a vendor fixture the test needs is missing (it then skips).
+fn vendor_missing(needs: &[&str]) -> bool {
+    ptxv_case::skip_missing_vendor_files(&root().join("fixtures"), needs)
+}
+
 fn run(
     tag: &str,
     case: &str,
@@ -101,32 +107,35 @@ fn dag_clt(j: &serde_json::Value) -> Option<&serde_json::Value> {
 /// P(differ) 0.066; no certificate may claim it. Mutant t0-bound (the bound loosened) does.
 #[test]
 fn tier0_certificate_needs_the_24_bit_bound() {
-    let j = run(
-        "t0-int",
-        "fixtures/c_mm_bf16_nnt",
-        "fixtures/errdist/integers.json",
-        &["--mc", "1000"],
-        &[],
-    );
-    let t0 = tier(&j, 0);
-    assert_eq!(t0.len(), 1, "{j}");
-    assert!(
-        method(t0[0]).starts_with("exactness certificate"),
-        "{}",
-        method(t0[0])
-    );
-    assert_eq!(best(&j)["tier"], 0);
-    assert_eq!(p(tier(&j, 3)[0]).0, 0.0);
-    let j = run(
-        "t0-scaled",
-        "fixtures/c_mm_bf16_nnt",
-        "fixtures/errdist/ints_scaled.json",
-        &["--mc", "1000"],
-        &[],
-    );
-    assert!(tier(&j, 0).is_empty(), "no tier 0 may claim this: {j}");
-    assert!(p(tier(&j, 3)[0]).1 > 0.0, "tier 3 sees differences: {j}");
-    assert_ne!(best(&j)["tier"], 0);
+    // The two cuBLAS rows need the vendor kernel binary; the window row below does not.
+    if !vendor_missing(&["c_mm_bf16_nnt"]) {
+        let j = run(
+            "t0-int",
+            "fixtures/c_mm_bf16_nnt",
+            "fixtures/errdist/integers.json",
+            &["--mc", "1000"],
+            &[],
+        );
+        let t0 = tier(&j, 0);
+        assert_eq!(t0.len(), 1, "{j}");
+        assert!(
+            method(t0[0]).starts_with("exactness certificate"),
+            "{}",
+            method(t0[0])
+        );
+        assert_eq!(best(&j)["tier"], 0);
+        assert_eq!(p(tier(&j, 3)[0]).0, 0.0);
+        let j = run(
+            "t0-scaled",
+            "fixtures/c_mm_bf16_nnt",
+            "fixtures/errdist/ints_scaled.json",
+            &["--mc", "1000"],
+            &[],
+        );
+        assert!(tier(&j, 0).is_empty(), "no tier 0 may claim this: {j}");
+        assert!(p(tier(&j, 3)[0]).1 > 0.0, "tier 3 sees differences: {j}");
+        assert_ne!(best(&j)["tier"], 0);
+    }
     let j = run(
         "t0-window",
         "fixtures/r1a_tcgen05_tile",
@@ -151,6 +160,10 @@ fn tier0_certificate_needs_the_24_bit_bound() {
 /// "identical".
 #[test]
 fn tier0_identical_programs_needs_equal_dags() {
+    // The reference is the cuBLAS kernel (c_mm_bf16_nnt), a vendor binary.
+    if vendor_missing(&["fixtures/c_equiv_mm_bf16/equiv.toml"]) {
+        return;
+    }
     let j = run(
         "t0-same",
         "fixtures/c_equiv_mm_bf16/equiv.toml",
@@ -180,6 +193,9 @@ fn tier0_identical_programs_needs_equal_dags() {
 /// applicable.
 #[test]
 fn tier2_kurtosis_gate_holds_without_tier3() {
+    if vendor_missing(&["c_mm_bf16_nnt"]) {
+        return;
+    }
     let j = run(
         "t2-kurt",
         "fixtures/c_mm_bf16_nnt",
@@ -201,6 +217,9 @@ fn tier2_kurtosis_gate_holds_without_tier3() {
 /// summary's headline. Un-ignore when a refused estimate can no longer be the headline.
 #[test]
 fn refused_estimates_are_never_the_headline() {
+    if vendor_missing(&["c_mm_bf16_nnt"]) {
+        return;
+    }
     let j = run(
         "t2-kurt-best",
         "fixtures/c_mm_bf16_nnt",
@@ -244,6 +263,9 @@ fn crosscheck_refuses_a_six_percent_tier2() {
 /// (no resolution gate) accepts it.
 #[test]
 fn crosscheck_needs_resolution() {
+    if vendor_missing(&["c_mm_bf16_nnt"]) {
+        return;
+    }
     let j = run(
         "xres",
         "fixtures/c_mm_bf16_nnt",
@@ -360,7 +382,8 @@ fn tier2_needs_resolution_and_joins_tier3s_interval() {
 /// [0, 3.69 / outputs], which takes them as independent: at 200 inputs (s2.json) Tier 3 said
 /// 0 [0, 3.75e-5], refused the correct Tier 1 (2.112e-3) against it and was the headline, and
 /// the default run did not grow at P 0. Below 20 differing inputs the interval now takes the
-/// input-level bound ([0, 3.69 / inputs] at 0), and Tier 3 grows at P 0.
+/// input-level bound ([0, 3.69 / inputs] at 0; since MISS 139 at any count, [0, 4.38 /
+/// inputs] at 0), and Tier 3 grows at P 0.
 #[test]
 fn tier3_interval_counts_inputs_where_outputs_differ_together() {
     let (case, spec) = (
@@ -387,6 +410,36 @@ fn tier3_interval_counts_inputs_where_outputs_differ_together() {
         lo3 <= exact && exact <= hi3,
         "default Tier 3 {p3} [{lo3}, {hi3}]"
     );
+}
+
+/// MISS 139 (the third review's rE_mix, fixtures/errdist/mix): 4032 of an input's 4096 bf16
+/// outputs are one value that differs on about 2e-3 of the inputs, and single outputs differ
+/// on most inputs (P 2.346110e-3 per compared output, exact). With 20 or more inputs holding a
+/// differing output MISS 120 left the batch-means interval alone, which had seen no cluster:
+/// at 200 inputs s2.json gave Tier 3 2.758e-4 [0, 1.075e-3] (25 of 40 seeds below P). The
+/// input-level bound now holds at any count: each seed's interval holds P.
+#[test]
+fn tier3_interval_counts_inputs_at_any_count() {
+    let exact = 2.346110e-3;
+    for s in [2, 3, 4] {
+        let j = run(
+            &format!("mix{s}"),
+            "fixtures/errdist/mix/rare",
+            &format!("fixtures/errdist/mix/s{s}.json"),
+            &["--mc", "200", "--sim-trials", "0"],
+            &[],
+        );
+        let (p3, lo3, hi3) = p(tier(&j, 3)[0]);
+        assert!(
+            lo3 <= exact && exact <= hi3,
+            "s{s}: Tier 3 {p3} [{lo3}, {hi3}]"
+        );
+        let (pb, lob, hib) = p(best(&j));
+        assert!(
+            lob <= exact && exact <= hib,
+            "s{s}: headline {pb} [{lob}, {hib}]"
+        );
+    }
 }
 
 /// N-ERRDIST-SEL: a store under a guard computed from input data is a selection.
@@ -481,6 +534,11 @@ fn dag_clt_is_unconfirmed_without_tier3() {
         ("fixtures/c_mm_bf16_nnt", Some("--pre-round")),
         ("fixtures/c_triton_dot_f32acc", None),
     ] {
+        // Only the cuBLAS row needs a vendor kernel binary.
+        let spec = format!("{case}/case.toml");
+        if vendor_missing(&[spec.as_str()]) {
+            continue;
+        }
         let mut args = vec!["--mc", "0"];
         args.extend(extra);
         let j = run("miss43", case, "fixtures/errdist/normal.json", &args, &[]);
@@ -536,6 +594,9 @@ fn tier0_enumeration_matches_tier3_on_f32_outputs() {
 /// came before Tier 3 in the headline order).
 #[test]
 fn uniform_heuristic_is_never_the_headline() {
+    if vendor_missing(&["c_mm_bf16_nnt"]) {
+        return;
+    }
     let j = run(
         "uniform",
         "fixtures/c_mm_bf16_nnt",

@@ -192,12 +192,18 @@ fn a_rare_flip_is_bounded() {
     }
 }
 
-/// With 4096 outputs per input Tier 3's interval is fine at 300 inputs, but the flip bound
-/// counts inputs (1.2e-2 at 300 against a margin of about 4.6e-3 at P 0.057): with the default
-/// input count Tier 3 grows until B is within FLIP_GROW (0.8) of the margin at its own P, the
-/// same inputs on every run. A work budget too small for that leaves 300 inputs, a note, and
-/// the gate refusing. (The linearized estimate itself is 21% low on this shape, a rounded
-/// product added to a value of similar size, and its cross-check refuses it either way.)
+/// The flip bound counts inputs (1.2e-2 at 300 against a margin of about 4.6e-3 at P 0.057):
+/// with the default input count Tier 3 grows at least until B is within FLIP_GROW (0.8) of the
+/// margin at its own P (809 inputs at 0 flips), the same inputs on every run. Until MISS 139
+/// Tier 3's interval over 4096 outputs per input was fine at 300 inputs and the bound alone
+/// grew it, to 809 inputs, with the note "grew to 809 inputs for the bound". Since MISS 139 its
+/// interval takes the input-level bound at any count (+-35% at 300 inputs) and its own growth
+/// for the cross-check's resolution goes past the bound's need (7518 inputs, B 4.9e-4): no
+/// input is run for the bound alone, and no note is written (the growth the bound drives is
+/// pinned by errdist::tests::the_flip_bound_drives_growth_where_tier3_is_fine). A work budget
+/// too small for the bound leaves 300 inputs, a note, and the gate refusing.
+/// (The linearized estimate itself is 21% low on this shape, a rounded product added to a value
+/// of similar size, and its cross-check refuses it either way.)
 #[test]
 #[ignore = "heavy: 36 s"]
 fn tier3_grows_for_the_flip_bound() {
@@ -229,14 +235,19 @@ fn tier3_grows_for_the_flip_bound() {
         b["input"][2].as_f64().unwrap(),
     );
     assert_eq!(b["flipped"], 0, "{b}");
-    assert!(n > 600, "{b}");
-    assert!(ub <= 0.8 * 0.1 * p3(&j), "{b} at P {}", p3(&j));
+    // B at 0 flips: the upper end of the Clopper-Pearson 95% interval, 1 - 0.025^(1/n).
+    let exact = 1.0 - 0.025f64.powf(1.0 / n as f64);
+    assert!((ub - exact).abs() <= 1e-9 * exact, "{b}: {exact}");
+    let target = 0.8 * 0.1 * p3(&j);
+    assert!(ub <= target, "{b} at P {}", p3(&j));
+    // The bound's need at 0 flips, the least n with 1 - 0.025^(1/n) <= the target, is passed by
+    // Tier 3's own growth: the bound drives none of it and writes no note
+    // (errdist::tests::the_flip_bound_drives_growth_where_tier3_is_fine pins the growth it
+    // drives).
+    let need = (0.025f64.ln() / (1.0 - target).ln()).ceil() as u64;
+    assert!(n > need, "{b}: {n} inputs, {need} needed");
     let nt = notes(&j);
-    assert!(
-        nt.iter()
-            .any(|t| t.contains(&format!("grew to {n} inputs"))),
-        "{nt:?}"
-    );
+    assert!(nt.is_empty(), "{nt:?}");
     // The same inputs and estimates on every run.
     let again = run("wide2", case, spec, None);
     assert_eq!(again["branch_flips"], j["branch_flips"]);

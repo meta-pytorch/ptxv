@@ -1,0 +1,43 @@
+name = "ident_fs3c"
+description = """MISS 138: entry rE_fs3 of ../fs3.ptx (see its header), captured x = 64 (t = 1/16): the probes' floor(t) is 0 or -1 (the sign of x), one output ulp, so y = u is within EXACT_VETO of the fitted u + c x and only the dependence on x refuses it; captured u = 1.25 * 2^23."""
+ptx = "../fs3.ptx"
+entry = "rE_fs3"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "x.bin"
+
+[[buffers]]
+name = "u"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "u.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "u"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -86,9 +86,9 @@ edits = [
 
 [[variants]]
 id = "XLANE"
-summary = "one lane (as good) running the aggregation written out in PTX with membermask 0x1 but reading lane 1, which does not execute the shuffle: undefined, a fault on both fronts (the faulting lane stops, so the warp's later bar.sync is reached by part of it: a violation on PTX, a deadlock on SASS)"
+summary = "one lane (as good) running the aggregation written out in PTX with membermask 0x1 but reading lane 1, which does not execute the shuffle: undefined, a fault on both fronts (the faulting lane stops, so the warp's later bar.sync is reached by part of it: a violation on PTX; on SASS the faulting lane releases the BAR.SYNC as EXIT does, so the lanes waiting there for it do not deadlock: GB300 does not fault there and completes, 3/3 runs, and until the fault release this was [deadlock, fault])"
 expect = ["fault", "violation"]
-expect_sass = ["deadlock", "fault"]
+expect_sass = ["fault"]
 marker = "@ATOM"
 find = "atom.global.add.u32 %r5, [%rd1], 1;"
 replace = """setp.eq.u32 %p7, %r1, %r1;

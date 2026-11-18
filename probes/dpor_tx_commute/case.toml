@@ -1,0 +1,29 @@
+name = "probe_dpor_tx_commute"
+description = """
+DPOR repro (MISS 231): a tx increment (expect_tx) and a tx decrement (complete_tx) into one
+mbarrier phase do not commute: with the decrement first, tx reaches 0 with no pending arrival
+and the phase completes early. Threads only. run.sh pins every explorer's classes
+(expected/classes.txt); fixtures.rs `dpor_orders_tx_increments_against_decrements`
+cross-checks DPOR against the stateful search.
+"""
+ptx = "kernel.ptx"
+entry = "dpor_tx_commute"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "thread 64's complete_tx may land before thread 32's expect_tx: early completion, b unordered"
+expect = ["nondeterministic", "race"]
+expect_sass = ["nondeterministic"]

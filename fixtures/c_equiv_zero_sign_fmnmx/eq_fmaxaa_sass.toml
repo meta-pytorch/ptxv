@@ -1,0 +1,10 @@
+# MISS 135 (gen.py): out[i] = max.f32(a[i], a[i]) against the same + 0; input set f, sass front.
+max_states = 200000
+reference = { case = "fmaxaa_f", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "fmaxaa0_f"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L2"

@@ -1,0 +1,9 @@
+# min.f32(a, +inf) vs min.f32(a, a) with a loaded twice (ptx front). The model's claim, run without captures (check.py).
+max_states = 200000
+reference = { case = "mininf_f", variant = "good", front = "ptx", certify = true }
+
+[[candidates]]
+case = "minaav_f"
+variant = "good"
+front = "ptx"
+certify = true

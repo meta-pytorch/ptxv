@@ -1,0 +1,9 @@
+# probe variant front explorer classes (run.sh compares each line's observed classes with these).
+mbar_zero     upto0 ptx  stateful [violation]
+mbar_zero     upto0 ptx  dpor     [violation]
+mbar_zero     upto0 sass stateful [violation]
+mbar_zero     upto0 sass dpor     [violation]
+mbar_reserved upto0 ptx  stateful [violation]
+mbar_reserved upto0 ptx  dpor     [violation]
+mbar_reserved upto0 sass stateful [clean]
+mbar_reserved upto0 sass dpor     [clean]

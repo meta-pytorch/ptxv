@@ -1,0 +1,43 @@
+name = "rE_sm1"
+description = """The third review's probe (MISS 138): entry rE_sm1 of ../fs4.ptx (see its header): y = RN(x / 1024 + v), one correct rounding, captured x = 2560, v = 2^40: v absorbs x / 1024 on the probes."""
+ptx = "../fs4.ptx"
+entry = "rE_sm1"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "x.bin"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "v.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

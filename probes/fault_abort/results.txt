@@ -1,0 +1,14 @@
+probes/fault_abort on GB300 (sm_103, driver 580.126.20), CUDA 13.0 nvcc, 2026-11-12.
+
+SASS (ptxas 13.0): BSSY.RECONVERGENT B0; lane 3 only: LD.E.STRONG.SYS from address 0x10
+(unmapped); BSYNC.RECONVERGENT B0; lanes other than 3 then spin on a flag (LDG.E.STRONG.SYS
+in a BSSY B0 / BSYNC B0 loop) that lane 3 writes only after its load.
+
+Result: `launch result: 700 (an illegal memory access was encountered) after 106.3 ms`.
+The grid was aborted at the fault: the warp-mates neither waited forever at the BSYNC nor
+spun forever on the flag. A fault therefore never leaves other threads waiting for the
+faulting one; ptxv's derived deadlock of lanes parked on a faulted lane (forum post 76, MISS
+175) is not a GB300 behaviour, and the explorer now releases them (exec.rs
+`release_after_stop`). The over-read of MISS 175 (an emulated 16-bit atomic's 4-byte access
+reaching 2 bytes past an exact-size allocation, inside the allocation granule) does not fault
+on GB300 at all; ptxv still reports it as `fault` (outside the allocation the case declares).

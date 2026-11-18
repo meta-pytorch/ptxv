@@ -1,0 +1,21 @@
+# run.sh, 2026-11-13, on agentDP 6f398a99 (the i < d last-arrival levels): exit 1
+good  ptx  unreduced expected [deadlock,nondeterministic,race] observed [deadlock,nondeterministic,race] ok
+good  ptx  stateful  expected [deadlock,nondeterministic,race] observed [deadlock]                 MISMATCH
+good  ptx  dpor      expected [deadlock,nondeterministic,race] observed [deadlock]                 MISMATCH
+good  ptx  certify   expected [deadlock,nondeterministic,race] observed [deadlock]                 MISMATCH
+good  sass unreduced expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+good  sass stateful  expected [deadlock,nondeterministic] observed [deadlock]                 MISMATCH
+good  sass dpor      expected [deadlock,nondeterministic] observed [deadlock]                 MISMATCH
+good  sass certify   expected [deadlock,nondeterministic] observed [deadlock]                 MISMATCH
+rc=1
+
+# After the fix (the under key, MISS 273): exit 0
+good  ptx  unreduced expected [deadlock,nondeterministic,race] observed [deadlock,nondeterministic,race] ok
+good  ptx  stateful  expected [deadlock,race]            observed [deadlock,race]            ok
+good  ptx  dpor      expected [deadlock,race]            observed [deadlock,race]            ok
+good  ptx  certify   expected [deadlock,race]            observed [deadlock,race]            ok
+good  sass unreduced expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+good  sass stateful  expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+good  sass dpor      expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+good  sass certify   expected [deadlock,nondeterministic] observed [deadlock,nondeterministic] ok
+rc=0

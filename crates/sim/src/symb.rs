@@ -2620,7 +2620,9 @@ fn pend_of(s: &mut SymState, m: &Machine, t: usize, op: &Op, active: &[usize]) -
                     ptxv_ir::AtomOp::FAddFtz
                     | ptxv_ir::AtomOp::FAdd64
                     | ptxv_ir::AtomOp::AddBf16x2
-                    | ptxv_ir::AtomOp::AddBf16,
+                    | ptxv_ir::AtomOp::AddBf16
+                    | ptxv_ir::AtomOp::AddF16x2
+                    | ptxv_ir::AtomOp::AddF16,
                 ..
             } => Pend::ForceOpaque("float atomic result".into()),
             Op::St { .. } => {

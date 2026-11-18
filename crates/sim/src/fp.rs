@@ -1919,3 +1919,278 @@ mod mma_tests {
         assert_eq!(round_int_to_f32(-1, -140, true, 0), -(2f32.powi(-140)));
     }
 }
+
+/// The half adds (N-F16X2, N-BF16X2: `HADD2` / `HFMA2 a, 1, 1, b`, the f16x2 / bf16x2 atomic
+/// adds, `add16` of the bulk reductions) against exact references built another way, over
+/// near-exhaustive pairs (quick tier) and all 2^32 pairs (heavy tier).
+#[cfg(test)]
+mod half_add_tests {
+    use super::{add16, bf16_fma, f16_fma_rn};
+    use ptxv_ir::FFmt;
+
+    /// The f16 reference: the exact sum in units of 2^-24 (every finite f16 is an integer
+    /// multiple), rounded by searching the table of positive f16 values, a tie to the even code;
+    /// a magnitude rounding past 0x7bff (to 2^16) is infinity. Specials by IEEE rules with the
+    /// canonical NaN 0x7fff; an exact zero sum -0 only for (-0) + (-0).
+    struct F16Ref {
+        vals: Vec<i64>, // value of code 0..=0x7c00 in units of 2^-24 (0x7c00: 2^16)
+    }
+
+    impl F16Ref {
+        fn new() -> Self {
+            let vals = (0..=0x7c00u32)
+                .map(|c| {
+                    let (e, f) = ((c >> 10) as i64, (c & 0x3ff) as i64);
+                    if e == 0 {
+                        f
+                    } else {
+                        (1024 + f) << (e - 1)
+                    }
+                })
+                .collect();
+            F16Ref { vals }
+        }
+        fn units(&self, h: u16) -> i64 {
+            let v = self.vals[(h & 0x7fff) as usize];
+            if h & 0x8000 != 0 {
+                -v
+            } else {
+                v
+            }
+        }
+        fn add(&self, a: u16, b: u16) -> u16 {
+            let nan = |h: u16| h & 0x7c00 == 0x7c00 && h & 0x3ff != 0;
+            let inf = |h: u16| h & 0x7fff == 0x7c00;
+            if nan(a) || nan(b) || (inf(a) && inf(b) && a != b) {
+                return 0x7fff;
+            }
+            if inf(a) {
+                return a;
+            }
+            if inf(b) {
+                return b;
+            }
+            let s = self.units(a) + self.units(b);
+            if s == 0 {
+                return if a == 0x8000 && b == 0x8000 {
+                    0x8000
+                } else {
+                    0
+                };
+            }
+            let sign = if s < 0 { 0x8000 } else { 0 };
+            let m = s.abs();
+            // The largest code with value <= m (codes 0..=0x7c00 increase with value).
+            let lo = self.vals.partition_point(|&v| v <= m) - 1;
+            let r = if self.vals[lo] == m || lo == 0x7c00 {
+                lo
+            } else {
+                let (dl, dh) = (m - self.vals[lo], self.vals[lo + 1] - m);
+                if dl < dh || (dl == dh && lo % 2 == 0) {
+                    lo
+                } else {
+                    lo + 1
+                }
+            };
+            sign | r as u16
+        }
+    }
+
+    /// The bf16 reference: the f64 sum s and its exact error e (TwoSum: a + b = s + e
+    /// exactly; e = 0 when the f64 sum is exact), then s + e rounded to bf16 from the f64 bits:
+    /// |e| is at most half an f64 ulp of s, far below a bf16 ulp, so it only decides when s
+    /// lies exactly on a bf16 midpoint. Also returns whether the f64 sum was inexact.
+    fn bf16_ref(a: u16, b: u16) -> (u16, bool) {
+        let w = |h: u16| f32::from_bits((h as u32) << 16) as f64;
+        let nan = |h: u16| h & 0x7f80 == 0x7f80 && h & 0x7f != 0;
+        let inf = |h: u16| h & 0x7fff == 0x7f80;
+        if nan(a) || nan(b) || (inf(a) && inf(b) && a != b) {
+            return (0x7fff, false);
+        }
+        if inf(a) {
+            return (a, false);
+        }
+        if inf(b) {
+            return (b, false);
+        }
+        let (x, y) = (w(a), w(b));
+        let s = x + y;
+        let bb = s - x;
+        let e = (x - (s - bb)) + (y - bb);
+        if s == 0.0 {
+            // e = 0 too (an exact cancellation or two zeros).
+            return (
+                if a == 0x8000 && b == 0x8000 {
+                    0x8000
+                } else {
+                    0
+                },
+                false,
+            );
+        }
+        let sign: u16 = if s < 0.0 { 0x8000 } else { 0 };
+        let m = s.abs();
+        // The sign of e relative to s: +1 when it moves the sum away from zero.
+        let es = if e == 0.0 {
+            0
+        } else if (e < 0.0) == (s < 0.0) {
+            1
+        } else {
+            -1
+        };
+        // The bf16 quantum at m: 2^(max(floor(log2 m), -126) - 7).
+        let bits = m.to_bits();
+        let ex = ((bits >> 52) as i32) - 1023; // m is normal in f64 (>= 2^-133)
+        let q = ex.max(-126) - 7;
+        // m / 2^q = k + frac, exactly (a power-of-two scaling of an f64).
+        let scaled = m * 2f64.powi(-q);
+        let k = scaled.floor();
+        let frac = scaled - k;
+        let k = k as u64;
+        let up = frac > 0.5 || (frac == 0.5 && (es > 0 || (es == 0 && k % 2 == 1)));
+        let mut k = k + up as u64;
+        let mut q = q;
+        if k >= 256 {
+            k >>= 1;
+            q += 1;
+        }
+        if k < 128 {
+            return (sign | k as u16, e != 0.0); // subnormal (q = -133)
+        }
+        let be = q + 7 + 127;
+        if be >= 255 {
+            return (sign | 0x7f80, e != 0.0);
+        }
+        (sign | (be as u16) << 7 | (k as u16 & 0x7f), e != 0.0)
+    }
+
+    /// b codes for the quick tier: every exponent with fraction patterns 0, 1, 0x40 / 0x200
+    /// (the half point), all ones, and a stride through the rest; both signs.
+    fn sample(frac_bits: u32) -> Vec<u16> {
+        let mut v: Vec<u16> = (0..=0xffffu32)
+            .filter(|&c| {
+                let f = c & ((1 << frac_bits) - 1);
+                f == 0
+                    || f == 1
+                    || f == 1 << (frac_bits - 1)
+                    || f == (1 << frac_bits) - 1
+                    || f == (1 << frac_bits) - 2
+                    || c % 97 == 0
+            })
+            .map(|c| c as u16)
+            .collect();
+        v.dedup();
+        v
+    }
+
+    fn over_pairs(bs: &[u16], f: impl Fn(u16, u16) -> u64 + Sync) -> u64 {
+        let n = std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .min(16);
+        std::thread::scope(|sc| {
+            let f = &f;
+            let hs: Vec<_> = (0..n)
+                .map(|i| {
+                    sc.spawn(move || {
+                        let mut acc = 0u64;
+                        let mut a = i as u32;
+                        while a <= 0xffff {
+                            for &b in bs {
+                                acc += f(a as u16, b);
+                            }
+                            a += n as u32;
+                        }
+                        acc
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).sum()
+        })
+    }
+
+    fn check_f16(bs: &[u16]) {
+        let r = F16Ref::new();
+        let bad = over_pairs(bs, |a, b| {
+            let want = r.add(a, b);
+            let got = f16_fma_rn(a, 0x3c00, b);
+            let bulk = add16(a, b, FFmt::F16);
+            assert!(
+                got == want && bulk == want,
+                "f16 {a:#06x} + {b:#06x}: fma {got:#06x}, add16 {bulk:#06x}, reference {want:#06x}"
+            );
+            0
+        });
+        assert_eq!(bad, 0);
+    }
+
+    fn check_bf16(bs: &[u16]) -> u64 {
+        over_pairs(bs, |a, b| {
+            let (want, inexact) = bf16_ref(a, b);
+            let got = bf16_fma(a, 0x3f80, b);
+            let bulk = add16(a, b, FFmt::Bf16);
+            assert!(got == want && bulk == want, "bf16 {a:#06x} + {b:#06x}: fma {got:#06x}, add16 {bulk:#06x}, reference {want:#06x}");
+            inexact as u64
+        })
+    }
+
+    #[test]
+    fn reference_edges() {
+        let r = F16Ref::new();
+        // Ties both ways, overflow, subnormals, signed zeros, NaNs (probes/half_add classes).
+        for (a, b, want) in [
+            (0x3c00u16, 0x1000u16, 0x3c00u16), // 1 + 2^-11: tie, to even (down)
+            (0x3c01, 0x1000, 0x3c02),          // tie, to even (up)
+            (0x7bff, 0x4c00, 0x7c00),          // 65504 + 16 = 65520: tie, to inf
+            (0x7bff, 0x4bff, 0x7bff),          // just below the threshold
+            (0x03ff, 0x0001, 0x0400),          // subnormal sum to the smallest normal
+            (0x8400, 0x03ff, 0x8001),          // cancellation to a subnormal
+            (0x8000, 0x8000, 0x8000),
+            (0x8000, 0x0000, 0x0000),
+            (0x3c00, 0xbc00, 0x0000),
+            (0x7c01, 0x3c00, 0x7fff),
+            (0xfc03, 0x8000, 0x7fff),
+            (0x7c00, 0xfc00, 0x7fff),
+        ] {
+            assert_eq!(r.add(a, b), want, "{a:#06x} + {b:#06x}");
+            assert_eq!(f16_fma_rn(a, 0x3c00, b), want, "{a:#06x} + {b:#06x}");
+        }
+        for (a, b, want) in [
+            (0x3f80u16, 0x3b80u16, 0x3f80u16), // 1 + 2^-8: tie, to even (down)
+            (0x3f81, 0x3b80, 0x3f82),          // tie, to even (up)
+            (0x7f7f, 0x7a80, 0x7f7f),          // max + a quarter ulp
+            (0x7f7f, 0x7b00, 0x7f80),          // max + half an ulp: tie, to inf
+            (0x0001, 0x0001, 0x0002),
+            (0x007f, 0x0001, 0x0080),
+            (0x8000, 0x8000, 0x8000),
+            (0x8000, 0x0000, 0x0000),
+            (0x7f81, 0x8000, 0x7fff),
+            (0xff83, 0x3f80, 0x7fff),
+            // Exponents 260 apart: the f64 sum is inexact, the tiny addend changes nothing.
+            (0x7f00, 0x0001, 0x7f00),
+        ] {
+            assert_eq!(bf16_ref(a, b).0, want, "{a:#06x} + {b:#06x}");
+            assert_eq!(bf16_fma(a, 0x3f80, b), want, "{a:#06x} + {b:#06x}");
+        }
+        assert!(bf16_ref(0x7f00, 0x0001).1);
+    }
+
+    #[test]
+    fn f16_add_near_exhaustive() {
+        check_f16(&sample(10));
+    }
+
+    #[test]
+    fn bf16_add_near_exhaustive() {
+        // The f64 sum of two bf16 values is inexact on some pairs (exponents more than 45
+        // apart): there the reference still rounds the exact sum, and add16's f64 path agrees.
+        assert!(check_bf16(&sample(7)) > 0);
+    }
+
+    #[test]
+    #[ignore = "heavy: all 2^32 f16 and bf16 pairs; 120 s"]
+    fn half_add_exhaustive() {
+        let all: Vec<u16> = (0..=0xffffu32).map(|c| c as u16).collect();
+        check_f16(&all);
+        assert!(check_bf16(&all) > 0);
+    }
+}

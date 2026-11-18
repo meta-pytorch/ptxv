@@ -1,0 +1,7 @@
+variant,front,expected,basis
+good,ptx,clean,control: an 8-byte acquire of the 8-byte NIC word synchronizes with the fetch-add
+PART,ptx,race,PTX ISA 9.5 8.2.1 / 8.7 / 8.7.2: a 4-byte read of the NIC's 8-byte atomic word is not one location: a mixed-size data race
+PART_OTHERCTA,ptx,race,as PART from another CTA
+WORDPART,ptx,race,8.7 / 8.7.2 with S-NIC-WORD's 8-byte chunk: a 4-byte strong read of half of it is a mixed-size data race
+WORDFULL,ptx,clean,control: the chunk's own width is one location with it
+CQEPART,ptx,unmodeled,S-NIC-CQE publishes fields at bytes 56-59 / 60-61 / 62 / 63; a read spanning fields is not decided

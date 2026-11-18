@@ -1,0 +1,16 @@
+# case-dir variant front explorer env classes (run.sh compares each line's observed classes with
+# these; PTXV_THREADS=4 unless env sets it). unreduced: every reduction off, the reference.
+# ACQ SASS is race-free (LDS / STS strong, S-SMEM-STRONG), so the reductions must report every
+# class the unreduced search does.
+fixtures/e_peek_result      ACQ  sass unreduced -                          [nondeterministic,violation]
+fixtures/e_peek_result      ACQ  sass stateful  -                          [nondeterministic,violation]
+fixtures/e_peek_result      ACQ  sass stateful  PTXV_THREADS=1             [nondeterministic,violation]
+fixtures/e_peek_result      ACQ  sass stateful  PTXV_POR_SEED_WALKS=0      [nondeterministic,violation]
+fixtures/e_peek_result      ACQ  sass stateful  PTXV_POR_SEED_WALKS=1      [nondeterministic,violation]
+fixtures/e_peek_result      ACQ  sass stateful  PTXV_THREADS=1,PTXV_POR_SEED_WALKS=1 [nondeterministic,violation]
+fixtures/e_peek_result      ACQ  sass dpor      -                          [nondeterministic,violation]
+# LATER races (the cp.async copy into slot B against thread 32's read of it): the stateful
+# reductions are exact for race-free kernels only (E-DRF) and may lose the racy read's own
+# outcomes (its stale, undefined value: nondeterministic, violation). Pinned as observed.
+fixtures/e_cpasync_arrive_inflight LATER ptx unreduced -                   [nondeterministic,race,violation]
+fixtures/e_cpasync_arrive_inflight LATER ptx stateful  -                   [race]

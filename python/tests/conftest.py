@@ -70,3 +70,48 @@ def vendor_skip(*names: str) -> None:
             + ", ".join(missing)
             + " (python3 tools/regen_fixture.py --missing)"
         )
+
+
+
+SCOREBOARD_CONTRACT_SIGS = ("sb-hwq:", "sb-unmeasured:")
+
+
+def assert_clean_but_scoreboard_contracts(v) -> None:
+    """A complete verdict whose only findings, besides notes, are scoreboard queue contracts,
+    at the strict level and at the gb300 profile alike: `sb-hwq:` (a memory-queue order only
+    GB300's queue rules clear) or `sb-unmeasured:` (one no GB300 probe measured in this
+    window). E.g. torch's scan kernel: `STS [R2], R21` then, much later, `LDS R21` with no
+    wait. Which of the two such a hazard is, and whether the gb300 profile discharges it,
+    follows the measured windows of the scoreboard rules, so the tests do not pin it. A race,
+    a violation, a fault or any other contract fails."""
+
+    def check(level, classes, complete, findings):
+        assert set(classes) <= {"clean", "contract"}, (level, classes, findings)
+        assert complete, (level, findings)
+        bad = [
+            f
+            for f in findings
+            if f["kind"] != "note"
+            and not (
+                f["kind"] == "contract" and f["sig"].startswith(SCOREBOARD_CONTRACT_SIGS)
+            )
+        ]
+        assert not bad, (level, bad)
+
+    check(
+        "strict",
+        v.classes,
+        v.complete,
+        [{"kind": f.kind, "sig": f.sig, "msg": f.msg} for f in v.findings],
+    )
+    two = v.json["rows"][0].get("two_level") or {}
+    assert two.get("hw_profile") == "gb300", sorted(two)
+    check(
+        "gb300",
+        two.get("sass_classes") or [],
+        two.get("sass_complete"),
+        [
+            {"kind": f["kind"], "sig": f.get("sig", ""), "msg": f.get("msg", "")}
+            for f in two.get("sass_findings") or []
+        ],
+    )

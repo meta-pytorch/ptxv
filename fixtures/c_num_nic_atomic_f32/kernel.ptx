@@ -1,0 +1,275 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Fixture for MISS 257 (N-NUM-TRACK, S-NIC-ATOMIC): the words of NIC atomics' 8-byte targets in
+// `ptxv num`. One GPU, a loopback IBGDA queue pair (mlx5 WQEs as probes/nic_num_shadow's loop/
+// builds them). Thread 0 writes dst's 8-byte words W0..W3 as (rn(0.1f + 0.2f), rn(1 + 1e-8f)),
+// roundings of constants; W4 as (2.0f, 3.0f), exact constants; W5 as four bf16 elements, those
+// roundings rounded again (cvt.rn.bf16.f32, 16-bit stores); W6, W7 as (rn(x[0] + y[0]), rn(x[1] + y[1])), the
+// same roundings of input data. It posts one NIC atomic per word (slots 0..7: W6, W7, W5 without
+// a CQE, then W0..W4 with one each), releases, rings the doorbell, polls the last CQE and copies
+// dst and the fetched values (sink) to out and W5's bf16 elements to outh.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry nic_atomics(
+    .param .u64 x,
+    .param .u64 y,
+    .param .u64 dst,
+    .param .u64 sink,
+    .param .u64 sq,
+    .param .u64 cq,
+    .param .u64 uar,
+    .param .u64 dbr,
+    .param .u64 out,
+    .param .u64 outh
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<48>;
+    .reg .f32   %f<8>;
+    .reg .b16   %h<4>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    ld.param.u64    %rd1, [dst];
+    ld.param.u64    %rd2, [sink];
+    ld.param.u64    %rd3, [sq];
+    ld.param.u64    %rd4, [cq];
+    ld.param.u64    %rd5, [uar];
+    ld.param.u64    %rd6, [dbr];
+    ld.param.u64    %rd7, [x];
+    ld.param.u64    %rd8, [y];
+    add.rn.f32      %f0, 0f3DCCCCCD, 0f3E4CCCCD;                    // rn(0.1f + 0.2f)
+    add.rn.f32      %f1, 0f3F800000, 0f322BCC77;                    // rn(1 + 1e-8f) = 1
+    st.global.v4.f32 [%rd1], {%f0, %f1, %f0, %f1};                  // W0, W1
+    st.global.v4.f32 [%rd1+16], {%f0, %f1, %f0, %f1};               // W2, W3
+    mov.b32         %r20, 0x40000000;                               // 2.0f
+    mov.b32         %r21, 0x40400000;                               // 3.0f
+    st.global.v2.b32 [%rd1+32], {%r20, %r21};                       // W4
+    cvt.rn.bf16.f32 %h0, %f0;                                       // bf16(rn(0.1f + 0.2f))
+    cvt.rn.bf16.f32 %h1, %f1;                                       // bf16(rn(1 + 1e-8f)) = 1
+    st.global.b16   [%rd1+40], %h0;                                 // W5: four bf16 elements
+    st.global.b16   [%rd1+42], %h1;
+    st.global.b16   [%rd1+44], %h1;
+    st.global.b16   [%rd1+46], %h0;
+    ld.global.v2.f32 {%f2, %f3}, [%rd7];
+    ld.global.v2.f32 {%f4, %f5}, [%rd8];
+    add.rn.f32      %f2, %f2, %f4;                                  // rn(x[0] + y[0])
+    add.rn.f32      %f3, %f3, %f5;                                  // rn(x[1] + y[1])
+    st.global.v4.f32 [%rd1+48], {%f2, %f3, %f2, %f3};               // W6, W7
+    // slot 0, W6: a fetch-add of 0, no CQE
+    add.u64         %rd20, %rd1, 48;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd21, {%r9, %r8};                              // BE(dst + 48)
+    add.u64         %rd20, %rd2, 48;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd22, {%r9, %r8};                              // BE(sink + 48)
+    mov.u64         %rd23, 0x0442000012000000;                    // opcode 0x12, WQE 0, QP 0x42, ds 4
+    mov.u64         %rd24, 0x0000000000000000;                    // no CQE
+    st.global.v2.b64 [%rd3+0], {%rd23, %rd24};
+    mov.u64         %rd25, 0x0000000000020000;                    // rkey 0x200 (dst)
+    st.global.v2.b64 [%rd3+16], {%rd21, %rd25};
+    mov.u64         %rd26, 0x0000000000000000;                    // swap / add (big-endian)
+    mov.u64         %rd27, 0x0000000000000000;                    // compare (big-endian)
+    st.global.v2.b64 [%rd3+32], {%rd26, %rd27};
+    mov.u64         %rd28, 0x0101000008000000;                    // 8 bytes, lkey 0x101 (sink)
+    st.global.v2.b64 [%rd3+48], {%rd28, %rd22};
+    // slot 1, W7: a fetch-add of 1, no CQE
+    add.u64         %rd20, %rd1, 56;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd21, {%r9, %r8};                              // BE(dst + 56)
+    add.u64         %rd20, %rd2, 56;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd22, {%r9, %r8};                              // BE(sink + 56)
+    mov.u64         %rd23, 0x0442000012010000;                    // opcode 0x12, WQE 1, QP 0x42, ds 4
+    mov.u64         %rd24, 0x0000000000000000;                    // no CQE
+    st.global.v2.b64 [%rd3+64], {%rd23, %rd24};
+    mov.u64         %rd25, 0x0000000000020000;                    // rkey 0x200 (dst)
+    st.global.v2.b64 [%rd3+80], {%rd21, %rd25};
+    mov.u64         %rd26, 0x0100000000000000;                    // swap / add (big-endian)
+    mov.u64         %rd27, 0x0000000000000000;                    // compare (big-endian)
+    st.global.v2.b64 [%rd3+96], {%rd26, %rd27};
+    mov.u64         %rd28, 0x0101000008000000;                    // 8 bytes, lkey 0x101 (sink)
+    st.global.v2.b64 [%rd3+112], {%rd28, %rd22};
+    // slot 2, W5: a fetch-add of 0 (bf16 elements), no CQE
+    add.u64         %rd20, %rd1, 40;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd21, {%r9, %r8};                              // BE(dst + 40)
+    add.u64         %rd20, %rd2, 40;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd22, {%r9, %r8};                              // BE(sink + 40)
+    mov.u64         %rd23, 0x0442000012020000;                    // opcode 0x12, WQE 2, QP 0x42, ds 4
+    mov.u64         %rd24, 0x0000000000000000;                    // no CQE
+    st.global.v2.b64 [%rd3+128], {%rd23, %rd24};
+    mov.u64         %rd25, 0x0000000000020000;                    // rkey 0x200 (dst)
+    st.global.v2.b64 [%rd3+144], {%rd21, %rd25};
+    mov.u64         %rd26, 0x0000000000000000;                    // swap / add (big-endian)
+    mov.u64         %rd27, 0x0000000000000000;                    // compare (big-endian)
+    st.global.v2.b64 [%rd3+160], {%rd26, %rd27};
+    mov.u64         %rd28, 0x0101000008000000;                    // 8 bytes, lkey 0x101 (sink)
+    st.global.v2.b64 [%rd3+176], {%rd28, %rd22};
+    // slot 3, W0: a compare-and-swap that fails (compare 0xdeadbeefdeadbeef)
+    add.u64         %rd20, %rd1, 0;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd21, {%r9, %r8};                              // BE(dst + 0)
+    add.u64         %rd20, %rd2, 0;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd22, {%r9, %r8};                              // BE(sink + 0)
+    mov.u64         %rd23, 0x0442000011030000;                    // opcode 0x11, WQE 3, QP 0x42, ds 4
+    mov.u64         %rd24, 0x0000000008000000;                    // CQ update
+    st.global.v2.b64 [%rd3+192], {%rd23, %rd24};
+    mov.u64         %rd25, 0x0000000000020000;                    // rkey 0x200 (dst)
+    st.global.v2.b64 [%rd3+208], {%rd21, %rd25};
+    mov.u64         %rd26, 0x3412000000000000;                    // swap / add (big-endian)
+    mov.u64         %rd27, 0xefbeaddeefbeadde;                    // compare (big-endian)
+    st.global.v2.b64 [%rd3+224], {%rd26, %rd27};
+    mov.u64         %rd28, 0x0101000008000000;                    // 8 bytes, lkey 0x101 (sink)
+    st.global.v2.b64 [%rd3+240], {%rd28, %rd22};
+    // slot 4, W1: a fetch-add of 0
+    add.u64         %rd20, %rd1, 8;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd21, {%r9, %r8};                              // BE(dst + 8)
+    add.u64         %rd20, %rd2, 8;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd22, {%r9, %r8};                              // BE(sink + 8)
+    mov.u64         %rd23, 0x0442000012040000;                    // opcode 0x12, WQE 4, QP 0x42, ds 4
+    mov.u64         %rd24, 0x0000000008000000;                    // CQ update
+    st.global.v2.b64 [%rd3+256], {%rd23, %rd24};
+    mov.u64         %rd25, 0x0000000000020000;                    // rkey 0x200 (dst)
+    st.global.v2.b64 [%rd3+272], {%rd21, %rd25};
+    mov.u64         %rd26, 0x0000000000000000;                    // swap / add (big-endian)
+    mov.u64         %rd27, 0x0000000000000000;                    // compare (big-endian)
+    st.global.v2.b64 [%rd3+288], {%rd26, %rd27};
+    mov.u64         %rd28, 0x0101000008000000;                    // 8 bytes, lkey 0x101 (sink)
+    st.global.v2.b64 [%rd3+304], {%rd28, %rd22};
+    // slot 5, W2: a fetch-add of 1
+    add.u64         %rd20, %rd1, 16;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd21, {%r9, %r8};                              // BE(dst + 16)
+    add.u64         %rd20, %rd2, 16;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd22, {%r9, %r8};                              // BE(sink + 16)
+    mov.u64         %rd23, 0x0442000012050000;                    // opcode 0x12, WQE 5, QP 0x42, ds 4
+    mov.u64         %rd24, 0x0000000008000000;                    // CQ update
+    st.global.v2.b64 [%rd3+320], {%rd23, %rd24};
+    mov.u64         %rd25, 0x0000000000020000;                    // rkey 0x200 (dst)
+    st.global.v2.b64 [%rd3+336], {%rd21, %rd25};
+    mov.u64         %rd26, 0x0100000000000000;                    // swap / add (big-endian)
+    mov.u64         %rd27, 0x0000000000000000;                    // compare (big-endian)
+    st.global.v2.b64 [%rd3+352], {%rd26, %rd27};
+    mov.u64         %rd28, 0x0101000008000000;                    // 8 bytes, lkey 0x101 (sink)
+    st.global.v2.b64 [%rd3+368], {%rd28, %rd22};
+    // slot 6, W3: a fetch-add of 2^32
+    add.u64         %rd20, %rd1, 24;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd21, {%r9, %r8};                              // BE(dst + 24)
+    add.u64         %rd20, %rd2, 24;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd22, {%r9, %r8};                              // BE(sink + 24)
+    mov.u64         %rd23, 0x0442000012060000;                    // opcode 0x12, WQE 6, QP 0x42, ds 4
+    mov.u64         %rd24, 0x0000000008000000;                    // CQ update
+    st.global.v2.b64 [%rd3+384], {%rd23, %rd24};
+    mov.u64         %rd25, 0x0000000000020000;                    // rkey 0x200 (dst)
+    st.global.v2.b64 [%rd3+400], {%rd21, %rd25};
+    mov.u64         %rd26, 0x0000000001000000;                    // swap / add (big-endian)
+    mov.u64         %rd27, 0x0000000000000000;                    // compare (big-endian)
+    st.global.v2.b64 [%rd3+416], {%rd26, %rd27};
+    mov.u64         %rd28, 0x0101000008000000;                    // 8 bytes, lkey 0x101 (sink)
+    st.global.v2.b64 [%rd3+432], {%rd28, %rd22};
+    // slot 7, W4: a compare-and-swap that swaps (compare 3.0f:2.0f, swap 5.0f:7.0f)
+    add.u64         %rd20, %rd1, 32;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd21, {%r9, %r8};                              // BE(dst + 32)
+    add.u64         %rd20, %rd2, 32;
+    mov.b64         {%r6, %r7}, %rd20;
+    prmt.b32        %r8, %r6, 0, 0x0123;
+    prmt.b32        %r9, %r7, 0, 0x0123;
+    mov.b64         %rd22, {%r9, %r8};                              // BE(sink + 32)
+    mov.u64         %rd23, 0x0442000011070000;                    // opcode 0x11, WQE 7, QP 0x42, ds 4
+    mov.u64         %rd24, 0x0000000008000000;                    // CQ update
+    st.global.v2.b64 [%rd3+448], {%rd23, %rd24};
+    mov.u64         %rd25, 0x0000000000020000;                    // rkey 0x200 (dst)
+    st.global.v2.b64 [%rd3+464], {%rd21, %rd25};
+    mov.u64         %rd26, 0x0000e0400000a040;                    // swap / add (big-endian)
+    mov.u64         %rd27, 0x0000004000004040;                    // compare (big-endian)
+    st.global.v2.b64 [%rd3+480], {%rd26, %rd27};
+    mov.u64         %rd28, 0x0101000008000000;                    // 8 bytes, lkey 0x101 (sink)
+    st.global.v2.b64 [%rd3+496], {%rd28, %rd22};
+    fence.release.gpu;
+    mov.u64         %rd39, 0x0042000000080000;                      // doorbell: 8 WQEs, QP 0x42
+    st.mmio.relaxed.sys.global.b64 [%rd5], %rd39;
+    mov.u32         %r3, 0x08000000;                                // doorbell record (big-endian)
+    st.relaxed.sys.global.b32 [%rd6], %r3;
+    st.mmio.relaxed.sys.global.b64 [%rd5], %rd39;
+CQPOLL:
+    ld.relaxed.sys.global.u8 %r4, [%rd4+319];                       // owner byte of CQE 4
+    and.b32         %r5, %r4, 1;
+    setp.ne.u32     %p2, %r5, 0;
+    @%p2 bra        CQPOLL;
+    fence.acquire.sys;
+    ld.param.u64    %rd42, [out];
+    ld.param.u64    %rd43, [outh];
+    ld.global.b16   %h2, [%rd1+40];                                 // outh = W5's bf16 elements
+    st.global.b16   [%rd43], %h2;
+    ld.global.b16   %h2, [%rd1+42];
+    st.global.b16   [%rd43+2], %h2;
+    ld.global.b16   %h2, [%rd1+44];
+    st.global.b16   [%rd43+4], %h2;
+    ld.global.b16   %h2, [%rd1+46];
+    st.global.b16   [%rd43+6], %h2;
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd1+0];
+    st.global.v4.u32 [%rd42+0], {%r10, %r11, %r12, %r13};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd1+16];
+    st.global.v4.u32 [%rd42+16], {%r10, %r11, %r12, %r13};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd1+32];
+    st.global.v4.u32 [%rd42+32], {%r10, %r11, %r12, %r13};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd1+48];
+    st.global.v4.u32 [%rd42+48], {%r10, %r11, %r12, %r13};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd2+0];
+    st.global.v4.u32 [%rd42+64], {%r10, %r11, %r12, %r13};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd2+16];
+    st.global.v4.u32 [%rd42+80], {%r10, %r11, %r12, %r13};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd2+32];
+    st.global.v4.u32 [%rd42+96], {%r10, %r11, %r12, %r13};
+    ld.global.v4.u32 {%r10, %r11, %r12, %r13}, [%rd2+48];
+    st.global.v4.u32 [%rd42+112], {%r10, %r11, %r12, %r13};
+DONE:
+    ret;
+}

@@ -1,0 +1,29 @@
+# run.sh, 2026-11-12.
+# agentSC2 ebfacb16:
+good  ptx  stateful [race]                             dpor [race]                             certify [race]                             nonhead missing
+good  sass stateful [race]                             dpor [nondeterministic,race,violation]  certify [race]                             nonhead missing
+NOST  ptx  stateful [violation]                        dpor [violation]                        certify [violation]                        nonhead missing
+NOST  sass stateful [violation]                        dpor [violation]                        certify [violation]                        nonhead missing
+rc=1
+
+# agentSC2 53ef07ac:
+good  ptx  stateful [race]                             dpor [race]                             certify [race]                             nonhead missing
+good  sass stateful [race]                             dpor [nondeterministic,race,violation]  certify [race]                             nonhead missing
+NOST  ptx  stateful [violation]                        dpor [violation]                        certify [violation]                        nonhead missing
+NOST  sass stateful [violation]                        dpor [violation]                        certify [violation]                        nonhead missing
+rc=1
+
+# agentSC2 62e6a560:
+good  ptx  stateful [race]                             dpor [race]                             certify [race]                             nonhead 0
+good  sass stateful [race]                             dpor [nondeterministic,race,violation]  certify [race]                             nonhead 0
+NOST  ptx  stateful [violation]                        dpor [violation]                        certify [violation]                        nonhead 0
+NOST  sass stateful [violation]                        dpor [violation]                        certify [violation]                        nonhead 0
+rc=0
+
+# With a lane's drain landing only its own part of a coalesced operation (the commit after this one's):
+good  ptx  stateful [race]                             dpor [race]                             certify [race]                             nonhead 0
+good  sass stateful [race]                             dpor [nondeterministic,race,violation]  certify [race]                             nonhead 0
+NOST  ptx  stateful [violation]                        dpor [violation]                        certify [violation]                        nonhead 0
+NOST  sass stateful [violation]                        dpor [violation]                        certify [violation]                        nonhead 0
+rc=0
+

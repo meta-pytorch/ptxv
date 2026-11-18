@@ -40,9 +40,13 @@ fn audited_set_is_sorted_and_refuses_the_rest() {
     // 32-byte accesses (probes/ldst256).
     assert!(ptxv_sass::lower_text("STG.E.ENL2.256 desc[UR46][R22.64], R24, R28", None).is_ok());
     assert!(ptxv_sass::lower_text("LDG.E.ENL2.256 R12, R4, desc[UR4][R2.64]", None).is_ok());
-    // f64 "less or equal" / "less than or unordered" with each combiner (probes/dsetp_ltu_le)
-    // and the unordered f32 compare as 1.0f / 0 (probes/fset_nan).
+    // f64 "less or equal" / "less than or unordered" with each combiner (probes/dsetp_ltu_le),
+    // the unordered f32 compare as 1.0f / 0 (probes/fset_nan) and signed sub-word shared
+    // loads (fb/probes/lds_signed, internal tree).
     for l in [
+        "LDS.S8 R4, [R12]",
+        "LDS.S8 R8, [R13+UR4]",
+        "LDS.S16 R10, [R6]",
         "DSETP.LTU.OR P0, PT, R44, UR4, P0",
         "DSETP.LE.AND P0, PT, R26, 1, PT",
         "DSETP.LE.XOR P6, PT, -|R4|, UR6, !P1",

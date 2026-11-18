@@ -1,0 +1,80 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// probes/half_add/controls: positive controls for probes/half_add on the same inputs (GB300
+// only; check.py). Thread g loads (a, b) = inh[g], (c, e) = inb[g] and stores out[j][g]:
+//   j = 0: add.rn.f16x2 a, b      (HFMA2 a, 1, 1, b: the reference, = probes/half_add j = 0)
+//   j = 1: add.ftz.f16x2 a, b     (HFMA2.FTZ: subnormal inputs and results flushed)
+//   j = 2: cvt.rz.f16x2.f32 of add.rz.f32 of the widened lanes of a, b (an RZ f16 add: the
+//          f32 RZ sum truncated again toward zero is the RZ rounding of the exact sum)
+//   j = 3: add.rn.bf16x2 c, e     (the reference, = probes/half_add j = 3)
+//   j = 4: cvt.rz.bf16x2.f32 of add.rz.f32 of the widened lanes of c, e (an RZ bf16 add)
+//   j = 5: cvt.rn.bf16x2.f32 of add.rn.ftz.f32 of the widened lanes of c, e (a bf16 add with
+//          subnormal inputs and results flushed: bf16 subnormals are f32 subnormals)
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry half_add_ctl(
+    .param .u64 pinh,
+    .param .u64 pinb,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<32>;
+    .reg .b16   %h<16>;
+    .reg .f32   %f<24>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pinh];
+    ld.param.u64    %rd2, [pinb];
+    ld.param.u64    %rd4, [pout];
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd5, %r3, 8;
+    add.s64         %rd6, %rd1, %rd5;
+    add.s64         %rd7, %rd2, %rd5;
+    ld.global.u32   %r4, [%rd6];
+    ld.global.u32   %r5, [%rd6+4];
+    ld.global.u32   %r6, [%rd7];
+    ld.global.u32   %r7, [%rd7+4];
+    mul.wide.u32    %rd8, %r3, 4;
+    add.s64         %rd9, %rd4, %rd8;
+    mov.b32         {%h1, %h2}, %r4;
+    mov.b32         {%h3, %h4}, %r5;
+    mov.b32         {%h5, %h6}, %r6;
+    mov.b32         {%h7, %h8}, %r7;
+
+    add.rn.f16x2    %r10, %r4, %r5;
+    add.ftz.f16x2   %r11, %r4, %r5;
+    cvt.f32.f16     %f1, %h1;
+    cvt.f32.f16     %f2, %h2;
+    cvt.f32.f16     %f3, %h3;
+    cvt.f32.f16     %f4, %h4;
+    add.rz.f32      %f5, %f1, %f3;
+    add.rz.f32      %f6, %f2, %f4;
+    cvt.rz.f16x2.f32 %r12, %f6, %f5;
+    add.rn.bf16x2   %r13, %r6, %r7;
+    cvt.f32.bf16    %f7, %h5;
+    cvt.f32.bf16    %f8, %h6;
+    cvt.f32.bf16    %f9, %h7;
+    cvt.f32.bf16    %f10, %h8;
+    add.rz.f32      %f11, %f7, %f9;
+    add.rz.f32      %f12, %f8, %f10;
+    cvt.rz.bf16x2.f32 %r14, %f12, %f11;
+    add.rn.ftz.f32  %f13, %f7, %f9;
+    add.rn.ftz.f32  %f14, %f8, %f10;
+    cvt.rn.bf16x2.f32 %r15, %f14, %f13;
+
+    st.global.u32   [%rd9], %r10;
+    st.global.u32   [%rd9+16384], %r11;
+    st.global.u32   [%rd9+32768], %r12;
+    st.global.u32   [%rd9+49152], %r13;
+    st.global.u32   [%rd9+65536], %r14;
+    st.global.u32   [%rd9+81920], %r15;
+    ret;
+}

@@ -1,0 +1,69 @@
+name = "e_cpasync_arrive_inflight"
+description = """
+E-CPASYNC-MBAR: a cp.async.mbarrier.arrive's arrive-on is ordered after all of the thread's prior
+cp.async operations (PTX ISA 8.9.1.1), those still in flight at its issue included. Thread 0
+tracks a copy into slot A with an arrive on mbA and a copy into slot B with an arrive on mbB; a
+reader that waits on mbB only reads slot A. Until an arrive took the copies of its thread's
+earlier arrive operations still in flight, good raced when the second arrive was issued before
+the first completed (MISS 118). See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_arrive_inflight"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u8"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "thread 32 waits on mbB only and reads slot A, copied before the arrive on mbA"
+expect = ["clean"]
+
+[[variants]]
+id = "LATER"
+summary = "the copy into B is retired by wait_group; thread 32 waits on mbA and reads slot B, copied after mbA's arrive"
+marker = "@ARRB"
+find = "cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r6];"
+replace = "cp.async.commit_group;\n    cp.async.wait_group 0;"
+expect = ["race"]
+
+[[variants.edits]]
+marker = "@WAITB"
+find = "[%r6], 0;"
+replace = "[%r5], 0;"
+
+[[variants.edits]]
+marker = "@READ"
+find = "[%r2];"
+replace = "[%r3];"
+
+[[variants]]
+id = "WAITED"
+summary = "the copy into A is retired by wait_group before the copy into B; thread 0 waits on mbB"
+marker = "@ARRA"
+find = "cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r5];"
+replace = "cp.async.commit_group;\n    cp.async.wait_group 0;"
+expect = ["clean"]
+
+[[variants.edits]]
+marker = "@WAITA"
+find = "[%r5], 0;"
+replace = "[%r6], 0;"

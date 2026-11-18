@@ -38,8 +38,10 @@ use crate::machine_recorder::RecordContext;
 /// (`SPACE_MBAR_OVER`, `rec_late`: updates read the key of the phase they land in; an arrival
 /// of more than the pending arrivals at once writes it, and an update that lands after a
 /// completion its actor does not know of writes the key of the completed phase), 26 NIC
-/// queues (`SPACE_NIC_QUEUE`, id = queue). Named spaces must differ from each other and from
-/// the literal ones (test `footprint_spaces_are_disjoint`).
+/// queues (`SPACE_NIC_QUEUE`, id = queue), 27 remote-operation pipes (`SPACE_REMOTE_PIPE`:
+/// landing a remote op, as its own step or drained, writes its pipe's key; issuing one into a
+/// pipe writes the pipe's issue key, DPOR only). Named spaces must differ from each other and
+/// from the literal ones (test `footprint_spaces_are_disjoint`).
 #[derive(Clone, Debug, Default)]
 pub struct Footprint {
     /// Record synchronization only (the stateful explorer's reduction): drop plain memory and
@@ -54,7 +56,21 @@ pub struct Footprint {
     /// transition that acquires a key happens after every earlier transition that released
     /// it (DPOR happens-before), without making the releasers mutually dependent.
     pub rel: Vec<u64>,
+    /// Keys acquired by a blocking wait (a spin try_wait, `wait_group`, `bar.sync`, the
+    /// cluster barrier): the transition is not enabled just before an update that released
+    /// one, so DPOR's race check skips those releasing transitions (and their history unless
+    /// the key is in `acq_aba`: MISS 230, dpor.rs header).
     pub acq: Vec<u64>,
+    /// The keys of `acq` whose generation can come round again before the wait passes: an
+    /// mbarrier phase after the first, which a parity poll also passes two phases earlier
+    /// (parity ABA). DPOR skips only the transitions that released them; for every other key
+    /// it also orders the releasers' history before the wait (MISS 230, dpor.rs header).
+    pub acq_aba: Vec<u64>,
+    /// Keys acquired by a non-blocking test that observed their release (a try_wait / test_wait
+    /// whose false result the kernel uses, `Machine::peeks`): ordered after the releaser in
+    /// the trace taken, like `acq`, but enabled before it too, with the other outcome, so
+    /// DPOR still reverses the two (MISS 221).
+    pub obs: Vec<u64>,
 }
 
 impl Footprint {
@@ -67,7 +83,12 @@ impl Footprint {
     }
     /// Sort and merge ranges.
     pub fn normalize(&mut self) {
-        for v in [&mut self.rel, &mut self.acq] {
+        for v in [
+            &mut self.rel,
+            &mut self.acq,
+            &mut self.obs,
+            &mut self.acq_aba,
+        ] {
             v.sort_unstable();
             v.dedup();
         }
@@ -91,6 +112,8 @@ impl Footprint {
         self.w.extend_from_slice(&o.w);
         self.rel.extend_from_slice(&o.rel);
         self.acq.extend_from_slice(&o.acq);
+        self.obs.extend_from_slice(&o.obs);
+        self.acq_aba.extend_from_slice(&o.acq_aba);
         self.all |= o.all;
         self.normalize();
     }
@@ -101,9 +124,25 @@ impl Footprint {
     pub fn is_empty(&self) -> bool {
         !self.all && self.r.is_empty() && self.w.is_empty()
     }
-    /// Does `self` acquire something `o` released?
+    /// Does `self` acquire something `o` released (blocking or by an observing test)?
     pub fn acquires_from(&self, o: &Footprint) -> bool {
+        !o.rel.is_empty()
+            && (self.acq.iter().any(|k| o.rel.contains(k))
+                || self.obs.iter().any(|k| o.rel.contains(k)))
+    }
+    /// Does `self` wait (blocking) for something `o` released? Then `self` cannot run before
+    /// `o` (not co-enabled), unlike a test that observed `o`'s release (`obs`).
+    pub fn waits_on(&self, o: &Footprint) -> bool {
         !self.acq.is_empty() && !o.rel.is_empty() && self.acq.iter().any(|k| o.rel.contains(k))
+    }
+    /// `waits_on` for a key whose generation cannot come round again (not `acq_aba`).
+    pub fn waits_on_once(&self, o: &Footprint) -> bool {
+        !self.acq.is_empty()
+            && !o.rel.is_empty()
+            && self
+                .acq
+                .iter()
+                .any(|k| o.rel.contains(k) && !self.acq_aba.contains(k))
     }
 }
 

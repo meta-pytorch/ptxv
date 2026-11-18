@@ -1,0 +1,61 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// DPOR repro (MISS 231, from a review repro): two producers fill one mbarrier phase, and an
+// async completion's tx decrement does not commute with the other producer's expect_tx.
+// Thread 0 arrives with expect_tx 16 and copies in[0..4) into ta (TMA: its landing is a
+// complete_tx of 16; variant CLC: a clusterlaunchcontrol.try_cancel whose 16-byte response
+// lands in ta, also a complete_tx of 16). Thread 32 runs expect_tx 16 (no arrival) and copies
+// in[4..8) into tb. Thread 64 waits for phase 0 and reads tb. If thread 0's completion lands
+// before thread 32's expect_tx, phase 0 completes with tb still in flight: out = 0 or in[4],
+// a race (and tb's copy can land after the CTA exits).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry dpor_tx_commute_async(.param .u64 in_p, .param .u64 out_p)
+.maxntid 96, 1, 1
+{
+    .shared .align 16 .b8 ta[16];
+    .shared .align 16 .b8 tb[16];
+    .shared .align 8 .b64 m1;
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    add.u64 %rd3, %rd1, 16;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, ta;
+    mov.u32 %r3, tb;
+    mov.u32 %r4, m1;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    st.shared.u32 [%r3], 0;
+    fence.proxy.async.shared::cta;
+INIT_DONE:
+    bar.sync 0;
+    setp.eq.u32 %p2, %r1, 32;
+    @%p2 bra T1;
+    setp.eq.u32 %p3, %r1, 64;
+    @%p3 bra W;
+    @%p1 bra END;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r2], [%rd1], 16, [%r4];   // @T0
+    bra END;
+T1:
+    mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%r4], 16;
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r3], [%rd3], 16, [%r4];
+    bra END;
+W:
+    mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %p5, [%r4], 0;
+    @!%p5 bra W;
+    ld.shared.u32 %r15, [%r3];
+    st.global.u32 [%rd2], %r15;
+END:
+    ret;
+}

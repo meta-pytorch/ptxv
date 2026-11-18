@@ -1,0 +1,99 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CPASYNC-MBAR, what a later arrive-on is ordered after: PTX ISA 9.5 8.9.1.1, "The
+// asynchronous mbarrier arrive-on operation performed by a cp.async.mbarrier.arrive instruction
+// is ordered with respect to the memory operations performed by all prior cp.async operations
+// initiated by the same thread, but not to those of any other instruction issued by the thread."
+// An earlier cp.async.mbarrier.arrive's arrive-on is not such a memory operation. Thread 96
+// copies in[0..15] into slot[0..15] and arrives on x with cp.async.mbarrier.arrive.noinc
+// (count 1), waits on x's phase 0 itself (good) or on e (NOWAIT: thread 0's arrive), copies
+// in[16..31] into slot[16..31] and arrives on y the same way. Thread 32 waits on y, stores 7
+// into w (1 before) and arrives on x; thread 64 waits on y, then on x's phase 1, and reads w
+// into out[0]. Thread 96 is in the last warp, which runs first after bar.sync in the
+// deterministic run, so that run lands the first copy before the second arrive-on is issued
+// (the release of the prior copies then covers it).
+//   good:   the second arrive-on is ordered after thread 96's wait (an earlier instruction),
+//           and so after the first arrive-on: thread 32's arrive lands in x's phase 1, which
+//           thread 64 observes: out = 7, clean.
+//   NOWAIT: the second arrive-on is ordered after the first copy, not after the first
+//           arrive-on: thread 32's arrive can complete x's phase 0, and thread 64's wait can
+//           pass on the first arrive-on (phase 1) or before x's phase 0 completes: it reads w
+//           unordered with thread 32's store, and no thread is ordered after the first
+//           arrive-on before the exit.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cpasync_arrive_order(.param .u64 out_p, .param .u64 in_p)
+{
+    .shared .align 16 .b8 slot[32];
+    .shared .align 4 .b32 w;
+    .shared .align 8 .b64 x;
+    .shared .align 8 .b64 y;
+    .shared .align 8 .b64 e;
+    .reg .b32 %r<20>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, slot;
+    mov.u32 %r3, w;
+    mov.u32 %r5, x;
+    mov.u32 %r6, y;
+    mov.u32 %r7, e;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    mbarrier.init.shared::cta.b64 [%r6], 1;
+    mbarrier.init.shared::cta.b64 [%r7], 1;
+    mov.u32 %r10, 1;
+    st.shared.u32 [%r3], %r10;
+INIT_DONE:
+    bar.sync 0;
+    setp.eq.u32 %p0, %r1, 96;
+    setp.eq.u32 %p1, %r1, 32;
+    setp.eq.u32 %p3, %r1, 64;
+    setp.eq.u32 %p5, %r1, 0;
+    @%p1 bra ARR;
+    @%p3 bra READ;
+    @%p5 bra GATE;
+    @!%p0 bra DONE;
+    cp.async.cg.shared.global [%r2], [%rd2], 16;
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r5];
+PW:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r5], 0;     // @PW
+    @!%p4 bra PW;
+    add.u32 %r8, %r2, 16;
+    add.u64 %rd3, %rd2, 16;
+    cp.async.cg.shared.global [%r8], [%rd3], 16;
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r6];
+    bra DONE;
+ARR:
+YA:
+    mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r6], 0;
+    @!%p6 bra YA;
+    mov.u32 %r11, 7;
+    st.shared.u32 [%r3], %r11;
+    mbarrier.arrive.shared::cta.b64 %rd9, [%r5];
+    bra DONE;
+READ:
+YB:
+    mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r6], 0;
+    @!%p7 bra YB;
+XB:
+    mbarrier.try_wait.parity.shared::cta.b64 %p7, [%r5], 1;
+    @!%p7 bra XB;
+    ld.shared.u32 %r12, [%r3];
+    st.global.u32 [%rd1], %r12;
+    bra DONE;
+GATE:
+    mbarrier.arrive.shared::cta.b64 %rd10, [%r7];
+DONE:
+    ret;
+}

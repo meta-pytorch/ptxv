@@ -1,0 +1,51 @@
+name = "e_clock_lanes"
+description = """
+E-CLOCK (MISS 76): lanes branch on the parity of %clock + %tid.x. On GB300 the converged warp
+reads one clock value and splits in two halves: lanes 2k and 2k+1 store the same shared slot
+(from the two sides) and the other slot of the pair keeps 0. GB300 (2026-11-11, 2 x 200 runs,
+--scrub): 1,0,1,0,... and 0,1,0,1,... (113 / 87 and 109 / 91 runs), never all 1. UNI (the parity
+of %clock alone): all 1 in 200 / 200. A clock choice fixed one side for every lane of the
+split, so the model ran only the all-taken and all-fall-through outcomes: out all 1, clean. A
+clock choice whose predicate may differ between the lanes of a split of several lanes is
+unmodeled now (clock.rs `lane_varying_choices`). The PTX front reads %clock per thread (the
+ISA gives each thread its own read), so UNI is unmodeled there too; the SASS front reads one
+value per warp instruction (E-LOCKSTEP): UNI clean."""
+ptx = "kernel.ptx"
+entry = "e_clock_lanes"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "n"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "n"
+
+[[variants]]
+id = "good"
+summary = "branch on the parity of %clock + %tid.x: the warp splits on GB300"
+expect = ["unmodeled"]
+
+[[variants]]
+id = "UNI"
+summary = "branch on the parity of %clock alone: warp-uniform on GB300"
+marker = "@LANE"
+find = "add.u32 %r6, %r5, %r1;"
+replace = "mov.u32 %r6, %r5;"
+expect = ["unmodeled"]
+expect_sass = ["clean"]

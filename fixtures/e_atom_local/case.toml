@@ -1,0 +1,45 @@
+name = "e_atom_local"
+description = """
+Forum post 76: generic `atom.add.noftz.f16x2` / `.bf16x2` on a local-memory address
+(`cvta.local` of a stack buffer), one thread. ptxas 13.0 (sm_103a) emits ATOM.E.ADD.F16x2.RN /
+.BF16x2.RN with a fallback when the ATOM reports the address was not global: ATOMS.CAST.SPIN
+for the shared window (QSPC.E.S), else `LD.E; IADD3; ST.E` for the local window, an integer
+add of the two words, not an f16x2 / bf16x2 add.
+GB300 (evidence class: hardware, 3/3 runs; a one-thread host launch of the ptxas 13.0 cubin
+with in = {0x3c003c00, 0x3c003c00}): out = {0x3c003c00, 0x78007800, 0x3c003c00, 0x78007800},
+both forms; an f16x2 add would give 0x40004000, a bf16x2 add 0x3c803c80.
+ptxv does not model generic accesses to the local window (S-CBANK: it is unmapped) and fails
+closed: `fault` on both fronts, the message naming the local window. Generic-to-local support
+must model the integer add of this fallback, not N-F16X2."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+ptxas_toolkit = "13.0"
+entry = "k"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [2]
+init = "file"
+file = "data/in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["fault"]

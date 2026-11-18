@@ -1,0 +1,54 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPCLASS, E-HW-SB-QUEUE): LDS and SHFL in one shared-memory completion queue. A
+// 32-way bank-conflicted `ld.shared` (slow) then a `shfl.sync.bfly` (fast); the variants take the
+// LDS's write scoreboard away and let its reader wait on the SHFL's scoreboard only (COVER) or on
+// nothing (NOWAIT, positive control).
+.version 9.0
+.target sm_103a
+.address_size 64
+.shared .align 16 .b32 sm[8192];
+.visible .entry shared_queue(.param .u64 out_p, .param .u32 seed)
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r20, [seed];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, sm;
+    // Fill: thread t writes words t, t+256, ..., t+7936 (value word index * 0x9e3779b1 ^ seed).
+    mov.u32 %r3, 0;
+FILL:
+    shl.b32 %r4, %r3, 8;
+    add.u32 %r4, %r4, %r1;
+    mul.lo.u32 %r5, %r4, -1640531535;
+    xor.b32 %r5, %r5, %r20;
+    shl.b32 %r6, %r4, 2;
+    add.u32 %r6, %r6, %r2;
+    st.shared.u32 [%r6], %r5;
+    add.u32 %r3, %r3, 1;
+    setp.lt.u32 %p1, %r3, 32;
+    @%p1 bra FILL;
+    bar.sync 0;
+    // Lane l of warp w reads word 32 l + w: one bank for the whole warp (32-way conflict).
+    shr.u32 %r7, %r1, 5;
+    and.b32 %r8, %r1, 31;
+    shl.b32 %r9, %r8, 5;
+    add.u32 %r9, %r9, %r7;
+    shl.b32 %r9, %r9, 2;
+    add.u32 %r9, %r9, %r2;
+    add.u32 %r10, %r1, %r20;
+    ld.shared.u32 %r11, [%r9];          // @LDS
+    shfl.sync.bfly.b32 %r12, %r10, 1, 31, -1;   // @SHFL
+    add.u32 %r13, %r11, 1;
+    add.u32 %r14, %r12, 2;
+    mul.wide.u32 %rd2, %r1, 8;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v2.u32 [%rd3], {%r13, %r14};
+    ret;
+}

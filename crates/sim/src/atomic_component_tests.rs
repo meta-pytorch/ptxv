@@ -412,9 +412,7 @@ fn each_component_rechecks_allocation_bounds() {
     use ptxv_memory_write::atomic_components::Component::Second;
     let mut machine = at_atomic(from_text(&mixed_return_text(true), 1, 1, 2));
     take_component(&mut machine, 0, First);
-    Arc::make_mut(&mut machine.launch).allocs[0]
-        .init
-        .truncate(4);
+    Arc::make_mut(&mut Arc::make_mut(&mut machine.launch).allocs[0].init).truncate(4);
     take_component(&mut machine, 0, Second);
     assert!(machine
         .findings

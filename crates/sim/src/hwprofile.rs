@@ -3,7 +3,8 @@
 // This source code is licensed under the BSD-style license found in the
 // LICENSE file in the root directory of this source tree.
 
-//! Hardware profiles: every probe-backed hardware assumption of one GPU, turned on at once,
+//! Hardware profiles: every hardware-measured assumption of one GPU (a probe, or a captured
+//! kernel's GB300 output where no probe exists yet: E-HW-SB-QUEUE), turned on at once,
 //! for the second level of the two-level verdict (`ptxv check`, `ptx_contract` /
 //! `sass_gb300`). A profile assumption is either a model switch (the run itself changes) or
 //! a discharge (a `contract` finding whose deviation the probe showed the hardware tolerates
@@ -27,7 +28,8 @@ pub struct Item {
     pub discharges: &'static [&'static str],
 }
 
-/// GB300 (sm_103a, CUDA 13.0): the probe-backed assumptions.
+/// GB300 (sm_103a, CUDA 13.0): the hardware-measured assumptions (each item names its
+/// evidence).
 pub const GB300: &[Item] = &[
     Item {
         id: "E-HW-L1",
@@ -70,6 +72,21 @@ pub const GB300: &[Item] = &[
         discharges: &[],
     },
     Item {
+        id: "E-HW-BSYNC-YIELD",
+        probe: "probes/mbar_init_diverge late_sleep_reconv (lanes pass a plain BSYNC while the elected lane sleeps: 10,000 of 10,000 runs), probes/bsync_coll, probes/split_yield (no switch without a YIELD or a blocking instruction)",
+        discharges: &[],
+    },
+    Item {
+        id: "E-HW-STS-LOWEST",
+        probe: "fixtures/e_lane_order (32 lanes of one shared store, different values: lane 0's value in 500 of 500 runs of each of six variants), fixtures/e_sts_shapes (19 widths and lane sets, 500 of 500 runs each: the lowest active lane of the last 32 / (bytes / 4)-lane phase), fixtures/e_sts_keep and e_sts_keep_wide (traps on that lane's value in every launch)",
+        discharges: &[],
+    },
+    Item {
+        id: "E-HW-STG-LOWEST",
+        probe: "fixtures/e_stg_keep (one 32-bit STG by every lane, by lanes 8..23, by the odd lanes; plain, .STRONG.SM, .GPU, .SYS, .EF, .NA, after a MEMBAR, split over two words: the lowest active lane's value in 500 of 500 runs of each of 16 variants; a trap on lane 0's value in 5 of 5 launches, 20 of 20 in review; STG.E.MMIO.SYS keeps the highest active lane's value and is explored)",
+        discharges: &[],
+    },
+    Item {
         id: "E-DESC-VERSION",
         probe: "probes/desc_version",
         discharges: &["desc-version:"],
@@ -81,6 +98,13 @@ pub const GB300: &[Item] = &[
         id: "E-HW-PROXY-WAR",
         probe: "probes/handoff_window v=16/17 (a generic read, happens-before without a proxy fence, then a peer's bulk copy over the bytes: 0 / 6.08e9 and 0 / 3.04e9 under contention; positive control v=15, the same read with no happens-before: up to 7678 / 7.6e8)",
         discharges: &["proxy-war:"],
+    },
+    // ASSUME(E-HW-SB-QUEUE): discharges the strict level's scoreboard findings that only the
+    // GB300 queue rules clear (scoreboard.rs `HW_QUEUE_SIG`).
+    Item {
+        id: "E-HW-SB-QUEUE",
+        probe: "probes/redux_queue COVER (a REDUX read after a wait on a later REDUX's scoreboard only: 1000 / 1000 correct; positive control NOWAIT wrong 1000 / 1000); probes/f2i64_f64, i2f64_s16 COVER (F2I.S64.F64.TRUNC by F2I.F64.TRUNC, I2F.F64.S16 by I2F.F64: 0 / 1000, NOWAIT 1000 / 1000; the other f64 conversion pairs, the f64 pipe and POPC / FLO across opcodes, the conversion / f64 operand-read order and UGETNEXTWORKID's reads at issue are sb-unmeasured: contracts, MISS 170), sb_mio_order, stg_guard_war (memory-queue reads), frnd_same COVER (FRND by FRND.FLOOR, FRND.F64 by FRND.F64.FLOOR: 0 / 1000, NOWAIT controls 1000 / 1000; FRND.F64 by an f32 FRND refuted: frnd64, MISS 156), shared_queue COVER (an LDS covered by a later SHFL), smem_queue_w1 COVER (a conflicted LDSM.16.M88.4 by a later LDS / SHFL.BFLY, an LDS by a later LDSM.16.M88.4 / MT88.4, 2 to 8 stall cycles apart: 0 / 1000, NOWAIT / DELAY / MUFU control 1000 / 1000; the broader queue orders are sb-unmeasured: contracts, not discharged), cvt64_queue F2I32_COVER (a 32-bit F2I by a later F2I.S64), sb_mio_order rd_on_ldg / rd_on_lds (read order across memory-queue opcodes), wcov (write cover across opcodes), qwar_lds / qwar_ldg (a load after another opcode's read); TMA store reads: the CUTLASS FMHA varlen capture's output = GB300, no probe yet; tcgen05 reads: fixtures/c_fa4_causal and the UTCCP runs",
+        discharges: &["sb-hwq:"],
     },
     Item {
         id: "S-TMAP-TAIL",
@@ -108,6 +132,9 @@ pub fn launch(l: &Launch, p: &[Item]) -> Launch {
             "E-REMOTE-FIFO" => h.remote_fifo = true,
             "E-HW-BSYNC-COLLECTIVE" => h.hw_bsync_coll = true,
             "E-HW-SPLIT-UR" => h.hw_split_ur = true,
+            "E-HW-STS-LOWEST" => h.hw_sts_lowest = true,
+            "E-HW-STG-LOWEST" => h.hw_stg_lowest = true,
+            "E-HW-BSYNC-YIELD" => h.hw_bsync_yield = true,
             _ => {}
         }
     }
@@ -134,11 +161,33 @@ pub fn discharge(v: &mut Verdict, m: &Machine, p: &[Item]) -> Vec<(String, Vec<S
             "E-HW-L1" => true,
             "E-MC-ALIAS-HW" => !l.mcast.is_empty(),
             "E-HW-SPLIT-UR" => !m.ur_window.is_empty(),
+            "E-HW-STS-LOWEST" => m.k.code.iter().any(|i| {
+                matches!(
+                    i.op,
+                    ptxv_ir::Op::St {
+                        space: ptxv_ir::Space::Shared,
+                        ..
+                    }
+                )
+            }),
+            "E-HW-STG-LOWEST" => l.mcast.is_empty() && m.k.code.iter().any(|i| {
+                matches!(
+                    i.op,
+                    ptxv_ir::Op::St {
+                        space: ptxv_ir::Space::Global,
+                        bytes: 4,
+                        ..
+                    }
+                ) && !i.text.contains(".MMIO")
+            }),
             "E-REMOTE-FIFO" => {
                 m.k.code
                     .iter()
                     .any(|i| matches!(i.op, ptxv_ir::Op::MbarArrive { remote: true, .. }))
             }
+            "E-HW-BSYNC-YIELD" => m.k.code.iter().any(|i| {
+                matches!(i.op, ptxv_ir::Op::Bsync { form, .. } if !crate::exec::bsync_holds(form))
+            }),
             // Named when it released a BSYNC in the run (its note).
             "E-HW-BSYNC-COLLECTIVE" => v.findings.iter().any(|f| f.sig.starts_with("bsync-coll:")),
             _ => false,

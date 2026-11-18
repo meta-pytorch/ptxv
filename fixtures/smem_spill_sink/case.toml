@@ -35,6 +35,8 @@ summary = "pool-select shape: out-of-range keys add 0 to the uninitialized spare
 find = "selp.b32        %r14, 1, 1, %p0;            // @INC"
 replace = "selp.b32        %r14, 1, 0, %p0;"
 expect = ["clean"]
+# SASS strict: an E-HW-SB-QUEUE contract (sb-hwq:, an ATOMS data register's late read).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "branch"
@@ -61,3 +63,5 @@ summary = "soundness control: the last atomic's returned old value (the undefine
 find = "mov.u32         %r20, 0;                    // @EXTRA"
 replace = "mov.u32         %r20, %r15;"
 expect = ["nondeterministic", "violation"]
+# SASS strict: an E-HW-SB-QUEUE contract (sb-hwq:, an ATOMS data register's late read).
+expect_sass = ["contract", "nondeterministic", "violation"]

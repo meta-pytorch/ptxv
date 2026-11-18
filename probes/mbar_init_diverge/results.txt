@@ -10,5 +10,10 @@ late_sleep       10,000 runs     10,000 wrong: 32,736 of 33,792 words = 256 (eve
 reconv           10,000 runs     0 wrong (BSSY.RECONVERGENT / BSYNC.RECONVERGENT, bar.warp.sync at the join)
 late_sleep_reconv 10,000 runs    10,000 wrong as late_sleep (ptxas emits non-reconvergent BSSY B0 / BSYNC B0 around the nanosleep path)
 late_sleep_warpsync 10,000 runs  0 wrong (WARPSYNC.ALL at the join)
+late_reconv      10,000 runs     0 wrong (20,000-cycle clock spin, no yield, ptxas's BSSY.RECONVERGENT / BSYNC.RECONVERGENT kept)
+late_sleep_reconvform 10,000 runs 10,000 wrong: 32,736 of 33,792 words, as late_sleep (late_sleep_reconv with BSSY B0 at 0x460 and
+                                 BSYNC B0 at 0x5b0 patched to .RECONVERGENT, bits 72-73 = 2)
 # Model (2 rounds, 1 CTA): nobsync / late_sleep race:mbar on both fronts; reconv, late_sleep_warpsync clean on both;
-# late_sleep_reconv: SASS front clean, PTX front race:mbar.
+# late_sleep_reconv: SASS front clean before MISS 81, race:mbar after; PTX front race:mbar.
+# late_sleep_reconvform (fixtures/e_bsync_plain SLEEP_RECONV, one warp): SASS front clean before gap G1 was closed, race:mbar
+# after (the lifter's region walk meets the NANOSLEEP: the BSYNC holds as the plain form does); PTX front race:mbar.

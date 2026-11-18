@@ -1,0 +1,29 @@
+name = "e_clock_hang_callee"
+description = """
+E-CLOCK (MISS 78 x MISS 70, review): a 2000-cycle trap guard whose two clock reads are one CS2R in a
+__noinline__ callee (k.cu, nvcc 13.0 -cubin -arch=sm_103a). The hang guard's slice holds a single
+clock read, so hang_bound_holds never applies a delay and exempts the guard whatever its bound.
+GB300 sleeps 100 us between the reads: the guard fires (trap).
+Now (2026-11-11, review of MISS 78): a slice instruction inside a callee (or one in a loop
+feeding two places) is refused, so the guard is no hang guard: both sides, the trap; the clock
+choice of the warp's lanes is unmodeled."""
+cubin = "kernel.cubin"
+entry = "hang_callee"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "2000-cycle guard across a callee: traps on GB300"
+expect = ["nondeterministic", "trap", "unmodeled"]

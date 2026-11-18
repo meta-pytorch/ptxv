@@ -1,0 +1,52 @@
+name = "e_tmem_pair_alloc"
+description = """
+E-PAIR: tcgen05.alloc.cta_group::2 is one allocation by a warp of each CTA of the pair together
+(PTX ISA 9.7.18.5), modeled as a rendezvous: the first warp waits for the second, which
+allocates the same columns in both CTAs (MISS 179). A cluster of two one-warp CTAs; each warp
+allocates, meets the other at a cluster barrier, stores its address and deallocates. Before,
+each CTA allocated on its own, and ONESIDED ran to the end with an S-INIT violation (rank 1
+stored the address it never got). See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_tmem_pair_alloc"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "both warps allocate together"
+expect = ["clean"]
+# SASS: thread 0's `STG.E desc[UR4][R2.64]` of the address has no read scoreboard, and ptxas's
+# dealloc then overwrites R2 / R3 (`LDS R3` of an allocator word and later writes), a
+# write-after-read cleared by the wait on the next `LDS`'s write scoreboard, issued 4 stall cycles
+# after the store: a memory-queue cover GB300 measured on the address pair (probes/sb_mio_gap
+# x_cov_stg_lds_a, 0 / 1000 at 4 to 64 and 512 to 1024, its control 1000 / 1000). A strict
+# contract (sb-hwq:war-nosb, E-HW-SB-QUEUE) that the gb300 profile discharges.
+expect_sass = ["contract"]
+
+[[variants]]
+id = "ONESIDED"
+summary = "rank 1 does not allocate: rank 0's warp waits in the alloc forever"
+marker = "@ALLOC"
+find = "tcgen05.alloc"
+replace = "@!%p1 tcgen05.alloc"
+expect = ["deadlock"]
+# SASS: ptxas has the even CTA allocate the columns in both (UTCATOMSWS.2CTA, S-RESERVED) without
+# waiting for the odd CTA, so CTA 1 exits with them allocated: a TMEM leak.
+expect_sass = ["violation"]
+
+[[variants.edits]]
+marker = "@DEALLOC"
+find = "tcgen05.dealloc"
+replace = "@!%p1 tcgen05.dealloc"

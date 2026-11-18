@@ -1,0 +1,14 @@
+# GB300 (one GPU), 2026-11-12, rev ffac8900 + this probe: PTXV_HW_EXPECT=variant ptxv hw --runs 1000 --scrub
+# (the image checked by --image-fnv); grid 1, block 128
+good 0/1000 runs wrong
+Q_S1 0/1000 runs wrong
+CTL_S1 0/1000 runs wrong
+Q_S2 0/1000 runs wrong
+CTL_S2 0/1000 runs wrong
+Q_S4 0/1000 runs wrong
+CTL_S4 0/1000 runs wrong
+REF_S2 0/1000 runs wrong
+# The positive control CTL (an ALU write of the STTM's first source register in the next slot,
+# no wait) is correct at every stall, behind eight STTM.x32: the STTM has read its registers by
+# the next issue slot in this layout. The control does not discriminate, so Q's 0/1000 bounds
+# nothing about the TMEM queue's order: STTM-before-LDTM stays unmeasured.

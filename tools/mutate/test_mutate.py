@@ -424,10 +424,28 @@ def test_emit_and_ingest_runner_tasks(tmp_path):
 
 
 
+def test_check_anchors_validates_fixture_runs(tmp_path, monkeypatch, capsys):
+    """--check-anchors also reports a fixture run whose case or variant does not exist (a run
+    reads its expectation only after the build; `fixtures/<case>` as the case crashed one)."""
+    (tmp_path / "a.rs").write_text("    keep(x);\n")
+    (tmp_path / "fixtures" / "c").mkdir(parents=True)
+    (tmp_path / "fixtures" / "c" / "case.toml").write_text('[[variants]]\nid = "good"\nexpect = ["clean"]\n')
+    ok = srcmut.SrcMutant("ok", "a.rs", "    keep(x);\n", "", [("c", "good", "sass", [])])
+    path = srcmut.SrcMutant("path", "a.rs", "    keep(x);\n", "", [("fixtures/c", "good", "sass", [])])
+    var = srcmut.SrcMutant("var", "a.rs", "    keep(x);\n", "", [("c", "BAD", "ptx", [])])
+    monkeypatch.setattr(srcmut, "ROOT", tmp_path)
+    monkeypatch.setattr(srcmut, "MUTANTS", [ok, path, var])
+    rc = srcmut.main(["--check-anchors"])
+    out = capsys.readouterr()
+    names = [ln.split(None, 1)[0] for ln in out.out.splitlines()]
+    assert (rc, names, out.err.strip()) == (1, ["path", "var"], "2 of 3 anchors broken")
+
+
 def test_srcmut_check_anchors(tmp_path, monkeypatch, capsys):
     """srcmut.py --check-anchors prints every mutant whose find text does not occur exactly once
-    in its file, or occurs once but only inside a comment, and exits 1 if there is one; it needs
-    no --out and builds and runs nothing."""
+    in its file, or occurs once but only inside a comment (doc comments included), and exits 1 if
+    there is one; a find text over several lines is checked as one. It needs no --out and builds
+    and runs nothing."""
     (tmp_path / "a.rs").write_text("fn a() {\n    keep(x);\n}\n")
     b = tmp_path / "b.rs"
     good = srcmut.SrcMutant("good", "a.rs", "    keep(x);\n", "", [])
@@ -469,6 +487,11 @@ def test_srcmut_check_anchors(tmp_path, monkeypatch, capsys):
         ("/*\n    keep(z);\n*/\nfn c() {\n    keep(y);\n}\n", rs_cmt),
         ("fn c() {\n//    keep(z);\n    keep(y);\n}\n", rs_cmt),
         ("/* outer /* inner */\n    keep(z);\n*/\nfn c() {}\n", rs_cmt),
+        # Doc comments are comments.
+        ("/// doc\n///    keep(z);\nfn c() {\n    keep(y);\n}\n", rs_cmt),
+        ("//!    keep(z);\nfn c() {\n    keep(y);\n}\n", rs_cmt),
+        ("/**\n    keep(z);\n*/\nfn c() {\n    keep(y);\n}\n", rs_cmt),
+        ("/*!\n    keep(z);\n*/\nfn c() {\n    keep(y);\n}\n", rs_cmt),
         ('fn c() {\n    let u = "http://x";\n    keep(z);\n}\n', clean),
         ("fn c() {\n    let q = '\"'; let s = \"/*\";\n    keep(z);\n}\n", clean),
         ('fn c() {\n    let r = r#"/* "quoted" */"#;\n    keep(z);\n}\n', clean),
@@ -483,6 +506,19 @@ def test_srcmut_check_anchors(tmp_path, monkeypatch, capsys):
         ("def p():\n    '''# no\n    '''\n    keep(z)\n    # yes\n", clean),
     ]:
         (tmp_path / "p.py").write_text(text)
+        assert check() == want, text
+    # A find text over several lines is checked as one: twice, split by another line, or kept
+    # only inside a comment, it is no anchor.
+    ml = srcmut.SrcMutant("multi", "m.rs", "    keep(m);\n    keep(n);\n", "", [])
+    monkeypatch.setattr(srcmut, "MUTANTS", [good, broken, ml])
+    ml_bad = lambda why: (1, [["multi", f"m.rs: {why}"]], "1 of 3 anchors broken")  # noqa: E731
+    for text, want in [
+        ("fn m() {\n    keep(m);\n    keep(n);\n}\n", (0, [], "0 of 3 anchors broken")),
+        ("fn m() {\n    keep(m);\n    keep(n);\n    keep(m);\n    keep(n);\n}\n", ml_bad("find text occurs 2 times")),
+        ("fn m() {\n    keep(m);\n    other();\n    keep(n);\n}\n", ml_bad("find text occurs 0 times")),
+        ("/*\n    keep(m);\n    keep(n);\n*/\nfn m() {}\n", ml_bad("find text occurs once, inside a comment")),
+    ]:
+        (tmp_path / "m.rs").write_text(text)
         assert check() == want, text
     monkeypatch.setattr(srcmut, "MUTANTS", [good, broken])
     # --root checks the files of another tree (the anchors test's positive control plants a
@@ -518,8 +554,16 @@ def test_srcmut_anchors_whole_list(tmp_path, capsys):
     occur exactly once, or only inside a comment), naming exactly those mutants, before and after
     the anchors of the last mutant and of a mutant whose file an earlier mutant names are broken
     (their find texts written twice). A check that drops a tail of the list, or checks one mutant
-    per file, passes test_srcmut_check_anchors' short lists; it fails here."""
-    ms = srcmut.MUTANTS
+    per file, passes test_srcmut_check_anchors' short lists; it fails here. In the open-source
+    export, which has no fb/, the mutants of fb/ files are not in the list checked: srcmut skips
+    them and says how many (the internal tree checks every mutant)."""
+    # The export lacks the manifest fb/OSS_EXCLUDE.txt and the fb/ files the mutants name.
+    export = not (srcmut.ROOT / "fb" / "OSS_EXCLUDE.txt").is_file()
+    skipped = [m.name for m in srcmut.MUTANTS
+               if export and m.file.startswith("fb/") and not (srcmut.ROOT / m.file).is_file()]
+    ms = [m for m in srcmut.MUTANTS if m.name not in skipped]
+    note = [f"srcmut: fb-only mutants skipped: {len(skipped)} (files under fb/, which this tree "
+            "does not have)"] if skipped else []
     for rel in {m.file for m in ms}:
         dst = tmp_path / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -528,7 +572,8 @@ def test_srcmut_anchors_whole_list(tmp_path, capsys):
     def check():
         rc = srcmut.main(["--check-anchors", "--root", str(tmp_path)])
         out = capsys.readouterr()
-        return rc, sorted(ln.split(None, 1)[0] for ln in out.out.splitlines()), out.err.strip()
+        *noted, summary = out.err.strip().splitlines()
+        return rc, sorted(ln.split(None, 1)[0] for ln in out.out.splitlines()), summary, noted
 
     def want():
         # The find-text count of each mutant, read here, independently of srcmut; a find text
@@ -543,7 +588,7 @@ def test_srcmut_anchors_whole_list(tmp_path, capsys):
             text, spans = texts[m.file]
             if text.count(m.find) != 1 or srcmut.anchor_problem(text, m.file, m.find, spans):
                 bad.append(m.name)
-        return 1 if bad else 0, sorted(bad), f"{len(bad)} of {len(ms)} anchors broken"
+        return 1 if bad else 0, sorted(bad), f"{len(bad)} of {len(ms)} anchors broken", note
 
     assert check() == want()
     last = ms[-1]
@@ -557,6 +602,82 @@ def test_srcmut_anchors_whole_list(tmp_path, capsys):
     w = want()
     assert {shared.name, last.name} <= set(w[1]), (shared.name, last.name, w)
     assert check() == w
+
+
+def test_srcmut_skips_fb_only_mutants_in_an_export(tmp_path, monkeypatch, capsys):
+    """A mutant of a file under fb/ (internal tooling) is skipped, in --check-anchors and in a run,
+    with a count on stderr, in a tree that has neither the file nor the export manifest
+    fb/OSS_EXCLUDE.txt: the open-source export, which drops fb/. The other mutants are checked as
+    usual. A tree with the manifest, the internal one, checks them all: a missing fb/ file is a
+    broken anchor there, and an fb/ file the tree has is checked in either."""
+    a = tmp_path / "a.rs"
+    fb = tmp_path / "fb"
+    a.write_text("    keep(x);\n")
+    good = srcmut.SrcMutant("good", "a.rs", "    keep(x);\n", "", [])
+    f1 = srcmut.SrcMutant("f1", "fb/kernel_db/one.py", "    keep(y)\n", "", [])
+    f2 = srcmut.SrcMutant("f2", "fb/kernel_db/two.py", "    keep(z)\n", "", [])
+    assert (good.fb_only, f1.fb_only, f2.fb_only) == (False, True, True)
+    monkeypatch.setattr(srcmut, "ROOT", tmp_path)
+    monkeypatch.setattr(srcmut, "MUTANTS", [good, f1, f2])
+    monkeypatch.setattr(srcmut, "EXCLUDED", {})
+
+    def skipped(n):
+        return f"srcmut: fb-only mutants skipped: {n} (files under fb/, which this tree does not have)"
+
+    def check(*args):
+        rc = srcmut.main(["--check-anchors", *args])
+        out = capsys.readouterr()
+        return rc, [ln.split(None, 1) for ln in out.out.splitlines()], out.err.strip().splitlines()
+
+    # An export: no fb/.
+    assert check() == (0, [], [skipped(2), "0 of 1 anchors broken"])
+    assert check("--only", "good,f2") == (0, [], [skipped(1), "0 of 1 anchors broken"])
+    # Nothing left to check is an error, as when no mutant is chosen.
+    assert check("--only", "f1,f2") == (2, [], [skipped(2), "srcmut: no mutant is chosen: every one is fb-only"])
+    # --root names the tree: this one has no fb/, whatever the current one has.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "a.rs").write_text("    keep(x);\n    keep(x);\n")
+    assert check("--root", str(other)) == (
+        1,
+        [["good", "a.rs: find text occurs 2 times"]],
+        [skipped(2), "1 of 1 anchors broken"],
+    )
+    # A run skips them too (it needs their files), and runs the others.
+    ran = []
+
+    def fake_run(m, out):
+        ran.append(m.name)
+        return {"name": m.name, "status": "caught"}
+
+    monkeypatch.setattr(srcmut, "run_mutant", fake_run)
+    assert srcmut.main(["--out", str(tmp_path / "o")]) == 0
+    assert (ran, capsys.readouterr().err.strip()) == (["good"], skipped(2))
+    # An fb/ file the tree has is checked, a missing one is skipped.
+    (fb / "kernel_db").mkdir(parents=True)
+    (fb / "kernel_db" / "one.py").write_text("    keep(y)\n    keep(y)\n")
+    assert check() == (
+        1,
+        [["f1", "fb/kernel_db/one.py: find text occurs 2 times"]],
+        [skipped(1), "1 of 2 anchors broken"],
+    )
+    (fb / "kernel_db" / "one.py").write_text("    keep(y)\n")
+    assert check() == (0, [], [skipped(1), "0 of 2 anchors broken"])
+    # The manifest makes it the internal tree: nothing is skipped, a missing file is broken.
+    (fb / "OSS_EXCLUDE.txt").write_text("fb/\n")
+    assert check() == (1, [["f2", "fb/kernel_db/two.py: no such file"]], ["1 of 3 anchors broken"])
+    (fb / "kernel_db" / "two.py").write_text("    keep(z)\n")
+    assert check() == (0, [], ["0 of 3 anchors broken"])
+    # --root decides: the tree it names is an export, whatever the current one is.
+    assert check("--root", str(other)) == (
+        1,
+        [["good", "a.rs: find text occurs 2 times"]],
+        [skipped(2), "1 of 1 anchors broken"],
+    )
+    # Without the manifest again, a mutant that is not under fb/ is never skipped.
+    (fb / "OSS_EXCLUDE.txt").unlink()
+    a.unlink()
+    assert check() == (1, [["good", "a.rs: no such file"]], ["1 of 3 anchors broken"])
 
 
 def test_srcmut_only_names_a_mutant_that_runs(tmp_path):

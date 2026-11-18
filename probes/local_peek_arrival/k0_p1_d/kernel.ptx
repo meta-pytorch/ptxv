@@ -1,0 +1,59 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Repro (MISS 278, RDP2 finding G): count 2. Warp 0 (A): st x; arrive (phase 0). Warp 1 (B):
+// arrive, then a try_wait.parity 1 test whose result is stored. Warp 2 (Z): 0 more phases (waits
+// for the previous phase, arrives twice). The test runs at phase 0..1; its result and acquire
+// depend on which.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry local_peek_arrival(.param .u64 out_p)
+.maxntid 96, 1, 1
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b64 m1;
+    .shared .align 4 .b32 x;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r4, m1;
+    mov.u32 %r8, x;
+    shr.u32 %r2, %r1, 5;
+    and.b32 %r3, %r1, 31;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r4], 2;
+    st.shared.u32 [%r8], 0;
+INIT_DONE:
+    bar.sync 0;
+    setp.ne.u32 %p2, %r3, 0;
+    @%p2 bra END;
+    setp.eq.u32 %p3, %r2, 1;
+    @%p3 bra B;
+    setp.eq.u32 %p3, %r2, 2;
+    @%p3 bra Z;
+    mov.u32 %r9, 5;
+    st.shared.u32 [%r8], %r9;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r4];
+    bra END;
+B:
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r4];
+    mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %p5, [%r4], 1;
+    selp.u32 %r15, 1, 0, %p5;
+    st.global.u32 [%rd1], %r15;
+    @!%p5 bra SKIP;
+    ld.shared.u32 %r16, [%r8];
+    st.global.u32 [%rd1+4], %r16;
+SKIP:
+    bra END;
+Z:
+
+END:
+    ret;
+}

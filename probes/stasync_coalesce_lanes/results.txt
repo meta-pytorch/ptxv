@@ -1,0 +1,101 @@
+# run.sh, 2026-11-12.
+# agentSC2 ebfacb16:
+L2_D01_TW  ptx  deterministic    expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L2_D01_TW  sass deterministic    expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L2_D0_TW   ptx  nondeterministic expected [nondeterministic]                 stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TW   sass nondeterministic expected [nondeterministic]                 stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TWR  ptx  race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TWR  sass race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D1_R0   ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_R0   sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_TW   ptx  nondeterministic expected [nondeterministic]                 stateful [nondeterministic]                 no-local-por [nondeterministic]                 certify [nondeterministic]                 ok
+L2_D1_TW   sass nondeterministic expected [nondeterministic]                 stateful [nondeterministic]                 no-local-por [nondeterministic]                 certify [nondeterministic]                 ok
+L2_D1_TWR  ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_TWR  sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D01_R1  ptx  norace           expected [clean]                            stateful [race]                             no-local-por [race]                             certify [clean]                            MISMATCH
+L3_D01_R1  sass norace           expected [clean]                            stateful [race]                             no-local-por [race]                             certify [clean]                            MISMATCH
+L3_D0_R2   ptx  race             expected [nondeterministic,race,violation]  stateful [race]                             no-local-por [race]                             certify [clean]                            MISMATCH
+L3_D0_R2   sass race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [race]                             certify [clean]                            MISMATCH
+L3_D10_R0  ptx  norace           expected [clean]                            stateful [race]                             no-local-por [race]                             certify [clean]                            MISMATCH
+L3_D10_R0  sass norace           expected [clean]                            stateful [race]                             no-local-por [race]                             certify [clean]                            MISMATCH
+L3_D12_R0  ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D12_R0  sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D2_R2   ptx  norace           expected [clean]                            stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  MISMATCH
+L3_D2_R2   sass norace           expected [clean]                            stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  MISMATCH
+rc=1
+
+# agentSC2 53ef07ac:
+L2_D01_TW  ptx  deterministic    expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L2_D01_TW  sass deterministic    expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L2_D0_TW   ptx  nondeterministic expected [nondeterministic]                 stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TW   sass nondeterministic expected [nondeterministic]                 stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TWR  ptx  race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TWR  sass race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D1_R0   ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_R0   sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_TW   ptx  nondeterministic expected [nondeterministic]                 stateful [nondeterministic]                 no-local-por [nondeterministic]                 certify [nondeterministic]                 ok
+L2_D1_TW   sass nondeterministic expected [nondeterministic]                 stateful [nondeterministic]                 no-local-por [nondeterministic]                 certify [nondeterministic]                 ok
+L2_D1_TWR  ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_TWR  sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D01_R1  ptx  norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D01_R1  sass norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D0_R2   ptx  race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L3_D0_R2   sass race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L3_D10_R0  ptx  norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D10_R0  sass norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D12_R0  ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D12_R0  sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D2_R2   ptx  norace           expected [clean]                            stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  MISMATCH
+L3_D2_R2   sass norace           expected [clean]                            stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  MISMATCH
+rc=1
+
+# agentSC2 62e6a560:
+L2_D01_TW  ptx  deterministic    expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L2_D01_TW  sass deterministic    expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L2_D0_TW   ptx  nondeterministic expected [nondeterministic]                 stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TW   sass nondeterministic expected [nondeterministic]                 stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TWR  ptx  race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D0_TWR  sass race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D1_R0   ptx  race             expected [nondeterministic,race,violation]  stateful [race]                             no-local-por [race]                             certify [race]                             MISMATCH
+L2_D1_R0   sass race             expected [nondeterministic,race,violation]  stateful [race]                             no-local-por [race]                             certify [race]                             MISMATCH
+L2_D1_TW   ptx  nondeterministic expected [nondeterministic]                 stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D1_TW   sass nondeterministic expected [nondeterministic]                 stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D1_TWR  ptx  race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L2_D1_TWR  sass race             expected [nondeterministic,race,violation]  stateful [clean]                            no-local-por [clean]                            certify [clean]                            MISMATCH
+L3_D01_R1  ptx  norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D01_R1  sass norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D0_R2   ptx  race             expected [nondeterministic,race,violation]  stateful [race]                             no-local-por [race]                             certify [race]                             MISMATCH
+L3_D0_R2   sass race             expected [nondeterministic,race,violation]  stateful [race]                             no-local-por [race]                             certify [race]                             MISMATCH
+L3_D10_R0  ptx  norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D10_R0  sass norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D12_R0  ptx  race             expected [nondeterministic,race,violation]  stateful [race]                             no-local-por [race]                             certify [race]                             MISMATCH
+L3_D12_R0  sass race             expected [nondeterministic,race,violation]  stateful [race]                             no-local-por [race]                             certify [race]                             MISMATCH
+L3_D2_R2   ptx  norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D2_R2   sass norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+rc=1
+
+# With a lane's drain landing only its own part of a coalesced operation (the commit after this one's):
+L2_D01_TW  ptx  deterministic    expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L2_D01_TW  sass deterministic    expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L2_D0_TW   ptx  nondeterministic expected [nondeterministic]                 stateful [nondeterministic]                 no-local-por [nondeterministic]                 certify [nondeterministic]                 ok
+L2_D0_TW   sass nondeterministic expected [nondeterministic]                 stateful [nondeterministic]                 no-local-por [nondeterministic]                 certify [nondeterministic]                 ok
+L2_D0_TWR  ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D0_TWR  sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_R0   ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_R0   sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_TW   ptx  nondeterministic expected [nondeterministic]                 stateful [nondeterministic]                 no-local-por [nondeterministic]                 certify [nondeterministic]                 ok
+L2_D1_TW   sass nondeterministic expected [nondeterministic]                 stateful [nondeterministic]                 no-local-por [nondeterministic]                 certify [nondeterministic]                 ok
+L2_D1_TWR  ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L2_D1_TWR  sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D01_R1  ptx  norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D01_R1  sass norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D0_R2   ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D0_R2   sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D10_R0  ptx  norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D10_R0  sass norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D12_R0  ptx  race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D12_R0  sass race             expected [nondeterministic,race,violation]  stateful [nondeterministic,race,violation]  no-local-por [nondeterministic,race,violation]  certify [nondeterministic,race,violation]  ok
+L3_D2_R2   ptx  norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+L3_D2_R2   sass norace           expected [clean]                            stateful [clean]                            no-local-por [clean]                            certify [clean]                            ok
+rc=0
+

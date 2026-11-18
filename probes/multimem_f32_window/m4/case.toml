@@ -1,0 +1,94 @@
+name = "multimem_f32_window_m4"
+description = """
+MISS 225 repro: multimem.ld_reduce f32 adds of 4 members (one per GPU) on lanes picked from
+GB300 sweeps (mklanes.py, expected/lanes.csv): out = the reduced lanes of the tests f32, f32w
+and f32x4 (796, 156, 2132 lanes). GB300's output for the same lanes: expected/m4.out.bin
+(check.py compares lane by lane)."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "mm32"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "mem0"
+dtype = "u32"
+shape = [3084]
+init = "file"
+file = "../data/m4.in0.bin"
+device = 0
+
+[[buffers]]
+name = "mem1"
+dtype = "u32"
+shape = [3084]
+init = "file"
+file = "../data/m4.in1.bin"
+device = 1
+
+[[buffers]]
+name = "mem2"
+dtype = "u32"
+shape = [3084]
+init = "file"
+file = "../data/m4.in2.bin"
+device = 2
+
+[[buffers]]
+name = "mem3"
+dtype = "u32"
+shape = [3084]
+init = "file"
+file = "../data/m4.in3.bin"
+device = 3
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3084]
+init = "zeros"
+device = 0
+
+[[multicast]]
+name = "mc"
+size = 12336
+binds = [
+    { device = 0, offset = 0, buffer = "mem0", byte_offset = 0, size = 12336 },
+    { device = 1, offset = 0, buffer = "mem1", byte_offset = 0, size = 12336 },
+    { device = 2, offset = 0, buffer = "mem2", byte_offset = 0, size = 12336 },
+    { device = 3, offset = 0, buffer = "mem3", byte_offset = 0, size = 12336 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 796
+
+[[params]]
+kind = "u32"
+value = 156
+
+[[params]]
+kind = "u32"
+value = 533
+
+[[params]]
+kind = "u32"
+value = 796
+
+[[params]]
+kind = "u32"
+value = 952
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

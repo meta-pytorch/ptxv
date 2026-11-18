@@ -95,7 +95,7 @@ static instruction counts.
 | `IDP.2A.{LO,HI}.{U16,S16}.{U8,S8}` (+ PTX `dp2a`) | **fixtures/s_dp2a**: all 8 forms on 128x128 operand pairs, both front-ends; cuDNN SDPA |
 | `LDTM` / `STTM.16dp32bit_t0_t15` / `_t16_t31`; `UTCHMMA` with A in TMEM; MN-major B descriptors | Triton flash attention = GB300 (S-TMEM) |
 | `LDTM.16dp256bit[.xN]`, `STSM.16.MT88.N` | cuBLAS nvjet matmuls (matmul_bf16, matmul_relu, mixed) = GB300 |
-| `ATOM.E.ADD.F32.FTZ.RN` (P = global), `ATOM.E.CAST.SPIN`, `ATOMS.CAST.SPIN`, `QSPC.E.{S,D}` | torch index_add = GB300 (only the global path runs) |
+| `ATOM.E.ADD.F32.FTZ.RN` (P = global), `ATOM.E.CAST.SPIN`, `ATOMS.CAST.SPIN`, `QSPC.E.{S,D}` | torch index_add = GB300 (only the global path runs); the shared-window paths: probes/atom_f32_space, probes/qspc_window = GB300 (MISS 142) |
 | `SHFL.* P, ...` (in-range predicate; + PTX `d\|p`), `BMSK[.W]` / `UBMSK` (+ PTX `bmsk`) | **fixtures/s_bmsk**, both front-ends; torch radix sort = GB300 |
 | `REDUX[.OR/.XOR/.SUM]`, `CREDUX.MIN/.MAX[.S32]`, `SR_LEMASK/GEMASK/GTMASK/EQMASK`, `BRA.DIV`, `WARPSYNC.COLLECTIVE` ... `ENDCOLLECTIVE` (run-time member masks; E-COLLECTIVE) | **fixtures/s_warpcoll**: data-dependent active sets, a shrinking-mask loop, 1/2/3 member-mask groups per warp, bitwise; torch.topk's gatherTopK certified clean, = GB300 |
 | `@P BRA.U` (a per-thread guard on a uniform branch; ptxas's skip ahead of an elected block's BSSY) | **probes/bra_u**: taken by the whole split only when P holds in every lane; full warp, exited lanes and diverged lanes, patched ptxas binaries = GB300 (E-COLLECTIVE) |
@@ -383,7 +383,7 @@ any modifier outside the audited set before an arm runs.
 | `MOVM.16.MT88` | `movmatrix.sync.aligned.m8n8.trans.b16` | warp transpose of 8x8 16-bit elements | probes/movm |
 | `HMMA.1688.F32.BF16` | `mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32` | N-HMMA over 8 products (calibrated) | probes/bmma8 |
 | `LDGSTS...ZFILL [d], [a + size - s], P` | `cp.async ..., size, s` (s immediate or register) | first s bytes from the rounded-down address, the rest zero; !P = s 0 | probes/cpasync_srcsize |
-| `REDUX`, `FRND` scoreboards | - | REDUX is one in-order queue; FRND joins the MUFU / conversion queue (L-OPCLASS) | msl_ops captures |
+| `REDUX`, `FRND` scoreboards | - | REDUX is one in-order queue (gb300 profile, E-HW-SB-QUEUE); FRND is its own queue, not MUFU's (L-OPCLASS, MISS 82) | Triton captures, probes/redux_queue, probes/frnd_queue |
 | f64 results without a scoreboard | - | complete 128 counted stall cycles after issue (`F64_LAT`, ptxas's NOP padding) | msl_ops captures |
 | `HMNMX2.BF16_V2 d, a, hi, lo, p`, `VHMNMX ... RZ.Hx_Hx` | `min` / `max.bf16x2` with constants | bf16 immediate pair from the encoding (checked against the print); RZ = +0 | msl_ops captures |
 | SASS `SHFL` in a lane-subset BSSY region | (warp-aggregated atomics) | runs over the lanes present; lanes parked at a BSYNC are not waited for | DeepEP hybrid, Triton MoE |
@@ -432,9 +432,9 @@ any modifier outside the audited set before an arm runs.
 
 - Nothing in the rung-4 / rung-5 fixtures or D's smoke set.
 - Known unmodeled paths: `MUFU.TANH` inside 2^-8 <= |x| < 8 (N-MUFU); HMMA / tcgen05.mma with
-  subnormal / Inf / NaN operands (N-MMA, N-HMMA); generic addresses in the shared window
-  (`QSPC` returns false, `cvta.shared` is rejected); `LDGSTS` other than `.128`; HMMA other
-  than `.16816.F32.BF16`.
+  subnormal / Inf / NaN operands (N-MMA, N-HMMA); `QSPC` of a shared-window address of a rank
+  outside the cluster or past the CTA's shared memory (S-SWIN); `LDGSTS` other than `.128`;
+  HMMA other than `.16816.F32.BF16`.
 | `ELECT P, UR, PT` (ptxas drops a register membermask) | `elect.sync d\|p, %r` (mask in a register) | full warp checked when executed; partial refused (E-ELECT) | probes/elect_regmask |
 | `UBLKCP.S.G` / `UBLKCP.G.S` with the policy in `desc[UR]` | `cp.async.bulk.{shared::cluster.global.mbarrier::complete_tx::bytes,global.shared::cta.bulk_group}.L2::cache_hint` | the copy; hint and policy operand dropped (L-PTX-HINT) | probes/bulk_hint |
 | `CALL.ABS.NOINC` (`__assertfail`), `BPT.TRAP` | `call.uni __assertfail, (param0, .., param4)` | trap: the grid is aborted (E-CLOCK) | probes/assertfail |

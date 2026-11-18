@@ -1,0 +1,168 @@
+name = "probe_frnd64"
+description = """
+Probe (L-OPCLASS; MISS 156, RVS2 W2) on GB300: FRND.F64 with no write scoreboard covered by a
+later f32 FRND's write scoreboard. ptxas: `FRND R9, R0` at 0x100 (SB0), `FRND.F64 R4, R2` at 0x140
+(SB1); the variants swap them (0x100 / 0x110), move the stores to 0x120 / 0x130 and NOP
+0x140..0x160. COVER: the F64 result's store waits on SB3 (the later FRND) only; NOWAIT: on
+nothing (positive control); OWN: FRND.F64 on its own SB4 (reference). GB300 (results.txt): COVER
+and NOWAIT wrong in 1000 / 1000 runs at stalls 2, 4, 8; OWN 0 / 1000. FRND is one queue per
+operand width under the gb300 rules: COVER a violation at every level."""
+ptx = "kernel.ptx"
+entry = "frnd64"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2048]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u64"
+value = 2654435761987
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "COVER_S2"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 2, wbar = 7, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "NOWAIT_S2"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 2, wbar = 7, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "OWN_S2"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 2, wbar = 4, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 16, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+
+[[variants]]
+id = "COVER_S4"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "NOWAIT_S4"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "OWN_S4"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 4, wbar = 4, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 16, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+
+[[variants]]
+id = "COVER_S8"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 8, wbar = 7, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "NOWAIT_S8"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 8, wbar = 7, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "OWN_S8"
+patch = [
+    { at = "@0x0100", bits = [[0, 64, 0x0000000200047313], [64, 41, 0x301800]], stall = 8, wbar = 4, rbar = 7, wait = 0, expect = "FRND.F64 R4, R2" },
+    { at = "@0x0110", bits = [[0, 64, 0x0000000000097307], [64, 41, 0x201000]], stall = 4, wbar = 3, rbar = 7, wait = 0, expect = "FRND R9, R0" },
+    { at = "@0x0120", bits = [[0, 64, 0x0000000406007986], [64, 41, 0xc101b04]], stall = 4, wbar = 7, rbar = 7, wait = 16, expect = "STG.E.64 desc[UR4][R6.64], R4" },
+    { at = "@0x0130", bits = [[0, 64, 0x0000080906007986], [64, 41, 0xc101904]], stall = 4, wbar = 7, rbar = 7, wait = 8, expect = "STG.E desc[UR4][R6.64+0x8], R9" },
+    { at = "@0x0140", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0150", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+    { at = "@0x0160", nop = true, stall = 1, wbar = 7, rbar = 7, wait = 0 },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+

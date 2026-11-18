@@ -1,0 +1,28 @@
+name = "probe_qspc_window"
+description = """
+Probe (S-SWIN, MISS 142) for SASS QSPC.E.S / QSPC.E.D, ptxas's form of isspacep.shared::cta /
+isspacep.shared::cluster and the test in its generic f32 atomic add's fallbacks: each thread
+of 4 CTAs in clusters of 2 queries its own shared word, the other CTA's copy (mapa.u64) and a
+global address (kernel.ptx). SASS front only (the PTX front does not take isspacep). expected/
+is GB300's output (ptxas 13.0 -arch=sm_103a, `ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "qspc_window"
+grid = [4, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

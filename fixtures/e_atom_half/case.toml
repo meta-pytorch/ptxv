@@ -1,0 +1,123 @@
+name = "e_atom_half"
+description = """
+Forum post 76 (MISS 174, 175): cuda_fp16.h / cuda_bf16.h atomicAdd on __half, __nv_bfloat16,
+__half2 and __nv_bfloat162 through generic pointers, behind a data-dependent guard (BSSY
+regions), as in ATen's fp16 / bf16 scatter / index kernels (kernel.cu, nvcc 13.0, sm_103a).
+SASS: the 16-bit adds are ptxas's emulation (LD.E of the containing word, then HADD2 /
+HADD2.BF16_V2 + PRMT and an ATOM.E.CAS retry loop); the packed adds are ATOM.E.ADD.F16x2.RN /
+.BF16x2.RN with the shared-memory (ATOMS.CAST.SPIN) and local fallbacks. Two lanes of warp 0
+add to both halves of word 0 and one lane of warp 1 to its low half (gen.py); the sums are
+exact, so the outputs are schedule-independent. expected/ is GB300's output (`ptxv hw-worker`, 20/20 runs).
+Variant `exact_size`: the 16-bit f16 adds go 2 elements further, onto the last element of the
+6-byte h1 and past it (the containing word reaches beyond the allocation): `fault`, and no
+derived deadlock of the warp-mates parked at the BSYNC (probes/fault_abort)."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+ptxas_toolkit = "13.0"
+entry = "e_atom_half"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["h1", "b1", "h2", "b2"]
+
+[[buffers]]
+name = "h1"
+dtype = "u16"
+shape = [3]
+init = "file"
+file = "data/h1.bin"
+expect = "expected/h1.bin"
+
+[[buffers]]
+name = "b1"
+dtype = "u16"
+shape = [3]
+init = "file"
+file = "data/b1.bin"
+expect = "expected/b1.bin"
+
+[[buffers]]
+name = "h2"
+dtype = "u32"
+shape = [1]
+init = "file"
+file = "data/h2.bin"
+expect = "expected/h2.bin"
+
+[[buffers]]
+name = "b2"
+dtype = "u32"
+shape = [1]
+init = "file"
+file = "data/b2.bin"
+expect = "expected/b2.bin"
+
+[[buffers]]
+name = "vh"
+dtype = "u16"
+shape = [64]
+init = "file"
+file = "data/vh.bin"
+
+[[buffers]]
+name = "vb"
+dtype = "u16"
+shape = [64]
+init = "file"
+file = "data/vb.bin"
+
+[[buffers]]
+name = "idx"
+dtype = "i32"
+shape = [64]
+init = "file"
+file = "data/idx.bin"
+
+[[buffers]]
+name = "out"
+dtype = "i32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "h1"
+
+[[params]]
+kind = "ptr"
+buffer = "b1"
+
+[[params]]
+kind = "ptr"
+buffer = "h2"
+
+[[params]]
+kind = "ptr"
+buffer = "b2"
+
+[[params]]
+kind = "ptr"
+buffer = "vh"
+
+[[params]]
+kind = "ptr"
+buffer = "vb"
+
+[[params]]
+kind = "ptr"
+buffer = "idx"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["unmodeled"]
+
+[[variants]]
+id = "exact_size"
+summary = "the f16 adds 2 elements further: onto h1's last element (its word runs past the 6-byte allocation) and past it"
+marker = "@h1addr"
+find = "add.s64 \t%rd12, %rd1, %rd18;"
+replace = "add.s64 \t%rd12, %rd1, %rd18; add.s64 %rd12, %rd12, 4;"
+expect = ["fault"]

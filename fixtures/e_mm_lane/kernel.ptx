@@ -1,0 +1,35 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// The 32 lanes of ONE multimem store write their tid to one multicast word (bound to buf0 on
+// GPU 0 and buf1 on GPU 1); after bar.warp.sync and fence.proxy.alias lane 0 reads buf0[0]
+// through the unicast address. Under the PTX model each lane's store is its own memory
+// operation, so any lane's value may remain. RED: one multimem.red.add.f32 by every lane,
+// 2^24 from lane 0 and 1.0 from the others (the sum depends on the order).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mm_lane(.param .u64 u, .param .u64 m, .param .u64 out)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<4>;
+    .reg .f32 %f<4>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [u];
+    ld.param.u64 %rd2, [m];
+    ld.param.u64 %rd3, [out];
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 0;
+    selp.f32 %f1, 0f4B800000, 0f3F800000, %p1;
+    multimem.st.relaxed.gpu.global.u32 [%rd2], %r1;   // @ST
+    bar.warp.sync -1;
+    @!%p1 bra DONE;
+    fence.proxy.alias;
+    ld.relaxed.gpu.global.u32 %r5, [%rd1];
+    st.global.u32 [%rd3], %r5;                        // @OUT
+DONE:
+    ret;
+}

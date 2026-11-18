@@ -1,0 +1,75 @@
+name = "probe_redux_queue"
+description = """
+Probe (L-OPCLASS, E-HW-SB-QUEUE) for REDUX in issue order on GB300. ptxas (sm_103a) schedules
+`REDUX.SUM.S32 UR7, R9` (wr=SB0) at 0x80, `REDUX.SUM.S32 UR8, R10` (wr=SB1) at 0x90 and
+`MOV R14, UR7` (waits on SB0) at 0xb0. The variants take the first REDUX's write scoreboard
+away and cut the stalls before the MOV to 3 cycles:
+- COVER: the MOV waits on SB1 only, the second REDUX's scoreboard. Correct on GB300 if and only
+  if REDUX completes in issue order (the rule the gb300 profile uses; the strict scoreboard
+  check reports the read as a contract finding, `sb-hwq:`).
+- NOWAIT: the MOV waits on nothing (positive control).
+- OWN: the stalls cut, the first REDUX keeps SB0 and the MOV waits on it (control).
+GB300 (2026-11-11, `ptxv hw --scrub`, 1000 runs each): good, COVER and OWN correct in every
+run; NOWAIT wrong in every run. A measured null for COVER: the rule holds at the gb300 level
+only (E-HW-SB-QUEUE), the strict level keeps the finding."""
+ptx = "kernel.ptx"
+entry = "redux_queue"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [256, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [256, 4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "COVER"
+summary = "the first REDUX with no write scoreboard, its reader waits on the second's SB1 only"
+patch = [
+    { at = "@0x80", wbar = 7, stall = 1, expect = "REDUX.SUM.S32 UR7, R9" },
+    { at = "@0x90", stall = 1, expect = "REDUX.SUM.S32 UR8, R10" },
+    { at = "@0xb0", wait = 2, expect = "MOV R14, UR7" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "the first REDUX with no write scoreboard, its reader waits on nothing (positive control)"
+patch = [
+    { at = "@0x80", wbar = 7, stall = 1, expect = "REDUX.SUM.S32 UR7, R9" },
+    { at = "@0x90", stall = 1, expect = "REDUX.SUM.S32 UR8, R10" },
+    { at = "@0xb0", wait = 0, expect = "MOV R14, UR7" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN"
+summary = "the stalls cut, the first REDUX keeps SB0 and its reader waits on it (control)"
+patch = [
+    { at = "@0x80", stall = 1, expect = "REDUX.SUM.S32 UR7, R9" },
+    { at = "@0x90", stall = 1, expect = "REDUX.SUM.S32 UR8, R10" },
+]
+expect = ["clean"]

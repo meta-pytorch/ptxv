@@ -69,6 +69,8 @@ pub struct CubinMeta {
     pub syms: Vec<(u64, String)>,
     /// EIATTR_REQNTID / EIATTR_MAX_THREADS of the kernel.
     pub ntid: Option<Ntid>,
+    /// EIATTR_CTA_PER_CLUSTER / EIATTR_EXPLICIT_CLUSTER of the kernel.
+    pub cluster: Option<ptxv_ir::ClusterDecl>,
     /// The kernel's register count (EIATTR_REGCOUNT in `.nv.info`); 0 if unknown.
     pub regcount: u16,
     /// Data globals whose addresses those banks hold, and the words holding them.
@@ -90,9 +92,22 @@ pub struct CubinMeta {
     pub text: Vec<u8>,
 }
 
-fn tool(name: &str) -> String {
-    let cuda = std::env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda-13.0".into());
+/// The CUDA toolkit whose `bin/` tools (ptxas, nvdisasm, cuobjdump) ptxv runs: `$CUDA_HOME`,
+/// default /usr/local/cuda-13.0. The verdict cache keys on its tools (crates/cli vcache.rs).
+pub fn cuda_home() -> String {
+    std::env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda-13.0".into())
+}
+
+/// The path of CUDA tool `name` in toolkit directory `cuda`.
+pub fn tool_in(cuda: &str, name: &str) -> String {
     format!("{cuda}/bin/{name}")
+}
+
+/// The CUDA tools ptxv runs (`run_tool`, `select_ptxas`).
+pub const CUDA_TOOLS: [&str; 3] = ["ptxas", "nvdisasm", "cuobjdump"];
+
+fn tool(name: &str) -> String {
+    tool_in(&cuda_home(), name)
 }
 
 /// Run a CUDA binary tool and return its stdout. `nvdisasm` and `cuobjdump` output is
@@ -475,6 +490,9 @@ const EIATTR_REQNTID: u8 = 0x10;
 const EIATTR_KPARAM_INFO: u8 = 0x17;
 const EIATTR_KPARAM_INFO_V2: u8 = 0x45;
 const EIATTR_REGCOUNT: u8 = 0x2f;
+// `.reqnctapercluster` (three u32) and `.explicitcluster` (cuobjdump -elf of ptxas 13.0 output).
+const EIATTR_CTA_PER_CLUSTER: u8 = 0x3d;
+const EIATTR_EXPLICIT_CLUSTER: u8 = 0x3e;
 
 /// The kernel's metadata, read from the cubin's ELF directly (sections, `.nv.info` records,
 /// symbol table), so post-processed cubins that `cuobjdump` rejects ("Invalid ELF") load too.
@@ -524,6 +542,12 @@ pub fn read_meta(cubin: &Path, kernel: &str) -> Result<CubinMeta> {
                         req: attr == EIATTR_REQNTID,
                         dims: [w(v, 0), w(v, 1), w(v, 2)],
                     })
+                }
+                EIATTR_CTA_PER_CLUSTER if v.len() >= 12 => {
+                    m.cluster = Some(ptxv_ir::ClusterDecl::Dims([w(v, 0), w(v, 1), w(v, 2)]))
+                }
+                EIATTR_EXPLICIT_CLUSTER => {
+                    m.cluster.get_or_insert(ptxv_ir::ClusterDecl::Explicit);
                 }
                 _ => {}
             }
@@ -3670,6 +3694,55 @@ fn lower_line(
         // Generic atomics (`atomicAdd(float*)` on an unknown space):
         // `ATOM.E.ADD.F32.FTZ.RN.STRONG.GPU P, RZ, [Ra.64], Rb` (P = performed: global),
         // `ATOM.E.CAST.SPIN PT, Rd, [Ra], Rc, Rc+1` (Rd = 1 when swapped).
+        // `ATOM.E.ADD.F16x2.RN` / `.BF16x2.RN` (`atomicAdd(__half2*)` / `(__nv_bfloat162*)`,
+        // generic `atom.add.noftz.f16x2` / `.bf16x2`): per-lane half adds, one 4-byte atomic
+        // (probes/half_add; ASSUME(N-F16X2), ASSUME(N-BF16X2)). Only `.E`, `.ADD`, `.RN`, the
+        // type, `.STRONG` and a scope: anything else is refused.
+        "ATOM"
+            if has("E")
+                && has("ADD")
+                && has("RN")
+                && (has("F16x2") != has("BF16x2"))
+                && mods.iter().all(|m| {
+                    matches!(
+                        *m,
+                        "E" | "ADD" | "RN" | "F16x2" | "BF16x2" | "STRONG" | "GPU" | "SYS" | "SM"
+                    )
+                }) =>
+        {
+            let p = match lw.op(0)? {
+                "PT" => None,
+                x => Some(lw.pdst(x)?),
+            };
+            let d = match lw.op(1)? {
+                "RZ" => None,
+                x => Some(lw.dst(x)?),
+            };
+            let mut addr = lw.addr(lw.op(2)?)?;
+            if let Some(Val::Reg(r, 1)) = addr.base {
+                if r.file == File::R {
+                    addr.base = Some(Val::Reg(r, 2));
+                }
+            }
+            Op::Atom {
+                op: if has("F16x2") {
+                    AtomOp::AddF16x2
+                } else {
+                    AtomOp::AddBf16x2
+                },
+                space: Space::Generic,
+                bytes: 4,
+                addr,
+                v: lw.val(lw.op(3)?, 4)?,
+                d,
+                sync: MemSync {
+                    sem: Sem::Relaxed,
+                    scope: sass_scope(mods).unwrap_or(Scope::Cta),
+                },
+                p,
+                new: None,
+            }
+        }
         "ATOM"
             if has("E")
                 && (has("F32") && has("ADD") && has("FTZ") && has("RN")
@@ -3776,7 +3849,7 @@ fn lower_line(
         "ATOM"
             if has("E")
                 && !has("CAS")
-                && !mods.iter().any(|m| m.starts_with('F'))
+                && !mods.iter().any(|m| m.starts_with('F') || m.starts_with("BF"))
                 && (has("ADD")
                     || has("OR")
                     || has("AND")
@@ -3841,6 +3914,7 @@ fn lower_line(
             Op::Qspc {
                 p: lw.pdst(lw.op(0)?)?,
                 addr,
+                cluster: has("D"),
             }
         }
         // `ATOMS.POPC.INC.32 RZ, [Ra]`: ptxas's form of `red.shared.add.u32 [a], 1` (the warp's
@@ -4017,7 +4091,15 @@ fn lower_line(
             if l.opcode.starts_with("BSSY") {
                 Op::Bssy { b }
             } else {
-                Op::Bsync { b }
+                // MISS 81: the modifier decides whether the BSYNC is a reconvergence point.
+                let form = if has("RECONVERGENT") {
+                    BarForm::Reconvergent
+                } else if has("RELIABLE") {
+                    BarForm::Reliable
+                } else {
+                    BarForm::Plain
+                };
+                Op::Bsync { b, form }
             }
         }
         // `BREAK.RELIABLE Bb` (torch's vectorized elementwise loops: lanes past the end leave
@@ -4588,7 +4670,7 @@ fn lower_line(
         "LDS" => {
             let bytes = match mods {
                 ["U16"] | ["S16"] => 2,
-                ["U8"] => 1,
+                ["U8"] | ["S8"] => 1,
                 [] => 4,
                 ["64"] => 8,
                 ["128"] => 16,
@@ -5224,7 +5306,10 @@ fn lower_line(
             // `BRA.U UP0, `(label)`: the condition is an operand, not a guard.
             // `BRA.U !P0, UPT, `(label)`: a thread predicate and a uniform one, both must hold;
             // only a true uniform predicate is modeled.
-            let (cond, t) = if l.operands.len() == 3 && lw.op(1)? == "UPT" {
+            if l.operands.len() == 3 && lw.op(1)? != "UPT" {
+                bail!(lw.err("BRA with a uniform predicate operand other than UPT not modeled"));
+            }
+            let (cond, t) = if l.operands.len() == 3 {
                 (Some(lw.pred(lw.op(0)?)?), lw.op(2)?)
             } else if l.operands.len() == 2 {
                 (Some(lw.pred(lw.op(0)?)?), lw.op(1)?)
@@ -5272,13 +5357,19 @@ fn lower_line(
                 let target = *addr_to_idx
                     .get(&a)
                     .ok_or_else(|| lw.err("label outside function"))?;
+                // `BRA.U P, ...` (a thread predicate operand, no guard) is uniform like
+                // `@P BRA.U` (MISS 132): GB300 branches with the whole warp when P holds in every
+                // lane and with no lane otherwise (probes/bra_u operand forms; MISS 133: before,
+                // per lane). A uniform predicate operand (`BRA.U [!]UPn`, `[!]UPT`) holds in all
+                // lanes or in none: it stays a per-lane branch, the same execution, whose one
+                // edge per lane the E-BAR-OVER walks follow. ASSUME(L-ROSETTA)
                 return Ok(Inst {
                     guard: c,
                     op: Op::Bra {
                         target,
                         any: has("ANY"),
                         tid0_falls: false,
-                        all: false,
+                        all: has("U") && !has("ANY") && c.reg.is_some_and(|r| r.file == File::P),
                         cond: None,
                         div: None,
                     },
@@ -5431,14 +5522,39 @@ fn atom_mod_known(m: &str) -> bool {
     )
 }
 
+/// ptxas's emulation of a 16-bit atomic (`atom.add.noftz.f16` / `.bf16` on sm_103a: no
+/// native form) loads the containing word with a plain `LD.E` to seed the first compare of its
+/// CAS retry loop. When the value can only reach that compare (`ptxv_ir::casloop::seed_load`:
+/// same address, a 4-byte word, nothing else reads it, nothing enters between), the load is
+/// modelled as a relaxed load of the CAS's scope instead of a plain one, which would race with
+/// every other atomic on the word (MISS 175). Any value it could return (stale, torn) only
+/// makes the first CAS fail and retry with the word the CAS returned, so the model drops no
+/// outcome; a conflict with a plain write is still reported at the CAS. ASSUME(E-CAS-SEED)
+fn cas_seed_loads(code: &mut [Inst]) {
+    for cr in ptxv_ir::casloop::cas_retry_loops(code) {
+        let Some(s) = ptxv_ir::casloop::seed_load(code, &cr) else {
+            continue;
+        };
+        let Op::Atom { sync: cas_sync, .. } = code[cr.cas].op else {
+            continue;
+        };
+        if let Op::Ld { sync, .. } = &mut code[s].op {
+            *sync = Some(MemSync {
+                sem: Sem::Relaxed,
+                scope: cas_sync.scope,
+            });
+        }
+    }
+}
+
 /// The operation and width of `ATOMG` / `REDG` with modifiers `mods`, None for a form not
 /// modeled. Besides `.E`, `.STRONG` and the scope: `.ADD` / `.OR` / `.AND` / `.XOR` / `.EXCH`
 /// [`.64`] (integer; `.ADD.S32` / `.U32` add alike: the sum wraps either way, probes/redux_s32),
 /// `.MIN` / `.MAX` [`.S32` | `.U32` | `.64` | `.S64`], `.ADD.F32.FTZ.RN` (Triton's
 /// tl.atomic_add on f32), `.ADD.BF16x2.RN` (per-lane bf16 add, probes/bf16x2, N-BF16X2),
-/// `.ADD.F32x2` / `.F32x4.FTZ.RN` (per-element f32 adds), `.ADD.BF16x4.RN` (two BF16x2 adds)
-/// and `.ADD.F64.RN`. Everything else in
-/// the sm_103a table (`.F16x2`, `.F16x4` / `.x8`, `.CAS` handled elsewhere) is refused.
+/// `.ADD.F32x2` / `.F32x4.FTZ.RN` (per-element f32 adds), `.ADD.BF16x4.RN` (two BF16x2 adds),
+/// `.ADD.F16x2.RN` (per-lane f16 add, probes/half_add, N-F16X2) and `.ADD.F64.RN`. Everything
+/// else in the sm_103a table (`.F16x4` / `.x8`, `.CAS` handled elsewhere) is refused.
 fn atomg_op(mods: &[&str]) -> Option<(AtomOp, u8)> {
     let mut core: Vec<&str> = mods
         .iter()
@@ -5462,6 +5578,8 @@ fn atomg_op(mods: &[&str]) -> Option<(AtomOp, u8)> {
         ["ADD", "F32x4", "FTZ", "RN"] => Some((AtomOp::FAddFtz, 16)),
         ["ADD", "F64", "RN"] => Some((AtomOp::FAdd64, 8)),
         ["ADD", "BF16x2", "RN"] => Some((AtomOp::AddBf16x2, 4)),
+        // Per-lane f16 add (`atom` / `red .global.add.noftz.f16x2`; probes/half_add, N-F16X2).
+        ["ADD", "F16x2", "RN"] => Some((AtomOp::AddF16x2, 4)),
         // `.v4.bf16` (Triton's bf16 tl.atomic_add on 4 lanes): one BF16x2 atomic per 4-byte
         // half (probes/atom_bf16x4, N-BF16X2).
         ["ADD", "BF16x4", "RN"] => Some((AtomOp::AddBf16x2, 8)),
@@ -5703,6 +5821,139 @@ fn aligned_bars(code: &mut [Inst]) {
     }
 }
 
+/// ASSUME(E-BSYNC): a `BSYNC.RECONVERGENT Bb` holds its lanes only where no lane of its region
+/// can yield or wait in a collective before it (MISS 81, gap G1). GB300 lets the waiting lanes
+/// pass one while a lane of its mask sleeps (probes/mbar_init_diverge late_sleep_reconvform:
+/// 10,000 of 10,000 runs wrong), and ptxas relies on the form for a warp sync only after
+/// regions without a yield. The walk from each `BSSY Bb` and each `BMOV.32 Bb, Ra` restore
+/// follows every branch edge, jump table and call (into the callee, and on after the call). A
+/// path ends at a `BSYNC Bb` (which the walk then reaches), an unguarded `BREAK Bb`, `EXIT` or
+/// `BMOV.32.CLEAR` of Bb, a guarded `BREAK Bb` followed by a branch on the same guard (ptxas's
+/// loop exit: the breaking lanes take the branch), and a `RET` of a followed call; the
+/// region's own function's `RET` goes on at every return site. A `.RECONVERGENT` `BSYNC` that a
+/// walk meeting a `YIELD`, an executable `NANOSLEEP` or a `WARPSYNC.COLLECTIVE` reaches becomes
+/// `BarForm::ReconvergentYield`, which holds as the plain form does.
+fn reconvergent_yields(lines: &[SassLine], code: &mut [Inst]) {
+    let never = Pred {
+        reg: None,
+        neg: true,
+    };
+    let ret_sites: Vec<usize> = code
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| matches!(i.op, Op::Call { .. } | Op::CallAbs { .. }))
+        .map(|(i, _)| i + 1)
+        .collect();
+    let yields = |pc: usize| {
+        let o = lines[pc].opcode.as_str();
+        code[pc].guard != never
+            && (o == "YIELD"
+                || o.starts_with("NANOSLEEP")
+                || matches!(
+                    code[pc].op,
+                    Op::WarpSync {
+                        collective: true,
+                        ..
+                    }
+                ))
+    };
+    let mut demote = vec![false; code.len()];
+    for s in 0..code.len() {
+        let b = match code[s].op {
+            Op::Bssy { b } | Op::BMov { b, to_b: true, .. } => b,
+            _ => continue,
+        };
+        // (pc, reached through a call the walk followed)
+        let mut seen = std::collections::HashSet::new();
+        let mut work = vec![(s + 1, false)];
+        let (mut ends, mut hit) = (vec![], false);
+        while let Some((pc, callee)) = work.pop() {
+            if pc >= code.len() || !seen.insert((pc, callee)) {
+                continue;
+            }
+            hit |= yields(pc);
+            let i = &code[pc];
+            let always = i.guard.is_always();
+            let next = pc + 1;
+            match &i.op {
+                Op::Bsync { b: c, .. } if *c == b => {
+                    ends.push(pc);
+                    if !always {
+                        work.push((next, callee));
+                    }
+                }
+                Op::Break { b: c, cond: None } if *c == b && always => {}
+                Op::Break { b: c, cond: None }
+                    if *c == b
+                        && code.get(next).is_some_and(|n| {
+                            n.guard == i.guard
+                                && matches!(
+                                    n.op,
+                                    Op::Bra {
+                                        cond: None,
+                                        div: None,
+                                        tid0_falls: false,
+                                        ..
+                                    }
+                                )
+                        }) =>
+                {
+                    work.push((next + 1, callee))
+                }
+                Op::BMov {
+                    b: c,
+                    to_b: false,
+                    clear: true,
+                    ..
+                } if *c == b && always => {}
+                Op::Exit | Op::Trap { .. } if always => {}
+                Op::Bra {
+                    target,
+                    cond: None,
+                    div: None,
+                    tid0_falls: false,
+                    ..
+                } if always => work.push((*target, callee)),
+                Op::Bra { target, .. } => {
+                    work.push((*target, callee));
+                    work.push((next, callee));
+                }
+                Op::Brx { targets, .. } => {
+                    work.extend(targets.iter().map(|&t| (t, callee)));
+                    if !always {
+                        work.push((next, callee));
+                    }
+                }
+                Op::Call { target } => {
+                    work.push((*target, true));
+                    work.push((next, callee));
+                }
+                Op::Ret { .. } => {
+                    if !callee {
+                        work.extend(ret_sites.iter().map(|&r| (r, false)));
+                    }
+                    if !always {
+                        work.push((next, callee));
+                    }
+                }
+                _ => work.push((next, callee)),
+            }
+        }
+        if hit {
+            for e in ends {
+                demote[e] = true;
+            }
+        }
+    }
+    for (x, d) in code.iter_mut().zip(demote) {
+        if let Op::Bsync { form, .. } = &mut x.op {
+            if d && *form == BarForm::Reconvergent {
+                *form = BarForm::ReconvergentYield;
+            }
+        }
+    }
+}
+
 pub fn load_cubin(cubin: &Path, kernel: &str) -> Result<Kernel> {
     let dis = run_tool("nvdisasm", &["-c", "-hex", cubin.to_str().unwrap()])?;
     let meta = read_meta(cubin, kernel)?;
@@ -5845,6 +6096,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
             code[i].op = Op::EndCollective { start };
         }
     }
+    reconvergent_yields(&lines, &mut code);
     if let Some((i, l)) = lines
         .iter()
         .enumerate()
@@ -6008,6 +6260,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
     }
     aligned_bars(&mut code);
     smem_acquires(&lines, &mut code);
+    cas_seed_loads(&mut code);
     l2::check_kernel(&code)?;
     let static_findings = scoreboard::check(&lines, &code, meta.sm)?;
     let pend = meta.params.iter().map(|p| p.1 + p.2).max().unwrap_or(0);
@@ -6037,6 +6290,7 @@ pub fn lower(dis: &str, kernel: &str, meta: &CubinMeta) -> Result<Kernel> {
         ldtm_waits,
         parts: vec![],
         ntid: meta.ntid,
+        cluster: meta.cluster,
         globals: meta.globals.clone(),
         global_relocs: meta.global_relocs.clone(),
         // On GB300 the driver may rewrite an sm_100 / sm_100f module into an sm_103 image at
@@ -6474,6 +6728,11 @@ mod tests {
             "ST.E.EF.128 desc[UR4][R28.64+0x40], R16",
             "ATOM.E.MAX.64.STRONG.SM P0, R4, desc[UR4][R28.64], R6",
             "ATOMG.E.ADD.F32x2.FTZ.RN.STRONG.GPU PT, R2, desc[UR6][R4.64], R10",
+            "REDG.E.ADD.F16x2.RN.STRONG.GPU desc[UR6][R4.64], R11",
+            "ATOMG.E.ADD.F16x2.RN.STRONG.GPU PT, R16, desc[UR4][R2.64+0x5000], R4",
+            "ATOM.E.ADD.F16x2.RN.STRONG.GPU P0, RZ, desc[UR4][R4.64], R7",
+            "ATOM.E.ADD.BF16x2.RN.STRONG.GPU P0, R0, desc[UR4][R2.64], R5",
+            "ATOM.E.CAS.STRONG.GPU PT, R2, [R8], R11, R3",
         ];
         for l in ok {
             lower1(l).unwrap_or_else(|e| panic!("{l}: {e}"));
@@ -6494,7 +6753,15 @@ mod tests {
             "REDUX.S32 UR5, R10",
             "REDUX.OR.S32 UR5, R10",
             "REDUX.MIN UR5, R10",
-            "REDG.E.ADD.F16x2.RN.STRONG.GPU desc[UR6][R4.64], R11",
+            "REDG.E.ADD.F16x2.STRONG.GPU desc[UR6][R4.64], R11",
+            "REDG.E.ADD.F16x2.RN.FTZ.STRONG.GPU desc[UR6][R4.64], R11",
+            "ATOM.E.ADD.F16x2.STRONG.GPU P0, RZ, desc[UR4][R4.64], R7",
+            "ATOM.E.ADD.F16x2.BF16x2.RN.STRONG.GPU P0, RZ, desc[UR4][R4.64], R7",
+            "ATOM.E.ADD.F16x2.RN.FTZ.STRONG.GPU P0, RZ, desc[UR4][R4.64], R7",
+            "ATOM.E.ADD.F16x4.RN.STRONG.GPU P0, RZ, desc[UR4][R4.64], R6",
+            "ATOM.E.ADD.BF16x2.RN.SAT.STRONG.GPU P0, RZ, desc[UR4][R4.64], R7",
+            "ATOM.E.ADD.BF16x2.STRONG.GPU P0, RZ, desc[UR4][R4.64], R7",
+            "ATOMG.E.ADD.BF16x2.STRONG.GPU PT, RZ, desc[UR4][R4.64], R7",
             "REDG.E.INC.STRONG.GPU desc[UR6][R4.64], R10",
             "ATOMG.E.ADD.F16x4.GPU.RN.STRONG PT, R1, desc[UR6][R4.64], R10",
             "FHFMA.BF16 R1, -R2, R3, R4",
@@ -6558,6 +6825,30 @@ mod tests {
             }
         }
         assert!(lower1("VIADDMNMX R13, R3, -c[0x0][0x10], RZ, !PT").is_err());
+    }
+
+    /// MISS 133 operand forms: `BRA.U` with a thread-predicate operand (`[!]Pn`, with or without
+    /// `UPT`) is all-form; with a uniform predicate operand (`[!]UPn`, `[!]UPT`), which holds in
+    /// every lane or in none, it stays a per-lane branch. The plain `BRA` is the control.
+    #[test]
+    fn bra_u_operand_all_form_only_for_thread_predicates() {
+        for (l, all) in [
+            ("BRA.U !P0, `(.L_x_1)", true),
+            ("BRA.U P2, `(.L_x_1)", true),
+            ("BRA.U !P0, UPT, `(.L_x_1)", true),
+            ("BRA.U UP0, `(.L_x_1)", false),
+            ("BRA.U !UP1, `(.L_x_1)", false),
+            ("BRA.U UPT, `(.L_x_1)", false),
+            ("BRA.U !UPT, `(.L_x_1)", false),
+            ("BRA !P0, `(.L_x_1)", false),
+        ] {
+            match lower1(l).unwrap() {
+                Op::Bra {
+                    all: a, any: false, ..
+                } => assert_eq!(a, all, "{l}"),
+                o => panic!("{l}: {o:?}"),
+            }
+        }
     }
 
     #[test]
@@ -6643,6 +6934,102 @@ mod tests {
 
     fn r(idx: u16) -> Reg {
         Reg { file: File::R, idx }
+    }
+
+    /// E-BSYNC (MISS 81, gap G1): the region walk takes a `.RECONVERGENT` `BSYNC` as the plain
+    /// form where a lane of its region can yield or wait in a collective before it.
+    #[test]
+    fn reconvergent_bsync_region_walk() {
+        let forms = |body: &str| -> Vec<BarForm> {
+            let mut text = String::from(".text.k:\n");
+            for l in body.lines() {
+                text.push_str(l);
+                text.push('\n');
+                if l.trim_start().starts_with("/*") {
+                    text.push_str("        /* 0x000fc00000000000 */\n");
+                }
+            }
+            let k = lower(&text, "k", &CubinMeta::default()).expect("lower");
+            k.code
+                .iter()
+                .filter_map(|i| match i.op {
+                    Op::Bsync { form, .. } => Some(form),
+                    _ => None,
+                })
+                .collect()
+        };
+        // ptxas's join of an elected lane's nanosleep spin (probes/mbar_init_diverge).
+        let sleep = "
+        /*0000*/                   BSSY.RECONVERGENT B0, `(.L_x_1) ;
+        /*0010*/              @!P0 BRA `(.L_x_1) ;
+        /*0020*/                   NANOSLEEP 0x3e8 ;
+.L_x_1:
+        /*0030*/                   BSYNC.RECONVERGENT B0 ;
+        /*0040*/                   YIELD ;
+        /*0050*/                   EXIT ;
+";
+        use BarForm::*;
+        assert_eq!(forms(sleep), [ReconvergentYield]);
+        // No yield in the region (the YIELD after the BSYNC is outside it): a reconvergence
+        // point; nor does a NANOSLEEP that never runs count.
+        let quiet = sleep.replace("NANOSLEEP 0x3e8", "NOP");
+        assert_eq!(forms(&quiet), [Reconvergent]);
+        let never = sleep.replace(
+            "                   NANOSLEEP 0x3e8",
+            "              @!PT NANOSLEEP.SYNCS 0x3e8",
+        );
+        assert_eq!(forms(&never), [Reconvergent]);
+        // The plain form stays plain.
+        let plain = sleep.replace("BSYNC.RECONVERGENT", "BSYNC");
+        assert_eq!(forms(&plain), [Plain]);
+        // A yield in a called function is in the region; after the call's return the walk
+        // goes on at the call's successor only.
+        let call = "
+        /*0000*/                   BSSY.RECONVERGENT B0, `(.L_x_1) ;
+        /*0010*/                   CALL.REL.NOINC `(.L_x_9) ;
+.L_x_1:
+        /*0020*/                   BSYNC.RECONVERGENT B0 ;
+        /*0030*/                   EXIT ;
+.L_x_9:
+        /*0040*/                   YIELD ;
+        /*0050*/                   RET.REL.NODEC R20 `(k) ;
+";
+        assert_eq!(forms(call), [ReconvergentYield]);
+        assert_eq!(forms(&call.replace("YIELD", "NOP")), [Reconvergent]);
+        // A collective in BRA.DIV's slow path (ptxas's `__syncwarp` lowering) is in the region.
+        let coll = "
+        /*0000*/                   BSSY.RECONVERGENT B0, `(.L_x_1) ;
+        /*0010*/                   BRA.DIV UR4, `(.L_x_2) ;
+.L_x_1:
+        /*0020*/                   BSYNC.RECONVERGENT B0 ;
+        /*0030*/                   EXIT ;
+.L_x_2:
+        /*0040*/                   WARPSYNC.COLLECTIVE R0, `(.L_x_3) ;
+.L_x_3:
+        /*0050*/                   ENDCOLLECTIVE ;
+        /*0060*/                   BRA `(.L_x_1) ;
+";
+        assert_eq!(forms(coll), [ReconvergentYield]);
+        // ptxas's loop exit: lanes that break out of B1's region branch past its BSYNC, so the
+        // spin they reach is outside it; without the branch they stay on the region's path.
+        let brk = "
+        /*0000*/                   BSSY.RECONVERGENT B1, `(.L_x_1) ;
+.L_x_0:
+        /*0010*/               @P0 BREAK B1 ;
+        /*0020*/               @P0 BRA `(.L_x_2) ;
+        /*0030*/               @P1 BRA `(.L_x_0) ;
+.L_x_1:
+        /*0040*/                   BSYNC.RECONVERGENT B1 ;
+        /*0050*/                   EXIT ;
+.L_x_2:
+        /*0060*/                   NANOSLEEP 0x3e8 ;
+        /*0070*/                   EXIT ;
+";
+        assert_eq!(forms(brk), [Reconvergent]);
+        assert_eq!(
+            forms(&brk.replace("@P0 BRA `(.L_x_2)", "@P2 BRA `(.L_x_2)")),
+            [ReconvergentYield]
+        );
     }
 
     /// `DEPBAR.LE SB0` after a cp.async commit and after a bulk commit on the same scoreboard

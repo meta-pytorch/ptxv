@@ -1,0 +1,17 @@
+# MISS 177 and MISS 159's 64-bit residual: ref_cas64maybe against cand_copy_plus1 at
+# data_plus1/ (w = x + 1, where the compare-and-swap fails and out = x). Until MISS 177 L0 PROVEN on
+# both fronts: the failed swap's other word kept x's node over MISS 159's taint. GB300 where w = x:
+# 0 against x.
+reference = { case = "cand_copy_plus1", variant = "good", front = "ptx" }
+
+[[candidates]]
+case = "ref_cas64maybe"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_cas64maybe"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"

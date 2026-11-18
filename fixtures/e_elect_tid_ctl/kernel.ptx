@@ -1,0 +1,48 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-ELECT (MISS 72): `%tid.x >> 5` is warp-uniform, but written under a lane-varying branch
+// it leaves different values per lane: lanes 1..30 set r2 = 0, lanes 0 and 31 keep r2 = 7.
+// Warp 0's leader stores out[r2] (out[7] for the end lanes, out[0] for the middle ones) with
+// no barrier; thread 32 reads out[0]: a race for middle-lane leaders only.
+//   UNCOND: every lane sets r2 = 0: every leader stores out[0], a race for all of them.
+//   VOTE: lanes 1..30 set r2 = 0 by a ballot of a false predicate instead of the shift.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_elect_tid_ctl(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, 7;
+    and.b32 %r3, %r1, 31;
+    setp.ge.u32 %p2, %r3, 1;
+    setp.le.u32 %p3, %r3, 30;
+    and.pred %p2, %p2, %p3;
+    @!%p2 bra SKIP;                      // @SKIP
+    shr.u32 %r2, %r1, 5;                 // @SHR 0 in warp 0, written by lanes 1..30 only
+SKIP:
+    shr.u32 %r4, %r1, 5;
+    setp.ne.u32 %p5, %r4, 0;
+    @%p5 bra READER;
+    elect.sync _|%p1, -1;
+    mul.wide.u32 %rd2, %r2, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    mov.u32 %r7, 7;
+    @%p1 st.global.u32 [%rd3], %r7;
+    bra DONE;
+READER:
+    setp.ne.u32 %p7, %r1, 32;
+    @%p7 bra DONE;
+    ld.global.u32 %r5, [%rd1];
+    st.global.u32 [%rd1+4], %r5;
+DONE:
+    ret;
+}

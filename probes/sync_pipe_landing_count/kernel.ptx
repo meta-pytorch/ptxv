@@ -1,0 +1,83 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Stateful-explorer repro (MISS 232): probes/sync_pipe_issue_order with M1's count 3 and a
+// third arrival on M1 by rank 1 itself, after it acquires M2 and before it test_waits M1.
+// Only issue order Y,X leaves X in flight at lane 1's release; then rank 1's arrival does not
+// complete phase 0 and test_wait can be false (out = 1 or 0, nondeterministic). Where an
+// arrival that completes a phase writes the phase's last-arrival key (space 16, in the sync-only
+// footprints; the MISS 231 follow-up), that key orders sync_pipe_issue_order's landing against
+// the drain without the pipe's landing key. Here neither remote landing completes the phase
+// before rank 1 arrives, so only the landing key orders the landing against the drain.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry sync_pipe_landing_count(.param .u64 out_p)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b64 m1;
+    .shared .align 8 .b64 m2;
+    .shared .align 4 .b32 g;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r3, %cluster_ctarank;
+    mov.u32 %r4, m1;
+    mov.u32 %r5, m2;
+    mov.u32 %r8, g;
+    setp.ne.u32 %p0, %r3, 1;
+    setp.ne.u32 %p1, %r1, 0;
+    or.pred %p2, %p0, %p1;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r4], 3;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    fence.mbarrier_init.release.cluster;
+INIT_DONE:
+    @%p1 bra G1;
+    st.shared.u32 [%r8], 0;
+G1:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    setp.gt.u32 %p3, %r1, 1;
+    @%p3 bra END;
+    @!%p0 bra RANK1;
+    mapa.shared::cluster.u32 %r9, %r4, 1;
+    mapa.shared::cluster.u32 %r10, %r5, 1;
+    @%p1 bra LANE0;
+    mbarrier.arrive.relaxed.cluster.shared::cluster.b64 _, [%r9];
+    mov.u32 %r17, 0;
+SPINX:
+    ld.volatile.shared.u32 %r16, [%r8];
+    add.u32 %r17, %r17, 1;
+    setp.lt.u32 %p7, %r17, %r16;
+    @%p7 bra SPINX;
+    bra END;
+LANE0:
+    mbarrier.arrive.relaxed.cluster.shared::cluster.b64 _, [%r9];
+    fence.acq_rel.cluster;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r10];
+    bra END;
+RANK1:
+    @%p1 bra END;
+WAIT2:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p5, [%r5], 0;
+    @!%p5 bra WAIT2;
+    mbarrier.arrive.release.cta.shared::cta.b64 %rd2, [%r4];
+    mbarrier.test_wait.parity.acquire.cluster.shared::cta.b64 %p6, [%r4], 0;
+    selp.u32 %r15, 1, 0, %p6;
+    st.global.u32 [%rd1], %r15;
+WAIT:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p4, [%r4], 0;
+    @!%p4 bra WAIT;
+END:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

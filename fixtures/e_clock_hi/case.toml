@@ -1,0 +1,37 @@
+name = "e_clock_hi"
+description = """
+E-CLOCK: thread 32 branches on bit 32 of %clock64 (the high half alone); one side copies out[1],
+which thread 0 stores with no synchronization, to out[0]: a race on that side only. ptxas reads
+the high register of the `CS2R R2, SR_CLOCKLO` pair directly. The SASS clock read listed only
+the pair's low register as written (Op::dst_regs), so the clock taint never reached the high
+half, the branch was no clock choice and the model (clock 0) stored 1: SASS clean. Both halves
+are written now: the branch goes both ways, the race. The PTX front holds all 64 bits in one
+register and was right before. LO: bit 0 of the low half, a clock choice on both builds."""
+ptx = "kernel.ptx"
+entry = "e_clock_hi"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "branch on bit 32 of %clock64"
+expect = ["nondeterministic", "race"]
+
+[[variants]]
+id = "LO"
+summary = "branch on bit 0 of %clock64"
+marker = "@HALF"
+find = "shr.u64 %rd3, %rd2, 32;"
+replace = "mov.u64 %rd3, %rd2;"
+expect = ["nondeterministic", "race"]

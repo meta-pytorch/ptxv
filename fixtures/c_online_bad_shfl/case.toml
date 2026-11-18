@@ -43,3 +43,5 @@ buffer = "F"
 [[variants]]
 id = "good"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]

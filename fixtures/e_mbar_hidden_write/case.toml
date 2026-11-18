@@ -1,0 +1,61 @@
+name = "e_mbar_hidden_write"
+description = """
+RMK4 A1: store over an mbarrier unordered with its first init, the init thread's own earlier write hides it from the last-write check. DIFFS on SASS is violation only: LDS / STS race as relaxed strong accesses there (S-SMEM-STRONG), so the write-write pair is no race."""
+ptx = "kernel.ptx"
+entry = "e_mbar_hidden_write"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "t32 plain-stores 0 over a; t0 plain-stores 0 over a then inits a; unordered (S-SAME-VALUE keeps t32's store in hw)"
+expect = ["violation"]
+
+[[variants]]
+id = "SWAP"
+summary = "good with the threads swapped (t32 writes and inits, t0 stores)"
+edits = [{ marker = "@OTH", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@INT", find = "%r1, 0;", replace = "%r1, 32;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "STRONG"
+summary = "both pre-init stores st.relaxed.cta (morally strong, no race between them)"
+edits = [{ marker = "@OST", find = "st.shared.u64", replace = "st.relaxed.cta.shared.u64" }, { marker = "@IST", find = "st.shared.u64", replace = "st.relaxed.cta.shared.u64" }]
+expect = ["violation"]
+
+[[variants]]
+id = "STRONGS"
+summary = "STRONG with the threads swapped"
+edits = [{ marker = "@OTH", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@INT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@OST", find = "st.shared.u64", replace = "st.relaxed.cta.shared.u64" }, { marker = "@IST", find = "st.shared.u64", replace = "st.relaxed.cta.shared.u64" }]
+expect = ["violation"]
+
+[[variants]]
+id = "NOOWN"
+summary = "control: t0 does not write first (the e_mbar_store_order PREU shape)"
+marker = "@IST"
+replace = "<delete>"
+expect = ["violation"]
+
+[[variants]]
+id = "NOOWNS"
+summary = "control: SWAP without the init thread's own earlier write"
+edits = [{ marker = "@OTH", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@INT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@IST", replace = "<delete>" }]
+expect = ["violation"]
+
+[[variants]]
+id = "DIFFS"
+summary = "control: SWAP with the init thread writing a different value (a write-write race, not S-SAME-VALUE)"
+edits = [{ marker = "@OTH", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@INT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@IST", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.b64 %rd6, 3; st.shared.u64 [%r2], %rd6;" }]
+expect = ["race", "violation"]
+expect_sass = ["violation"]

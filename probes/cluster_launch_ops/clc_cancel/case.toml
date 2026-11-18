@@ -1,0 +1,44 @@
+name = "cluster_launch_ops_clc_cancel"
+description = """
+MISS 209 hardware probe: clusterlaunchcontrol.try_cancel (thread 0) of its 16-byte response into S[0..4), mbarrier complete_tx; out[t] = S[t] afterwards (S[t] starts at t). Variant cluster1:
+.reqnctapercluster 1, 1, 1; variant none: no cluster dimensions. GB300 (ptxv probe): cluster1
+runs, none runs (expected/clc_cancel.gb300.txt)."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "cl_clc_cancel"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "file"
+file = "../src.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[variants]]
+id = "cluster1"
+summary = ".reqnctapercluster 1, 1, 1"
+expect = ["clean"]
+
+[[variants]]
+id = "none"
+summary = "no cluster dimensions"
+marker = "@NOCLUSTER"
+replace = "<delete>"
+expect = ["clean"]

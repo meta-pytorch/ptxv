@@ -1,0 +1,46 @@
+name = "e_mbar_init_restrict"
+description = """
+RMK4 A10: reuse of an invalidated mbarrier ordered after the inval only by shared-memory-only happens-before. NOACQ on SASS is clean: ptxas emits no code for the acquire fence, so its SASS is the same as STORE."""
+ptx = "kernel.ptx"
+entry = "e_mbar_init_restrict"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "t32 re-initializes a uniformly after the restricted acquire (mbar_init compares the inval against the full clock)"
+expect = ["clean"]
+
+[[variants]]
+id = "STORE"
+summary = "t32 plain-stores over a after the restricted acquire (store_over_mbar compares against sh_vc)"
+marker = "@USE"
+find = "mbarrier.init.shared::cta.b64 [%r2], 1;"
+replace = "mov.b64 %rd5, 0; st.shared.u64 [%r2], %rd5;"
+expect = ["clean"]
+
+[[variants]]
+id = "INITP"
+summary = "t32 re-initializes a through a per-thread address (SASS STS.64)"
+marker = "@USE"
+find = "mbarrier.init.shared::cta.b64 [%r2], 1;"
+replace = "sub.u32 %r20, %r1, 32; shl.b32 %r21, %r20, 3; add.u32 %r22, %r2, %r21; mbarrier.init.shared::cta.b64 [%r22], 1;"
+expect = ["clean"]
+
+[[variants]]
+id = "NOACQ"
+summary = "control: no acquire fence: the store is unordered with the inval: violation"
+edits = [{ marker = "@ACQ", replace = "<delete>" }, { marker = "@USE", find = "mbarrier.init.shared::cta.b64 [%r2], 1;", replace = "mov.b64 %rd5, 0; st.shared.u64 [%r2], %rd5;" }]
+expect = ["violation"]
+expect_sass = ["clean"]

@@ -1,0 +1,66 @@
+name = "e_cpasync_arrive_prior"
+description = """
+E-CPASYNC-MBAR: a cp.async.mbarrier.arrive's arrive-on is ordered after all of the thread's prior
+cp.async operations (PTX ISA 8.9.1.1), not only the copies it tracks. A slot copied twice by
+thread 0, each round read by a different thread; the second reader synchronizes with the second
+round only, and the second copy rewrites the bytes already there (S-SAME-VALUE), so its read is
+checked against the first copy. Until the arrive-on released the prior copies too, good raced
+on the PTX front (MISS 118's copies-only release). See kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_arrive_prior"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+# Bytes 0, 1, ..., 31: the two halves differ in every byte.
+[[buffers]]
+name = "in"
+dtype = "u8"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "the second copy rewrites the same bytes; thread 64 reads after the second round only"
+expect = ["clean"]
+
+[[variants]]
+id = "DIFF"
+summary = "the second copy reads in[16..31]: a different value in every byte"
+marker = "@SRC2"
+find = "add.u64 %rd3, %rd2, 0;"
+replace = "add.u64 %rd3, %rd2, 16;"
+expect = ["clean"]
+
+[[variants]]
+id = "STORE"
+summary = "the first round is a plain store of the same bytes and a release arrive, which the second arrive-on is not ordered after"
+marker = "@R1A"
+find = "cp.async.cg.shared.global [%r2], [%rd2], 16;"
+replace = "ld.global.v4.u32 {%r14, %r15, %r16, %r17}, [%rd2];\n    st.shared.v4.u32 [%r2], {%r14, %r15, %r16, %r17};"
+# A known precision artifact (MISS 178): S-SAME-VALUE checks thread 64's read against the store,
+# a writer that the second copy (ordered after it) supersedes; the race is not evidence that the
+# arrive-on leaves the store unordered.
+expect = ["race"]
+# SASS: ptxas emits thread 64's relaxed try_wait as SYNCS.PHASECHK, which acquires (S-MBAR-SCOPE):
+# thread 64 is then ordered after thread 32's arrive on empty, and so after the store.
+expect_sass = ["clean"]
+
+[[variants.edits]]
+marker = "@R1B"
+find = "cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r5];"
+replace = "mbarrier.arrive.shared::cta.b64 %rd10, [%r5];"

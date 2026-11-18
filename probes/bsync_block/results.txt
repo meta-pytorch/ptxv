@@ -1,0 +1,14 @@
+# GB300, ptxas 13.0, 2026-11-11: ptxv hw probes/bsync_block --variant V --runs 10000 --no-num --timeout 400 (expected/ = all zeros).
+# Launch 264 CTAs x 128 threads (4 warps), 256 rounds per warp: 270,336 warp-rounds and 8,110,080 reads by lanes 2-31 per run.
+# Planted stale word 0x8000000000000000 (phase parity 1). Binary: BSSY B1 (plain, 0x450) / BSYNC B1 (0x620) around lanes 0-1's
+# path; inside, BSSY.RECONVERGENT B2 (0x4d0) / BSYNC.RECONVERGENT B2 (0x5f0) around lane 0's clock spin, init, store, arrive;
+# then WARPSYNC R4 (R4 = 3, 0x610); lanes 2-31 branch straight to BSYNC B1.
+good             10,000 runs     0 wrong (lane 1 waits at BSYNC.RECONVERGENT B2, lanes 2-31 at the plain BSYNC B1)
+WARPSYNC         10,000 runs     0 wrong (B2 NOPed: lane 1 waits at the WARPSYNC)
+NOBLOCK          10,000 runs     0 wrong (BSYNC B2 and the WARPSYNC NOPed: lane 1 waits at BSYNC B1 with lanes 2-31)
+RECONV           10,000 runs     0 wrong (BSSY B1 / BSYNC B1 set to .RECONVERGENT)
+# Not evidence about E-HW-BSYNC-YIELD's blocks clause: GB300 runs the fall-through split (lanes 0-1, then lane 0's spin)
+# first and switches only at a yield or block (mbar_init_diverge `late`: 0 early passes without a BSYNC), so lanes 2-31
+# need not reach BSYNC B1 before lane 0 has stored the word.
+# Model (fixtures/e_bsync_block, one warp, one round): race on both fronts at the strict level; GB300 profile: good and
+# WARPSYNC race (the block opens B1), NOBLOCK clean, RECONV clean at both levels.

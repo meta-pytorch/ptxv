@@ -1,0 +1,58 @@
+# GB300 (one GPU, GPU 0), 2026-11-12, rev d2a4ee90 binary: PTXV_HW_EXPECT=variant ptxv hw --runs 1 --scrub, 12
+# processes per variant (each the first, cold launch of its process; later launches in one process read
+# the constant cache warm). Grid 1 x 256. The repro of the MISS 181 review (RVS3 H1).
+# Summary (wrong processes of 12):
+#   HI_NOWAIT (`LDCU.64 UR6` with wr=SB3, a LOP3 reading only UR7 with no wait): 12 / 12
+#     (statically clean before the lift widths, MISS 181)
+#   LO_NOWAIT (UR6 read early too, control): 12 / 12
+#   OWN (the LOP3 waits on SB3): 0 / 12; good: 0 / 12
+# Static classes (fixtures.rs miss181_lift_width_repros): HI_NOWAIT, LO_NOWAIT violations; OWN, good clean.
+# Raw rows:
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw good   [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw HI_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw LO_NOWAIT [scrubbed smem] 1/1 runs differ from the correct output (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 256)] first failing runs: [0]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.7s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.4s) distinct outputs (count, words differing): [(1, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1 runs, 0.5s) distinct outputs (count, words differing): [(1, 0)]

@@ -1,0 +1,31 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry c_equiv_atom64_ref_exch64(.param .u64 px, .param .u64 pout, .param .u64 pbuf)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pout];
+    ld.param.u64 %rd3, [pbuf];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd4, %r0, 4;
+    mul.wide.u32 %rd5, %r0, 8;
+    add.s64 %rd6, %rd1, %rd4;
+    add.s64 %rd7, %rd2, %rd4;
+    add.s64 %rd8, %rd3, %rd5;
+    ld.global.f32 %f1, [%rd6];
+    st.global.f32 [%rd8+4], %f1;
+    atom.global.exch.b64 %rd9, [%rd8], 0;
+    ld.global.f32 %f2, [%rd8+4];
+    st.global.f32 [%rd7], %f2;
+    ret;
+}

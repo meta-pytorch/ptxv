@@ -31,7 +31,8 @@ expect = ["clean"]
 [[variants]]
 id = "early"
 summary = "thread 0 issues the MMA before the wait::st"
-expect = ["race"]
+expect = ["race", "violation"]
+expect_sass = ["race"]
 [[variants.edits]]
 marker = "@MMA"
 replace = "<delete>"

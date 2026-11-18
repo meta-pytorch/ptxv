@@ -1,0 +1,16 @@
+multicast two-process other-rank  st-poll   relaxed.sys both    stress0 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process other-rank  st-poll   relaxed.sys both    stress1 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process other-rank  st-poll   relaxed.sys nofence stress0 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process other-rank  st-poll   relaxed.sys nofence stress1 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process other-rank  st-poll   relaxed.sys reader  stress0 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process other-rank  st-poll   relaxed.sys reader  stress1 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process other-rank  st-poll   relaxed.sys writer  stress0 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process other-rank  st-poll   relaxed.sys writer  stress1 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process same-thread st-nopoll relaxed.sys nofence stress0 rows=2 n=81,920,000 stale=81,920,000 (100.00%) CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+multicast two-process same-thread st-nopoll relaxed.sys nofence stress1 rows=2 n=81,920,000 stale=81,919,874 (100.00%) CI95=[1.00e+00,1.00e+00] other=0 tmo=0
+multicast two-process same-thread st-nopoll relaxed.sys writer  stress0 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process same-thread st-nopoll relaxed.sys writer  stress1 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process same-thread st-poll   relaxed.sys nofence stress0 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process same-thread st-poll   relaxed.sys nofence stress1 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process same-thread st-poll   relaxed.sys writer  stress0 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0
+multicast two-process same-thread st-poll   relaxed.sys writer  stress1 rows=2 n=81,920,000 stale=         0 (  0.00%) CI95=[0.00e+00,4.50e-08] other=0 tmo=0

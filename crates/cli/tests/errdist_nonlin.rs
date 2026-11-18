@@ -240,9 +240,12 @@ fn elementwise_pair_off_the_lattice_has_no_partial_pmf() {
 
 /// The f32 elementwise law on an input with a point mass (lin_gap/mix under vmix: v = 1 on 95%
 /// of the elements, else N(0, 1); and the same law as 2 X of a mixture): the atom stays one
-/// code, and the law agrees with Tier 3 and is the headline. Until 2026-11-10 the atom was
-/// spread over its 1/256-binade cell like a density, values near 1 that round like N(0, 1)
-/// draws: 0.26 against Tier 3's 0.013 (refused by the cross-check).
+/// code, and the law agrees with Tier 3 and is the headline, or, where Tier 3's interval at its
+/// default budget is too wide to confirm it (since MISS 139 it takes the input-level bound at
+/// any count: 2000 inputs leave a tolerance of 23% of P against the 20% needed), Tier 3 is,
+/// for that reason. Until 2026-11-10 the atom was spread over its 1/256-binade cell like a
+/// density, values near 1 that round like N(0, 1) draws: 0.26 against Tier 3's 0.013 (refused
+/// by the cross-check).
 #[test]
 fn elementwise_mixture_keeps_its_point_mass() {
     for spec in ["vmix", "vmix_affine"] {
@@ -255,8 +258,15 @@ fn elementwise_mixture_keeps_its_point_mass() {
         let e = find(&j, 1, "elementwise");
         agrees(&j, e);
         let best = &j["estimates"][j["best"].as_u64().unwrap() as usize];
+        let unresolved = e["applicability"].as_array().is_some_and(|a| {
+            a.iter().any(|x| {
+                x.as_str()
+                    .is_some_and(|x| x.contains("cross-check resolution"))
+            })
+        });
         assert!(
-            best["method"].as_str().unwrap().starts_with("elementwise"),
+            best["method"].as_str().unwrap().starts_with("elementwise")
+                || (best["tier"] == 3 && unresolved),
             "{spec}: {j}"
         );
     }
@@ -291,6 +301,65 @@ fn missing_memcpy_is_refused() {
     )
     .unwrap_err();
     assert!(e.contains("differ from the captured GPU outputs"), "{e}");
+}
+
+/// A compiled model holds its slices' identified functions, so a change to identification bumps
+/// the model version (MISS 138 and MISS 147: 18), and --model refuses a model of any other
+/// version with "recompile". The model as written loads; under 12 and 16 (earlier versions of
+/// this tree) and 13 to 15 and 17 (builds of other branches compiled models under them) it is
+/// refused.
+#[test]
+fn a_model_of_another_version_is_refused() {
+    let dir = std::env::temp_dir().join(format!("ptxv-test-nl-version-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let m = dir.join("model.json");
+    let ms = m.to_str().unwrap();
+    let case = "fixtures/errdist/ident/scale";
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+            .arg("errdist")
+            .args(args)
+            .current_dir(root())
+            .env("PTXV_QUIET", "1")
+            .env("CUDA_VISIBLE_DEVICES", "")
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.success(), text)
+    };
+    let (ok, text) = run(&[case, "--compile", ms]);
+    assert!(ok, "{text}");
+    let query = [
+        case,
+        "--model",
+        ms,
+        "--inputs",
+        "fixtures/errdist/ident/scale_big.json",
+        "--mc",
+        "100",
+        "--sim-trials",
+        "0",
+    ];
+    let (ok, text) = run(&query);
+    assert!(ok, "the model as written: {text}");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&m).unwrap()).unwrap();
+    let version = v["programs"]["version"].as_u64().unwrap();
+    for other in 12..=17u64 {
+        assert_ne!(other, version, "a version this tree does not read");
+        v["programs"]["version"] = other.into();
+        std::fs::write(&m, serde_json::to_vec(&v).unwrap()).unwrap();
+        let (ok, text) = run(&query);
+        assert!(!ok, "a model of version {other}: {text}");
+        let want = format!("model version {other} (this ptxv reads {version}); recompile");
+        assert!(text.contains(&want), "{text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Compile once, query many: a model written with --compile is loaded by --model for another

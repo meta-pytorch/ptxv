@@ -42,6 +42,8 @@ summary = "no relinquish: CTA 0 keeps the permit while waiting for CTA 1, which 
 marker = "@RELINQ"
 replace = "<delete>"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 expect_cotenant = ["contract", "deadlock"]
 
 [[variants]]
@@ -61,6 +63,8 @@ marker = "@RELINQ"
 replace = "<delete>"
 edits = [{ marker = "@WAIT", find = "ld.acquire.gpu.global.u32 %r3, [%rd2];", replace = "mov.u32 %r3, 1;" }]
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 expect_cotenant = ["contract"]
 
 [[variants]]
@@ -70,4 +74,6 @@ marker = "@BASE"
 find = "ld.shared.b32   %r5, [%r2];"
 replace = "mov.u32         %r5, 0;"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 expect_cotenant = ["violation"]

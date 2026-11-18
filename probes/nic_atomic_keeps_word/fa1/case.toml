@@ -1,0 +1,147 @@
+name = "r6n_fa1"
+description = """
+MISS 257 repro (fa1, a NIC fetch-add of 1): thread 0 writes dst[i] = src[i] = rn(A_i + B_i) (constants: (0.1, 0.2), (1, 1e-8), (3, 0.1), (1e8, 1)), src[4..6) = dst[0..2), src2 = (dst[2], dst[3], dst[0], dst[1]); slot 0: write into dst2 (key 0x202) or within src; slot 1: NIC atomic fa1 on dst's first 8-byte word, the fetched value to sink; polls CQE 1; out[0..4) = dst, out[4..10) = dst2, out[10..12) = sink, out[12..18) = src."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "r6n_fa1"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "dst", "dst2", "src", "src2", "sq", "cq", "uar", "dbr", "sink"]
+
+[[nic_qps]]
+name = "qp0"
+device = 0
+peer = 0
+qpn = 0x42
+sq = "sq"
+sq_wqes = 2
+cq = "cq"
+cq_cqes = 2
+db = "uar"
+
+[[nic_mrs]]
+key = 0x100
+buffer = "src"
+
+[[nic_mrs]]
+key = 0x101
+buffer = "sink"
+
+[[nic_mrs]]
+key = 0x200
+buffer = "dst"
+
+[[nic_mrs]]
+key = 0x202
+buffer = "dst2"
+
+[[nic_mrs]]
+key = 0x103
+buffer = "src2"
+
+[[buffers]]
+name = "src"
+dtype = "f32"
+shape = [6]
+init = "zeros"
+
+[[buffers]]
+name = "sq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+
+[[buffers]]
+name = "cq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+values = [[63, 241], [127, 241]]
+
+[[buffers]]
+name = "uar"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "dbr"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "sink"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "dst"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "dst2"
+dtype = "f32"
+shape = [6]
+init = "zeros"
+
+[[buffers]]
+name = "src2"
+dtype = "f32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [18]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "sq"
+
+[[params]]
+kind = "ptr"
+buffer = "cq"
+
+[[params]]
+kind = "ptr"
+buffer = "uar"
+
+[[params]]
+kind = "ptr"
+buffer = "dbr"
+
+[[params]]
+kind = "ptr"
+buffer = "sink"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "dst2"
+
+[[params]]
+kind = "ptr"
+buffer = "src2"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

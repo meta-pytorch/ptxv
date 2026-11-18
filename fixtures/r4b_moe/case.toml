@@ -2237,8 +2237,8 @@ value = 256
 [[variants]]
 id = "good"
 summary = "as captured"
-expect = ["contract", "race"]
-hw_note = "Strict PTX model: barrier_block's relaxed-poll handoffs are races (T4b), each classified latent on GB300 by the two-level check (E-HW-L1); plus E-BULK-EXIT: the CUTLASS epilogue's TMA store and DeepEP dispatch's bulk store may still read shared memory at CTA exit (GB300 drains them). With the refuted E-POLL-ACQ opted in: contract only."
+expect = ["contract", "race", "violation"]
+hw_note = "SCOREBOARD (L-OPCLASS, MISS 96): the captured aten indexFuncLargeIndex kernel reads `MUFU.RCP R4, R4` (no write scoreboard) at 0x4e0 after a wait on a later F2I's scoreboard only, an ordering GB300 does not guarantee (probes/xu_queue_rev COVER with shortened stalls: wrong 1000 / 1000); no failure observed in the unmodified kernel (the run matches the GPU). Strict PTX model: barrier_block's relaxed-poll handoffs are races (T4b), each classified latent on GB300 by the two-level check (E-HW-L1); plus E-BULK-EXIT: the CUTLASS epilogue's TMA store and DeepEP dispatch's bulk store may still read shared memory at CTA exit (GB300 drains them). With the refuted E-POLL-ACQ opted in: contract only."
 
 [[variants]]
 id = "B32"

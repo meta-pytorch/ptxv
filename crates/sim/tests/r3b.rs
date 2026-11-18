@@ -174,34 +174,44 @@ fn bound_violations(case: &Case, out: &[u8]) -> Vec<(usize, usize, f64, f64)> {
 }
 
 /// The good kernel: one run is the whole verdict (certificate), only the E-BULK-EXIT and
-/// E-TC-EXIT contracts, outputs bitwise equal to the GPU's (in the MoE call), and the
-/// numerics claim holds for all 32 x 256 outputs.
+/// E-TC-EXIT contracts (discharged at gb300) plus the E-HW-SB-QUEUE ones (the tcgen05 operand
+/// reads covered only by the issue order, no GB300 probe with a positive control: sb-unmeasured:,
+/// a contract at every level, MISS 170), outputs bitwise equal to the
+/// GPU's (in the MoE call), and the numerics claim holds for all 32 x 256 outputs.
 #[test]
 fn r3b_bmm_good() {
     if vendor_missing(&["r3b_trtllm_bmm"]) {
         return;
     }
     let case = bmm();
-    let k = kernel(&case, "good");
-    let launch = build_launch(&case, &k).unwrap();
-    let c = ptxv_sim::wellsync::certify(Machine::new(Arc::new(k), Arc::new(launch)));
-    let v = c
+    let k = Arc::new(kernel(&case, "good"));
+    let launch = Arc::new(build_launch(&case, &k).unwrap());
+    let c = ptxv_sim::wellsync::certify(Machine::new(k.clone(), launch.clone()));
+    let mut v = c
         .verdict
         .unwrap_or_else(|| panic!("not certified: {:?}", c.reasons));
     assert!(v.complete);
     assert_eq!(v.classes(), ["contract"], "{:#?}", v.findings);
-    let sigs: std::collections::BTreeSet<&str> = v
-        .findings
-        .iter()
-        .filter(|f| f.kind != "note")
-        .map(|f| f.sig.split(':').next().unwrap())
-        .collect();
-    assert_eq!(
-        sigs,
-        ["bulk-store-at-exit", "tc-commit-at-exit"]
-            .into_iter()
+    let sigs = |v: &ptxv_sim::explore::Verdict| -> std::collections::BTreeSet<String> {
+        v.findings
+            .iter()
+            .filter(|f| f.kind != "note")
+            .map(|f| f.sig.split(':').next().unwrap().to_string())
             .collect()
+    };
+    let want = |s: &[&str]| s.iter().map(|x| x.to_string()).collect();
+    assert_eq!(
+        sigs(&v),
+        want(&["bulk-store-at-exit", "sb-unmeasured", "tc-commit-at-exit"]),
+        "{:#?}",
+        v.findings
     );
+    // The gb300 profile discharges E-BULK-EXIT and E-TC-EXIT. The UTCQMMAs' untracked reads
+    // covered by a later read scoreboard of the tcgen05 unit stay sb-unmeasured: contracts (R13
+    // in the broad rules only, MISS 170; before, sb-hwq: and discharged).
+    let p = ptxv_sim::hwprofile::GB300;
+    ptxv_sim::hwprofile::discharge(&mut v, &Machine::new(k, launch), p);
+    assert_eq!(sigs(&v), want(&["sb-unmeasured"]), "{:#?}", v.findings);
     let report = case.expect_report(&v.outputs[0]).unwrap();
     assert!(
         report.len() == 2 && report.iter().all(|l| l.contains("bitwise equal")),

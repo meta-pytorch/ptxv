@@ -1,0 +1,55 @@
+name = "e_mbar_forget_initpcs"
+description = """
+forget_dead_sync and the SASS STS.64 re-initialization (MISS 218 follow-up). Thread 0
+initializes `a` (count 2) uniformly, the only MbarInit pc; bar.sync. Thread 32 arrives on `a`,
+then sets a flag with a relaxed store; thread 0 spins on the flag with relaxed loads and then
+re-initializes `a` through a per-thread address (SASS: STS.64 of the state word). The arrival
+lands before the re-init in time but is not ordered before it: a race in every schedule, seen
+only through the old object's `atomics`. Past the bar.sync no thread can reach the MbarInit pc,
+so explore.rs mbar_init_pcs must count SASS 8-byte shared stores as init pcs or
+forget_dead_sync drops the arrival and SASS good is clean (srcmut mbar-sts-init-pcs). ACQ
+(release / acquire flag): clean. UNIF (uniform re-init) and NOSPIN (no flag): race."""
+ptx = "kernel.ptx"
+entry = "e_mbar_forget_initpcs"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "relaxed flag: the arrival is not ordered before the per-thread re-init (race)"
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "ACQ"
+summary = "control: release/acquire flag orders the arrival before the re-init (clean)"
+edits = [{ marker = "@REL", find = "st.relaxed.cta", replace = "st.release.cta" }, { marker = "@ACQ", find = "ld.relaxed.cta", replace = "ld.acquire.cta" }]
+expect = ["clean"]
+
+[[variants]]
+id = "UNIF"
+summary = "control: the re-init through the uniform address (SYNCS.EXCH.64, an MbarInit pc)"
+marker = "@REINIT"
+find = "[%r26], 1;"
+replace = "[%r2], 1;"
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "NOSPIN"
+summary = "no flag wait: t32's arrival and t0's per-thread re-init are unordered in time too (race)"
+marker = "@SPINB"
+replace = "<delete>"
+expect = ["race"]
+expect_sass = ["race"]

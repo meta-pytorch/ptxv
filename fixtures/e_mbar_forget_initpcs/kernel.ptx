@@ -1,0 +1,58 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// forget_dead_sync and the SASS STS.64 re-init (MISS 218 fix, explore.rs mbar_init_pcs).
+// t0 initializes `a` (count 2) with a uniform address (SYNCS.EXCH.64, the only MbarInit pc),
+// bar.sync. t32 arrives on `a` (count 2: no phase completes), then sets flag with a relaxed
+// store. t0 spins on flag with relaxed loads (no happens-before), then re-initializes `a`
+// through a per-thread address (SASS: STS.64 of the state word). The arrival always lands
+// before the re-init in time but is not ordered before it: a race in every schedule. Once
+// past the bar.sync no thread can reach the MbarInit pc, so without the STS.64 pcs in
+// mbar_init_pcs forget_dead_sync drops the arrival from `atomics` and the re-init sees none.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_forget_initpcs(.param .u64 out_p)
+.maxntid 64, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b8 a[8];
+    .shared .align 4 .b8 flag[4];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, a;
+    mov.u32 %r3, flag;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra AFTER_INIT;
+    mov.u32 %r20, 0;
+    st.shared.u32 [flag], %r20;
+    mbarrier.init.shared::cta.b64 [%r2], 2;            // @INIT
+AFTER_INIT:
+    bar.sync 0;
+    setp.eq.u32 %p3, %r1, 32;
+    @!%p3 bra NOTPROD;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r2];
+    mov.u32 %r5, 1;
+    st.relaxed.cta.shared.u32 [%r3], %r5;              // @REL
+    bra DONE;
+NOTPROD:
+    setp.ne.u32 %p4, %r1, 0;
+    @%p4 bra DONE;
+SPIN:
+    ld.relaxed.cta.shared.u32 %r6, [%r3];              // @ACQ
+    setp.eq.u32 %p5, %r6, 0;
+    @%p5 bra SPIN;                                     // @SPINB
+    shl.b32 %r25, %r1, 3;
+    add.u32 %r26, %r2, %r25;
+    mbarrier.init.shared::cta.b64 [%r26], 1;           // @REINIT
+    mov.u32 %r9, 1;
+    st.global.u32 [%rd1], %r9;
+DONE:
+    ret;
+}

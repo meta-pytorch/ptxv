@@ -1,0 +1,25 @@
+# run.sh, 2026-11-12.
+# agentSC2 ebfacb16:
+C0 ptx stateful             observed [contract,race]        expected race  ok
+C0 ptx PTXV_NO_LOCAL_POR=1  observed [contract,race]        expected race  ok
+C0 ptx PTXV_EXPLORER=dpor   observed [contract,race]        expected race  ok
+rc=0
+
+# agentSC2 53ef07ac:
+C0 ptx stateful             observed [contract]             expected race  WRONG-CLEAN
+C0 ptx PTXV_NO_LOCAL_POR=1  observed [contract]             expected race  WRONG-CLEAN
+C0 ptx PTXV_EXPLORER=dpor   observed [contract]             expected race  WRONG-CLEAN
+rc=1
+
+# agentSC2 62e6a560:
+C0 ptx stateful             observed [contract,race]        expected race  ok
+C0 ptx PTXV_NO_LOCAL_POR=1  observed [contract,race]        expected race  ok
+C0 ptx PTXV_EXPLORER=dpor   observed [contract,race]        expected race  ok
+rc=0
+
+# With a lane's drain landing only its own part of a coalesced operation (the commit after this one's):
+C0 ptx stateful             observed [contract,nondeterministic,race,violation] expected race  ok
+C0 ptx PTXV_NO_LOCAL_POR=1  observed [contract,nondeterministic,race,violation] expected race  ok
+C0 ptx PTXV_EXPLORER=dpor   observed [contract,nondeterministic,race,violation] expected race  ok
+rc=0
+

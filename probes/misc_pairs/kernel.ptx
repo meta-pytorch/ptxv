@@ -1,0 +1,37 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (MISS 181, the review repro): MATCH.ANY.U64 source pair, HMMA.1688.F32.BF16 register groups.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry misc(.param .u64 in_p, .param .u64 out_p)
+{
+    .reg .b32 %r<30>;
+    .reg .f32 %f<20>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.u32 %r2, [%rd4];
+    and.b32 %r3, %r1, 3;
+    mov.b64 %rd6, {%r3, %r2};
+    match.any.sync.b64 %r4, %rd6, 0xffffffff;
+    st.global.u32 [%rd5], %r4;
+    ld.global.f32 %f1, [%rd4+1024];
+    cvt.rn.f32.u32 %f2, %r1;
+    mov.b32 %r10, 0x3f803f80;
+    mov.b32 %r11, 0x40004000;
+    mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32 {%f4,%f5,%f6,%f7}, {%r10,%r11}, {%r10}, {%f2,%f1,%f2,%f2};
+    mul.wide.u32 %rd7, %r1, 16;
+    add.s64 %rd8, %rd2, %rd7;
+    st.global.v4.f32 [%rd8+2048], {%f4,%f5,%f6,%f7};
+    ret;
+}

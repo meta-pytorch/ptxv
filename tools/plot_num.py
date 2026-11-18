@@ -34,8 +34,9 @@ def main():
     recs = json.load(open(a.json))
     idx = np.array([r["index"] for r in recs])
     err = np.array([r["abs_err"] for r in recs])
-    cor = np.array([r["bound_cor1a"] for r in recs])
-    run = np.array([r["bound_running"] for r in recs])
+    # A bound the output violates is unknown (null in the JSON): not drawn.
+    cor = np.array([np.nan if r["bound_cor1a"] is None else r["bound_cor1a"] for r in recs])
+    run = np.array([np.nan if r["bound_running"] is None else r["bound_running"] for r in recs])
     ulps = np.array([r["err_ulps"] for r in recs])
 
     plt.rcParams.update(

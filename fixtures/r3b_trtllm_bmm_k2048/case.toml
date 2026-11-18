@@ -258,4 +258,6 @@ id = "B73"
 summary = "B73: the weight loader does not flip its empty-barrier parity when the stage index wraps (LOP3.LUT R6, R6, UR13, RZ, 0x3c -> 0xf0 at 0x14c0): from K-block 8 on it waits for a phase that already completed and refills a stage the MMA may still read"
 patch = [{ at = "@0x14c0", bits = [[72, 8, 240]], expect = "LOP3.LUT R6, R6, UR13, RZ, 0xf0, !PT" }]
 expect = ["deadlock", "fault"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract", "deadlock", "fault"]
 hw_note = "GB300: unspecified launch failure on the first run (the re-armed full barrier)"

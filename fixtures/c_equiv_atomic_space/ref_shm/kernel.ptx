@@ -1,0 +1,36 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry ref_shm(.param .u64 px, .param .u64 pout)
+{
+    .reg .b32 %r<8>;
+    .reg .f32 %f<4>;
+    .reg .b64 %rd<8>;
+    .shared .align 4 .b32 s[256];
+    mov.u32 %r1, %tid.x;
+    ld.param.u64 %rd1, [px];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd2, %rd2;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.u64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mov.u32 %r2, s;
+    shl.b32 %r3, %r1, 2;
+    add.u32 %r4, %r2, %r3;
+    mov.f32 %f2, 0f00000000;
+    st.shared.f32 [%r4], %f2;
+    bar.sync 0;
+    red.shared.add.f32 [%r4], %f1;
+    bar.sync 0;
+    ld.shared.f32 %f3, [%r4];
+    add.u64 %rd5, %rd2, %rd3;
+    st.global.f32 [%rd5], %f3;
+    ret;
+}

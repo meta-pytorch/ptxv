@@ -159,6 +159,13 @@ class Daemon:
                 self.jobs[job.id] = job
                 return job.id, True
             self.jobs[job.id] = job
+
+        # Written inside set_result, before the job reads as done (Job.before_result).
+        def save(r: dict) -> None:
+            if res is not None and not r.get("dry_run"):
+                store_cache(res, r)
+
+        job.before_result(save)
         try:
             if backend == "slurm":
                 if self.slurm is None:
@@ -169,17 +176,6 @@ class Daemon:
         except BaseException as error:
             job.set_exception(error)
             raise
-
-        def save(f: Job) -> None:
-            if (
-                res is not None
-                and not f.cancelled()
-                and f.exception() is None
-                and not f.result().get("dry_run")
-            ):
-                store_cache(res, f.result())
-
-        job.add_done_callback(save)
         return job.id, False
 
     def status(self, jid: str) -> dict:

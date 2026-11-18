@@ -1,0 +1,54 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry gen_red_peer(.param .u64 pbase, .param .u64 px, .param .u64 pout, .param .u64 pold)
+{
+    .reg .b32 %r<16>;
+    .reg .f32 %f<8>;
+    .reg .b64 %rd<16>;
+    .shared .align 4 .b32 s[32];
+    mov.u32 %r10, %tid.x;
+    mov.u32 %r11, %cluster_ctarank;
+    mad.lo.u32 %r1, %r11, 32, %r10;
+    ld.param.u64 %rd1, [pbase];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [px];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [pout];
+    cvta.to.global.u64 %rd3, %rd3;
+    ld.param.u64 %rd11, [pold];
+    cvta.to.global.u64 %rd11, %rd11;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.u64 %rd5, %rd1, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    add.u64 %rd6, %rd2, %rd4;
+    ld.global.f32 %f2, [%rd6];
+    add.u64 %rd7, %rd3, %rd4;
+    add.u64 %rd10, %rd11, %rd4;
+    mov.u32 %r2, s;
+    shl.b32 %r3, %r10, 2;
+    add.u32 %r4, %r2, %r3;
+    cvt.u64.u32 %rd8, %r4;
+    xor.b32 %r5, %r11, 1;
+    shl.b32 %r12, %r10, 2;
+    add.u32 %r13, %r2, %r12;
+    mapa.shared::cluster.u32 %r6, %r13, %r5;
+    cvt.u64.u32 %rd13, %r13;
+    cvta.shared.u64 %rd14, %rd13;
+    mapa.u64 %rd12, %rd14, %r5;
+    st.shared.f32 [%r4], %f1;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    red.add.f32 [%rd12], %f2;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ld.shared.f32 %f3, [%r4];
+    st.global.f32 [%rd7], %f3;
+    ret;
+}

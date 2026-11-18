@@ -171,12 +171,15 @@ fn e_tmem_cotenant_verdicts() {
     for v in variants(&case) {
         for front in ["ptx", "sass"] {
             let m = machine(&case, &v, front);
+            // At the gb300 level, without E-HW-SB-QUEUE's sb-hwq: and sb-unmeasured: contracts
+            // (the STTM reads of norelinq / fixed0 before a later LDTM): not what this test is
+            // about.
             assert_eq!(
-                explore(m.clone(), 200_000).classes(),
+                measured(gb300(explore(m.clone(), 200_000))).classes(),
                 ["clean"],
                 "{v}/{front}: default"
             );
-            let t = tenant::check(&m, 200_000, 8);
+            let t = measured(gb300(tenant::check(&m, 200_000, 8)));
             assert!(t.complete, "{v}/{front}");
             let want = case.variant(&v).unwrap().expect_cotenant.clone().unwrap();
             assert_eq!(t.classes(), want, "{v}/{front}: {:#?}", t.findings);
@@ -215,4 +218,22 @@ fn e_tmem_cotenant_columns_only() {
         let (hb, _) = tenant::hb_findings(&m);
         assert_eq!(hb.iter().any(|f| f.kind == "deadlock"), dl, "{v}: {hb:#?}");
     }
+}
+
+/// The verdict at the gb300 level: without the strict level's E-HW-SB-QUEUE contracts
+/// (sb-hwq:), which the gb300 profile discharges.
+fn gb300(mut v: ptxv_sim::explore::Verdict) -> ptxv_sim::explore::Verdict {
+    v.findings.retain(|f| {
+        !(f.kind == "contract" && f.sig.starts_with(ptxv_sass::scoreboard::HW_QUEUE_SIG))
+    });
+    v
+}
+
+/// Without E-HW-SB-QUEUE's `sb-unmeasured:` contracts (queue orders ptxas relies on that no
+/// GB300 probe measured: a contract at every level), for tests about something else.
+fn measured(mut v: ptxv_sim::explore::Verdict) -> ptxv_sim::explore::Verdict {
+    v.findings.retain(|f| {
+        !(f.kind == "contract" && f.sig.starts_with(ptxv_sass::scoreboard::HW_UNMEASURED_SIG))
+    });
+    v
 }

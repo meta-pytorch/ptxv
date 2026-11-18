@@ -1,0 +1,9 @@
+# max.f32(a, -inf) vs max.f32(a, a) with a loaded twice (sass front). The model's claim, run without captures (check.py).
+max_states = 200000
+reference = { case = "maxinf_f", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "maxaav_f"
+variant = "good"
+front = "sass"
+certify = true

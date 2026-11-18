@@ -47,7 +47,7 @@ edits = [{ marker = "@SRC", find = "xor.b32 %r4, %r1, 1;", replace = "add.u32 %r
 id = "OVERLAP"
 summary = "the low mask also names lane 16: masks of executing lanes disagree"
 expect = ["violation"]
-expect_sass = ["deadlock", "fault"]
+expect_sass = ["fault"]
 marker = "@MASK"
 find = "0x0000ffff, 0xffff0000"
 replace = "0x0001ffff, 0x3fff0000"

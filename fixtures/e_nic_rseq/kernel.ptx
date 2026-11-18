@@ -1,0 +1,264 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-NIC-ATOMIC / S-SCOPE: a NIC atomic continues the release sequence of the write it reads
+// only when the two are morally strong, and that write's release pattern keeps its first
+// operation's thread and scope (PTX ISA 9.5 sections 8.9.2, 8.9.4). Adapted from
+// r5a_ibgda_putsig, with both GPUs in one NVLink domain.
+//
+//   Rank 1 CTA 0 t0 (pre-writer): d2 = 77; W: st.release.gpu sig = 5 (@HEADW); st.relaxed.sys
+//   go = 1. Rank 0 polls go (a relaxed peer load), then posts an RDMA write of its payload into
+//   rank 1's dst and an atomic fetch-add of 1 on sig (the NIC atomic Z reads W's 5 and writes 6)
+//   on QP 0x42, rings the doorbell and polls the CQ. Rank 1 CTA 1 t0 (receiver): polls sig with
+//   ld.acquire.sys until it reads 6, then reads dst and d2.
+//
+//   good: W (.gpu, on GPU 1) and Z (rank 0's NIC) are not morally strong, so Z does not continue
+//   W's release sequence and the receiver's read of d2 races. FREL: W is fence.acq_rel.cta;
+//   st.relaxed.sys: Z continues the pattern, but its first operation (the .cta fence) and the
+//   receiver in CTA 1 are not morally strong, so d2 races. SYSREL, FREL_SYS: a .sys release or
+//   fence: the receiver synchronizes with W's pattern through Z (no race on d2). W is not ordered
+//   before Z in these four, so S-NIC-ATOMIC reports them unmodeled as well. GOREL, FREL_GOREL:
+//   the pre-writer releases go at .sys scope and rank 0 acquires it, so W and d2 happen before Z
+//   and reach the receiver through rank 0's doorbell: clean.
+//
+//   NICHEAD (a NIC write heads the sequence): no W; rank 1 CTA 0 (T2) polls sig until rank 0's
+//   NIC atomic (A1, which follows the RDMA write of dst) has landed, then posts a second fetch-add
+//   of 1 (A2) on its own loopback QP 0x43, which continues A1's release sequence. The receiver
+//   polls sig with ld.relaxed.sys until 2, then fence.acq_rel.gpu, and reads dst: the fence's
+//   .gpu scope includes A2's doorbell thread (T2) but not A1's (rank 0), so dst races on the PTX
+//   front. On the SASS front the fence's CCTL.IVALL takes every pending release: clean.
+//
+//   SYSREL_PART (MISS 194): W is st.release.sys.u32 of the low 4 bytes of sig, not one location
+//   with Z's 8-byte word (PTX ISA 9.5 sections 8.2.1, 8.7), so Z does not continue W's sequence
+//   and d2 races; W and Z are a mixed-size data race (W and the receiver's 8-byte poll are one
+//   either way). The SASS front does not decide overlap.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry ibgda(
+    .param .u32 rank,
+    .param .u64 src,
+    .param .u64 sq,
+    .param .u64 cq,
+    .param .u64 uar,
+    .param .u64 dbr,
+    .param .u64 sink,
+    .param .u64 dst,
+    .param .u64 sig,
+    .param .u64 out,
+    .param .u64 go,
+    .param .u64 d2,
+    .param .u64 sq1,
+    .param .u64 uar1,
+    .param .u64 sink1
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<8>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<64>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    ld.param.u32    %r1, [rank];
+    ld.param.u64    %rd1, [dst];
+    ld.param.u64    %rd2, [sig];
+    setp.ne.u32     %p1, %r1, 0;
+    @%p1 bra        RECV;
+
+    // ---------------------------------------------------------------- rank 0: sender
+    ld.param.u64    %rd60, [go];
+GOPOLL:
+    ld.relaxed.sys.global.u32 %r20, [%rd60];                        // @GOPOLL
+    setp.eq.u32     %p5, %r20, 0;
+    @%p5 bra        GOPOLL;
+    ld.param.u64    %rd3, [src];
+    ld.param.u64    %rd4, [sq];
+    ld.param.u64    %rd5, [cq];
+    ld.param.u64    %rd6, [uar];
+    ld.param.u64    %rd7, [dbr];
+    ld.param.u64    %rd8, [sink];
+    mov.u32         %r2, 256;
+    st.global.u32   [%rd3], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+4], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+8], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+12], %r2;
+
+    // Big-endian images of the four addresses the WQEs carry (bswap64).
+    mov.u64         %rd40, %rd1;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd10, %rd50, %rd51;         // BE(dst)
+    mov.u64         %rd40, %rd3;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd11, %rd50, %rd51;         // BE(src)
+    mov.u64         %rd40, %rd2;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd12, %rd50, %rd51;         // BE(sig)
+    mov.u64         %rd40, %rd8;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd13, %rd50, %rd51;         // BE(sink)
+
+    // WQE slots: the data write in slot 0 (index 0), the signal in slot 1 (index 1).
+    add.u64         %rd20, %rd4, 0;                                 // @SLOTW
+    add.u64         %rd21, %rd4, 64;                                // @SLOTS
+    // RDMA write (opcode 0x08, 3 segments, CQ update): ctrl, raddr/rkey, data.
+    mov.u64         %rd30, 0x0342000008000000;                      // @CTRLW
+    mov.u64         %rd31, 0x0000000008000000;
+    st.global.v2.b64 [%rd20], {%rd30, %rd31};
+    mov.u64         %rd32, 0x0000000000020000;                      // @RKEY
+    st.global.v2.b64 [%rd20+16], {%rd10, %rd32};
+    mov.u64         %rd33, 0x0001000010000000;
+    st.global.v2.b64 [%rd20+32], {%rd33, %rd11};
+    // Atomic fetch-add of 1 (opcode 0x12, 4 segments, CQ update): ctrl, raddr/rkey, add/compare, data.
+    mov.u64         %rd34, 0x0442000012010000;                      // @CTRLS
+    st.global.v2.b64 [%rd21], {%rd34, %rd31};                       // @WQES
+    mov.u64         %rd35, 0x0000000001020000;
+    st.global.v2.b64 [%rd21+16], {%rd12, %rd35};                    // @WQES
+    mov.u64         %rd36, 0x0100000000000000;                      // @ATOMADD
+    mov.u64         %rd37, 0;                                       // @ATOMCMP
+    st.global.v2.b64 [%rd21+32], {%rd36, %rd37};                    // @WQES3
+    mov.u64         %rd38, 0x0101000008000000;
+    st.global.v2.b64 [%rd21+48], {%rd38, %rd13};                    // @WQES4
+    // DOCA mark_wqes_ready / submit_db: release, doorbell, doorbell record, doorbell again.
+    // (token source)                                               // @TOKSRC
+    fence.release.gpu;                                              // @FENCE
+    mov.u64         %rd39, 0x0042000000020000;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+    // (late WQE slot)                                              // @LATE
+    mov.u32         %r3, 0x02000000;
+    st.relaxed.sys.global.b32 [%rd7], %r3;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+    // DOCA poll_cq_at for the last WQE (CQE 1): owner bit 0 on the first pass.
+CQPOLL:
+    ld.relaxed.sys.global.u8 %r4, [%rd5+127];
+    and.b32         %r5, %r4, 1;
+    setp.ne.u32     %p2, %r5, 0;
+    @%p2 bra        CQPOLL;                                         // @CQPOLL
+    fence.acquire.sys;
+    // Reuse the send buffer.
+    mov.u32         %r6, 0xdead;
+    st.global.u32   [%rd3], %r6;
+    bra             DONE;
+
+    // ---------------------------------------------------------------- rank 1: receiver
+RECV:
+    mov.u32         %r21, %ctaid.x;
+    setp.ne.u32     %p6, %r21, 0;
+    @%p6 bra        SIGPOLL;                                        // @RMODE
+    ld.param.u64    %rd61, [d2];
+    ld.param.u64    %rd62, [go];
+    mov.u32         %r22, 77;
+    st.global.u32   [%rd61], %r22;                                  // @D2W
+    mov.u64         %rd63, 5;
+    st.release.gpu.global.u64 [%rd2], %rd63;                        // @HEADW
+    mov.u32         %r23, 1;
+    st.relaxed.sys.global.u32 [%rd62], %r23;                       // @GOW
+    bra             DONE;                                           // @T2GO
+    // NICHEAD, rank 1 CTA 0 (T2): wait for A1, then post A2 on the loopback QP 0x43.
+T2:
+    ld.relaxed.sys.global.u64 %rd44, [%rd2];
+    setp.eq.u64     %p4, %rd44, 0;
+    @%p4 bra        T2;
+    ld.param.u64    %rd45, [sq1];
+    ld.param.u64    %rd46, [uar1];
+    ld.param.u64    %rd47, [sink1];
+    mov.u64         %rd40, %rd2;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd14, %rd50, %rd51;         // BE(sig)
+    mov.u64         %rd40, %rd47;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd15, %rd50, %rd51;         // BE(sink1)
+    // Atomic fetch-add of 1 on sig (opcode 0x12, 4 segments, CQ update), WQE 0 of QP 0x43.
+    mov.u64         %rd34, 0x0443000012000000;
+    mov.u64         %rd31, 0x0000000008000000;
+    st.global.v2.b64 [%rd45], {%rd34, %rd31};
+    mov.u64         %rd35, 0x0000000001020000;
+    st.global.v2.b64 [%rd45+16], {%rd14, %rd35};
+    mov.u64         %rd36, 0x0100000000000000;
+    mov.u64         %rd37, 0;
+    st.global.v2.b64 [%rd45+32], {%rd36, %rd37};
+    mov.u64         %rd38, 0x0201000008000000;
+    st.global.v2.b64 [%rd45+48], {%rd38, %rd15};
+    fence.release.gpu;
+    mov.u64         %rd39, 0x0043000000010000;
+    st.mmio.relaxed.sys.global.b64 [%rd46], %rd39;
+    bra             DONE;
+    // NICHEAD, the receiver: a relaxed poll of both NIC atomics, then a .gpu acquire fence.
+RFPOLL:
+    ld.relaxed.sys.global.u64 %rd41, [%rd2];
+    setp.lt.u64     %p3, %rd41, 2;
+    @%p3 bra        RFPOLL;
+    fence.acq_rel.gpu;
+    ld.global.u32   %r10, [%rd1];
+    ld.global.u32   %r11, [%rd1+4];
+    ld.global.u32   %r12, [%rd1+8];
+    ld.global.u32   %r13, [%rd1+12];
+    ld.param.u64    %rd42, [out];
+    st.global.u32   [%rd42], %r10;
+    st.global.u32   [%rd42+4], %r11;
+    st.global.u32   [%rd42+8], %r12;
+    st.global.u32   [%rd42+12], %r13;
+    bra             DONE;
+SIGPOLL:
+    ld.acquire.sys.global.u64 %rd41, [%rd2];                        // @SIGPOLL
+    setp.ne.u64     %p3, %rd41, 6;                                  // @SIGCHK
+    @%p3 bra        SIGPOLL;
+    ld.param.u64    %rd43, [src];
+    ld.global.u32   %r10, [%rd1];                                   // @DIRECT
+    ld.global.u32   %r11, [%rd1+4];
+    ld.global.u32   %r12, [%rd1+8];
+    ld.global.u32   %r13, [%rd1+12];
+    ld.param.u64    %rd42, [out];
+    st.global.u32   [%rd42], %r10;
+    st.global.u32   [%rd42+4], %r11;
+    st.global.u32   [%rd42+8], %r12;
+    st.global.u32   [%rd42+12], %r13;
+    ld.param.u64    %rd61, [d2];
+    ld.global.u32   %r14, [%rd61];                                  // @D2
+    st.global.u32   [%rd42+16], %r14;
+DONE:
+    ret;
+}

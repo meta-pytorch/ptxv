@@ -1,0 +1,53 @@
+# run.sh, 2026-11-13, on agentDP facf6f7c (before the fix): exit 1
+k0_p0    ptx  unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    ptx  stateful  expected [nondeterministic]         observed [clean]                    MISMATCH
+k0_p0    ptx  certify   expected [nondeterministic]         observed [clean]                    MISMATCH
+k0_p0    ptx  dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    sass stateful  expected [nondeterministic]         observed [clean]                    MISMATCH
+k0_p0    sass certify   expected [nondeterministic]         observed [clean]                    MISMATCH
+k0_p0    sass dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p1_d  ptx  unreduced expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k0_p1_d  ptx  stateful  expected [nondeterministic,race]    observed [clean]                    MISMATCH
+k0_p1_d  ptx  certify   expected [nondeterministic,race]    observed [clean]                    MISMATCH
+k0_p1_d  ptx  dpor      expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k0_p1_d  sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p1_d  sass stateful  expected [nondeterministic]         observed [clean]                    MISMATCH
+k0_p1_d  sass certify   expected [nondeterministic]         observed [clean]                    MISMATCH
+k0_p1_d  sass dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+k1_p1_d  ptx  unreduced expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k1_p1_d  ptx  stateful  expected [nondeterministic,race]    observed [nondeterministic]         MISMATCH
+k1_p1_d  ptx  certify   expected [nondeterministic,race]    observed [nondeterministic]         MISMATCH
+k1_p1_d  ptx  dpor      expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k1_p1_d  sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+k1_p1_d  sass stateful  expected [nondeterministic]         observed [nondeterministic]         ok
+k1_p1_d  sass certify   expected [nondeterministic]         observed [nondeterministic]         ok
+k1_p1_d  sass dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+rc=1
+
+# After the fix (the local arrival rule only where every peek runs as a blocking wait): exit 0
+k0_p0    ptx  unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    ptx  stateful  expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    ptx  certify   expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    ptx  dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    sass stateful  expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    sass certify   expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p0    sass dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p1_d  ptx  unreduced expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k0_p1_d  ptx  stateful  expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k0_p1_d  ptx  certify   expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k0_p1_d  ptx  dpor      expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k0_p1_d  sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p1_d  sass stateful  expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p1_d  sass certify   expected [nondeterministic]         observed [nondeterministic]         ok
+k0_p1_d  sass dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+k1_p1_d  ptx  unreduced expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k1_p1_d  ptx  stateful  expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k1_p1_d  ptx  certify   expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k1_p1_d  ptx  dpor      expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+k1_p1_d  sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+k1_p1_d  sass stateful  expected [nondeterministic]         observed [nondeterministic]         ok
+k1_p1_d  sass certify   expected [nondeterministic]         observed [nondeterministic]         ok
+k1_p1_d  sass dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+rc=0

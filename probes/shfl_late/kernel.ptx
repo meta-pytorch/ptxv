@@ -1,0 +1,92 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Control for probes/shared_queue REV_COVER: a SHFL with no write scoreboard read about 64
+// dependent IMADs later (variant LATE). Correct on GB300 if and only if such a SHFL writes its
+// result without a scoreboard within that time.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry shfl_late(.param .u64 out_p, .param .u32 seed)
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r21, [seed];
+    mov.u32 %r1, %tid.x;
+    add.u32 %r10, %r1, %r21;
+    xor.b32 %r20, %r1, %r21;
+    shfl.sync.bfly.b32 %r12, %r10, 1, 31, -1;   // @SHFL
+    mad.lo.u32 %r20, %r20, %r21, 3;
+    mad.lo.u32 %r20, %r20, %r21, 10;
+    mad.lo.u32 %r20, %r20, %r21, 17;
+    mad.lo.u32 %r20, %r20, %r21, 24;
+    mad.lo.u32 %r20, %r20, %r21, 31;
+    mad.lo.u32 %r20, %r20, %r21, 38;
+    mad.lo.u32 %r20, %r20, %r21, 45;
+    mad.lo.u32 %r20, %r20, %r21, 52;
+    mad.lo.u32 %r20, %r20, %r21, 59;
+    mad.lo.u32 %r20, %r20, %r21, 66;
+    mad.lo.u32 %r20, %r20, %r21, 73;
+    mad.lo.u32 %r20, %r20, %r21, 80;
+    mad.lo.u32 %r20, %r20, %r21, 87;
+    mad.lo.u32 %r20, %r20, %r21, 94;
+    mad.lo.u32 %r20, %r20, %r21, 101;
+    mad.lo.u32 %r20, %r20, %r21, 108;
+    mad.lo.u32 %r20, %r20, %r21, 115;
+    mad.lo.u32 %r20, %r20, %r21, 122;
+    mad.lo.u32 %r20, %r20, %r21, 129;
+    mad.lo.u32 %r20, %r20, %r21, 136;
+    mad.lo.u32 %r20, %r20, %r21, 143;
+    mad.lo.u32 %r20, %r20, %r21, 150;
+    mad.lo.u32 %r20, %r20, %r21, 157;
+    mad.lo.u32 %r20, %r20, %r21, 164;
+    mad.lo.u32 %r20, %r20, %r21, 171;
+    mad.lo.u32 %r20, %r20, %r21, 178;
+    mad.lo.u32 %r20, %r20, %r21, 185;
+    mad.lo.u32 %r20, %r20, %r21, 192;
+    mad.lo.u32 %r20, %r20, %r21, 199;
+    mad.lo.u32 %r20, %r20, %r21, 206;
+    mad.lo.u32 %r20, %r20, %r21, 213;
+    mad.lo.u32 %r20, %r20, %r21, 220;
+    mad.lo.u32 %r20, %r20, %r21, 227;
+    mad.lo.u32 %r20, %r20, %r21, 234;
+    mad.lo.u32 %r20, %r20, %r21, 241;
+    mad.lo.u32 %r20, %r20, %r21, 248;
+    mad.lo.u32 %r20, %r20, %r21, 255;
+    mad.lo.u32 %r20, %r20, %r21, 262;
+    mad.lo.u32 %r20, %r20, %r21, 269;
+    mad.lo.u32 %r20, %r20, %r21, 276;
+    mad.lo.u32 %r20, %r20, %r21, 283;
+    mad.lo.u32 %r20, %r20, %r21, 290;
+    mad.lo.u32 %r20, %r20, %r21, 297;
+    mad.lo.u32 %r20, %r20, %r21, 304;
+    mad.lo.u32 %r20, %r20, %r21, 311;
+    mad.lo.u32 %r20, %r20, %r21, 318;
+    mad.lo.u32 %r20, %r20, %r21, 325;
+    mad.lo.u32 %r20, %r20, %r21, 332;
+    mad.lo.u32 %r20, %r20, %r21, 339;
+    mad.lo.u32 %r20, %r20, %r21, 346;
+    mad.lo.u32 %r20, %r20, %r21, 353;
+    mad.lo.u32 %r20, %r20, %r21, 360;
+    mad.lo.u32 %r20, %r20, %r21, 367;
+    mad.lo.u32 %r20, %r20, %r21, 374;
+    mad.lo.u32 %r20, %r20, %r21, 381;
+    mad.lo.u32 %r20, %r20, %r21, 388;
+    mad.lo.u32 %r20, %r20, %r21, 395;
+    mad.lo.u32 %r20, %r20, %r21, 402;
+    mad.lo.u32 %r20, %r20, %r21, 409;
+    mad.lo.u32 %r20, %r20, %r21, 416;
+    mad.lo.u32 %r20, %r20, %r21, 423;
+    mad.lo.u32 %r20, %r20, %r21, 430;
+    mad.lo.u32 %r20, %r20, %r21, 437;
+    mad.lo.u32 %r20, %r20, %r21, 444;
+    add.u32 %r13, %r12, %r20;
+    mul.wide.u32 %rd2, %r1, 8;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v2.u32 [%rd3], {%r12, %r13};
+    ret;
+}

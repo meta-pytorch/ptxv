@@ -20,6 +20,9 @@ use anyhow::bail;
 /// words with the address of the global's buffer (`ptxv_sim::build_launch`).
 pub const SYM_BASE: u64 = 0x7f00_0000_0000;
 pub const SYM_STRIDE: u64 = 0x1_0000;
+/// Relocation type of a function descriptor in a constant bank (nvcc emits one for `&kernel`
+/// taken in device code).
+pub const R_CUDA_DESCRIPTOR: u32 = 35;
 
 pub struct Section {
     pub name: String,
@@ -224,7 +227,11 @@ impl Elf {
                 let info = u64::from_le_bytes(e[8..16].try_into()?);
                 let add = i64::from_le_bytes(e[16..24].try_into()?);
                 let (typ, sym) = (info as u32, (info >> 32) as usize);
-                if typ != 2 {
+                // 2 = R_CUDA_64 (an absolute address); R_CUDA_DESCRIPTOR = a function's
+                // descriptor (a kernel that takes its own address for a device global's
+                // initializer). Both get a synthetic address that the model never dereferences
+                // (a load through one faults).
+                if typ != 2 && typ != R_CUDA_DESCRIPTOR {
                     bail!("relocation type {typ} in {} not modeled", rs.name);
                 }
                 let symbol = self.symbol(sym)?;

@@ -1,0 +1,36 @@
+name = "e_clock_brx"
+description = """
+E-CLOCK (MISS 77): brx.idx on %clock & 1. T0 stores 1 to out[tid]; T1 stores tid to out[0]
+from every thread (a write-write race). GB300 (2026-11-11, 2 x 200 runs) takes T1 when the clock
+is odd: out[0] = 32, the rest 0, in 208 runs; all 1 in 192. CONST: all 1 in 200 / 200. The
+indexed branch was neither a clock choice nor a clock effect, so the model (clock 0) ran T0 only:
+clean, also certified. An indexed branch with a clock-derived index is a clock effect now
+(clock.rs `clock_effects`): unmodeled."""
+ptx = "kernel.ptx"
+entry = "e_clock_brx"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "index %clock & 1"
+expect = ["unmodeled"]
+
+[[variants]]
+id = "CONST"
+summary = "index 0"
+marker = "@IDX"
+find = "and.b32 %r6, %r5, 1;"
+replace = "mov.u32 %r6, 0;"
+expect = ["clean"]

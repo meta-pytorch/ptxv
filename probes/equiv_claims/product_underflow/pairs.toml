@@ -1,0 +1,9 @@
+title = "(a * b) * c against a * (b * c) with a * b in the subnormal range (MISS 201)"
+value = "bound"
+terms = "abs(a * b * c)"
+exact = "a * b * c"
+
+[[pairs]]
+name = "(a * b) * c vs a * (b * c)"
+equiv = ["eq_prodl_prodr_ptx.toml", "eq_prodl_prodr_sass.toml"]
+sets = [["prodl_u", "prodr_u"]]

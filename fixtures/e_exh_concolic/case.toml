@@ -7,9 +7,10 @@ equality, a NaN compare, a combination of two decisions, a loop trip count, floa
 multiplicative hash; fault_oob: an out-of-bounds store): refuted, never
 certified. div0 / div0g: a division by an input word (guarded in div0g), zero only off the
 captured input: never certified (PTX; ptxas's division sequence does not trap). clock: two
-clock reads (0 under E-CLOCK): blocked. neg: d2's guard again, negated (a repeated atom):
-certified, the repeat closed without a solver. addr: an input-dependent address, clean for
-every input but not fixed on the path: blocked."""
+clock reads decide a racy store; the explorer takes both sides of the clock-derived guard
+(nondeterministic, race) and the expansion blocks on the clock reads. neg: d2's guard again,
+negated (a repeated atom): certified, the repeat closed without a solver. addr: an
+input-dependent address, clean for every input but not fixed on the path: blocked."""
 ptx = "kernel.ptx"
 entry = "exh"
 grid = [1, 1, 1]
@@ -136,8 +137,8 @@ replace = "mov.u32 %r31, 5; setp.eq.u32 %p4, %r2, 9; @%p4 div.u32 %r31, 1000, %r
 
 [[variants]]
 id = "clock"
-summary = "a race on out[0] when n == 0x12345 and two clock reads differ (clocks read 0, E-CLOCK)"
-expect = ["clean"]
+summary = "a race on out[0] when n == 0x12345 and two clock reads differ: the clock decides the store's guard, explored both ways (E-CLOCK, MISS 28)"
+expect = ["nondeterministic", "race"]
 [[variants.edits]]
 marker = "@MUT"
 find = "mov.u32 %r30, 0;"

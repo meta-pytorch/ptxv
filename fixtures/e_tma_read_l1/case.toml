@@ -94,6 +94,9 @@ edits = [
     { marker = "@PREFILL", find = "// @PREFILL", replace = "ld.global.f32 %g0, [%rd2+20]; ld.param.u64 %rd5, [pre_p]; cvta.to.global.u64 %rd5, %rd5; st.global.f32 [%rd5], %g0; fence.proxy.async.global;" },
 ]
 expect = ["race"]
+# SASS: the race (a bulk DEPBAR acquires the store's writes only at the next CCTL.IVALL, E-ASYNC-STEP)
+# and the strict level's E-HW-SB-QUEUE contract (an STG's late read covered by a later op of its queue).
+expect_sass = ["contract", "race"]
 hw_note = "GB300 1000/1000 runs read the stale NaN from L1 (out = NaN), 2026-11-10"
 
 [[variants]]
@@ -103,4 +106,6 @@ marker = "@PREFILL"
 find = "// @PREFILL"
 replace = "ld.global.f32 %g0, [%rd2+20]; ld.param.u64 %rd5, [pre_p]; cvta.to.global.u64 %rd5, %rd5; st.global.f32 [%rd5], %g0; fence.proxy.async.global;"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 hw_note = "GB300 1000/1000 runs correct (out = 5), 2026-11-10"

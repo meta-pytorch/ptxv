@@ -274,7 +274,7 @@ fn an_observed_run_refutes_with_the_outputs_and_inputs_intervals() {
         ..Default::default()
     };
     assert!(against_estimate("sim", &t2, &run, 0).agree);
-    // As a claim (a Tier 3 of these 4 inputs) the run counts inputs: 4 < SMALL_K.
+    // As a claim (a Tier 3 of these 4 inputs) the run counts inputs (`mc::input_bound`).
     let (lo, hi) = p_interval(&run, 0.05);
     assert!(lo < 0.01 && hi > 0.8, "[{lo}, {hi}]");
     let (lo, hi) = p_interval_obs(&run, 0.05);

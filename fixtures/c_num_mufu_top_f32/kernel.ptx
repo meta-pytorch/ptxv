@@ -1,0 +1,30 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 206: out[t] = rcp.approx.f32(x[t]) (no .ftz) for probes/mufu_bound_top's 32 operands; the
+// 16 subnormals 2^-128 + k 2^-149 give the 16 largest finite magnitudes (ptxas's expansion scales
+// a subnormal operand by 2^24).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry num_mufu_top(.param .u64 px, .param .u64 pout)
+{
+    .reg .f32 %f<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    rcp.approx.f32 %f2, %f1;
+    st.global.f32 [%rd5], %f2;
+    ret;
+}

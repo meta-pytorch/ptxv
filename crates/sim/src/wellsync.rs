@@ -986,6 +986,23 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                 });
             }
         }
+        // E-PAIR: one allocator event per warp of a paired alloc, in its own CTA: the second
+        // warp's allocation in both, and the first warp's taking of the columns (its clock has
+        // not moved since it arrived, and the allocation came in between); not the arrival.
+        Op::TmemAlloc { pair: true, .. } => {
+            if let Some(&t) = active.first() {
+                let cta = m.threads[t].cta;
+                let arrival = m.tmem[cta as usize].pair.is_none()
+                    && !m.pair_peer(cta).is_ok_and(|p| {
+                        matches!(m.tmem[p as usize].pair, Some(PairAlloc::Arrived { .. }))
+                    });
+                if !arrival {
+                    let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
+                    let ev = log.ev(t as u32, &vc, pc);
+                    log.tmem.entry(cta).or_default().push((ev, vc));
+                }
+            }
+        }
         Op::TmemAlloc { .. } | Op::TmemDealloc { .. } | Op::TmemRelinquish => {
             if let Some(&t) = active.first() {
                 let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
@@ -1019,7 +1036,22 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                 ),
             );
         }
-        Op::Bsync { b } => {
+        // E-HW-BSYNC-YIELD: under the GB300 profile whether a BSYNC that is no reconvergence
+        // point (no `.RECONVERGENT`, or a region that can yield: G1) holds its lanes depends on
+        // when the lanes it waits for yield or block.
+        Op::Bsync { form, .. } if m.launch.hw_bsync_yield && !crate::exec::bsync_holds(*form) => {
+            log.fail(
+                format!("bsync-yield:{pc}"),
+                format!(
+                    "C-WARP: {} {}: under the GB300 profile whether it holds depends on when the lanes it waits for yield or block",
+                    k.describe(pc as usize),
+                    crate::exec::bsync_form_why(*form)
+                ),
+            );
+        }
+        // At the strict level a BSYNC that is no reconvergence point releases nothing (MISS 81,
+        // G1): its lanes leave the barrier as BREAK's do, whatever the mask.
+        Op::Bsync { b, form } if crate::exec::bsync_holds(*form) => {
             if let Some(&t0) = active.first() {
                 let w = &m.warps[m.threads[t0].warp as usize];
                 let base = m.warp_threads(m.threads[t0].warp).start;
@@ -4061,12 +4093,13 @@ fn fadd_word(m: &Machine, acc: &[SAcc], w: ((u8, u32), u64, u64)) -> Result<(), 
                 }
                 let mut u = used.clone();
                 u[x] = true;
+                // Flushing in global memory only (N-ATOMIC, MISS 142).
                 let v = crate::fp::f32_fma(
                     acc_v,
                     0x3f80_0000,
                     Some(ws[g[x]].fadd.unwrap()),
                     Rnd::Rn,
-                    true,
+                    key.0 != 0,
                 );
                 let mut o = order.clone();
                 o.push(x);
@@ -4225,10 +4258,14 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     let t0 = std::time::Instant::now();
     let mut extra = Vec::new();
     let mut sched = crate::explore::DetSched::default();
-    let mut faults = crate::explore::FaultLoop::default();
     // The whole check's time budget (membudget.rs): a run it stops decides nothing (a
     // reason, below).
     let mut cut = false;
+    // MISS 235: the run stopped at a step that stopped threads at an error (below).
+    let mut stopped_at_error = false;
+    // MISS 277: a step that repeats without changing the machine (below).
+    let mut faults = crate::explore::FaultLoop::default();
+    let (mem_limit, mut mem_t) = (crate::membudget::rss_limit(), std::time::Instant::now());
     while let Some(a) = sched.pick(&m) {
         if crate::membudget::time_budget_spent() {
             extra.push(format!(
@@ -4238,11 +4275,48 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
             cut = true;
             break;
         }
+        // The memory budget stops it too (MISS 277: a run that did not end grew past 16G):
+        // this run's own check of the resident set, at most every 100 ms, not the process's
+        // latched `membudget::exceeded` (RMK277 F3: once one run had reached it, every later
+        // certificate of the process was refused at step 0).
+        if let Some(lim) = mem_limit {
+            if mem_t.elapsed().as_millis() >= 100 {
+                mem_t = std::time::Instant::now();
+                if crate::membudget::rss() >= lim {
+                    extra.push(format!(
+                        "the certificate's run stopped at the memory budget after {steps} steps"
+                    ));
+                    cut = true;
+                    break;
+                }
+            }
+        }
         if matches!(a, Action::Clc(..)) {
             extra.push(
                 "C-ORDER: a cluster launch control response is pending (a scheduler choice)".into(),
             );
             break;
+        }
+        // MISS 74 (PTX), MISS 75, 168 (SASS stores): the lanes of one instruction on one word take
+        // effect in any order; the explorer takes every order (`Machine::lane_orders`), a run
+        // takes lane order, and C-TICKET cannot force an order inside one instruction.
+        if let Action::Split {
+            warp,
+            pc,
+            leader: None,
+        } = a
+        {
+            let members: Vec<usize> = m
+                .warp_threads(warp)
+                .filter(|&u| m.threads[u].st == St::Run && m.threads[u].pc == pc)
+                .collect();
+            if m.lane_orders(&members, pc).is_some() {
+                extra.push(format!(
+                    "C-ORDER: several lanes of {} take effect on one word in an order the run does not choose (MISS 74, 75, 168: explored instead)",
+                    m.k.describe(pc as usize)
+                ));
+                break;
+            }
         }
         m.apply(&a);
         debug_assert!(
@@ -4267,17 +4341,50 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
             delivery.collect(&mut m, &mut fs);
             break;
         }
-        if let Some(why) = faults.repeats(delivery.fresh(&m)) {
-            extra.push(why);
+        // MISS 235: a step that stopped threads at an error (a fault, or an operation the
+        // model cannot run: `fault:<pc>`) ends the run, and the certificate does not hold on
+        // it. On GB300 a fault aborts the grid (probes/fault_abort); the model stops the
+        // threads and releases what waited for them (exec.rs `release_after_stop`, so the
+        // explorer reports no derived deadlock), and what the others do after that is no
+        // execution of the kernel: they can go round a loop forever (fixtures/r4c_nowrap B36:
+        // dispatch warps cycling through a named barrier a faulted warp no longer holds back,
+        // with no end and growing memory). The explorer decides such a kernel.
+        if let Some(f) = delivery
+            .fresh(&m)
+            .iter()
+            .find(|f| f.sig.starts_with("fault:"))
+        {
+            stopped_at_error = true;
+            extra.push(format!(
+                "a step stopped its threads at an error ({}: {}); the certificate's run stops there and does not hold",
+                f.kind,
+                f.msg.lines().next().unwrap_or("")
+            ));
             delivery.collect(&mut m, &mut fs);
             break;
+        }
+        // MISS 277: a step that reports a finding and leaves the machine as it was (an
+        // mbarrier poll on an object that is not live: `mbar-uninit`, the thread stays at the
+        // poll) is picked again and again; with no time budget the run never ended and its
+        // findings grew without limit. It stops there and the certificate does not hold (the
+        // explorer, for which the repeated state is one state, decides the kernel).
+        if let Some(why) = faults.repeats(&m, delivery.fresh(&m)) {
+            stopped_at_error = true;
+            extra.push(format!("{why}; the certificate does not hold"));
+            delivery.collect(&mut m, &mut fs);
+            break;
+        }
+        if faults.stalled() {
+            sched.move_on();
         }
         delivery.collect(&mut m, &mut fs);
     }
     let ok = m.terminal();
     // The run went where `explore::run_once` goes: to its end (or the same fault loop),
-    // not stopped at a cluster launch control choice or the eager-launch failure.
+    // not stopped at a cluster launch control choice, the eager-launch failure or an error
+    // (`run_once` goes on past it).
     let whole = !cut
+        && !stopped_at_error
         && !EAGER_FAILED.with(|f| f.get())
         && extra
             .iter()
@@ -5470,7 +5577,9 @@ fn check_certified_inner(m0: Machine, max_states: usize) -> Verdict {
         let mut races = run_races(&ow, Some(acq), "launch (LDS/STS plain)");
         races.extend(run_races(&os, None, "launch (LDS/STS strong)"));
         let first = ow.reasons.first().cloned().unwrap_or_default();
-        let mut v = crate::smem::two_pass(m0, |m| crate::explore::explore(m, max_states));
+        // `explore` runs `smem::two_pass` itself; inside a second one, the weak pass would run
+        // again inside the strong pass's `explore`.
+        let mut v = crate::explore::explore(m0, max_states);
         v.notes
             .push(format!("certificate failed ({first}), explored instead"));
         merge_run_races(&mut v, races);

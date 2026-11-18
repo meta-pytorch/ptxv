@@ -84,9 +84,11 @@ fn run_refused_args(path: &str, spec: &str, extra: &[&str]) -> String {
     text
 }
 
-/// Row sums of N(3e37, 1e36) f32 inputs overflow: every output is Inf. Tier 3 compares
-/// nothing, with the default input count does not grow, and is refused: no headline
-/// (MISS 64; until 2026-11-11 Tier 3 headlined P(differ) 0 over [0, 1]).
+/// Row sums of N(3e37, 1e36) f32 inputs overflow: every output is +Inf, as RN of its finite
+/// exact value is (N-ERRDIST-NONFINITE). Tier 3 compares them all equal, but no finite output:
+/// it saw no rounding, so it is refused (MISS 64) and errdist reports no headline, rather than
+/// P(differ) 0. With the default input count it does not grow there. Until 2026-11-11 the
+/// outputs were out of the domain and Tier 3 headlined P(differ) 0 over [0, 1].
 #[test]
 fn nonfinite_outputs_are_out_of_domain() {
     let spec =
@@ -102,15 +104,16 @@ fn nonfinite_outputs_are_out_of_domain() {
         spec.to_str().unwrap(),
         &["--mc", "200"],
     );
-    // With the default input count Tier 3 does not grow at P 0 where it compared nothing
-    // (MISS 120's growth): more inputs cannot narrow [0, 1].
+    // With the default input count Tier 3 does not grow at P 0 where it compared no finite
+    // output (MISS 120's growth): it is refused whatever the count.
     let (_, jd, okd) = run_any("infd", "fixtures/r4_sum_torch", spec.to_str().unwrap(), &[]);
     let _ = std::fs::remove_file(&spec);
     assert!(!ok && !okd, "{text}");
     assert!(
-        text.contains("Tier 3 compared no output") && text.contains("refusing to report"),
+        text.contains("Tier 3 compared no finite output") && text.contains("refusing to report"),
         "{text}"
     );
+    assert!(text.contains("TIER 3 COMPARED NO FINITE OUTPUT"), "{text}");
     for r in [&j, &jd] {
         assert!(r["best"].is_null(), "{}", r["best"]);
     }
@@ -122,17 +125,15 @@ fn nonfinite_outputs_are_out_of_domain() {
         .unwrap();
     assert_eq!(t3["n"], 300, "{t3}");
     assert_eq!(t3["applicable"], false, "{t3}");
-    let ood = &j["out_of_domain"];
-    assert!(ood["mass"].as_f64().unwrap() > 0.99, "{ood}");
+    // Compared, not out of the domain; P(output NaN / Inf) says what happened.
+    assert_eq!(j["out_of_domain"]["mass"], 0.0, "{}", j["out_of_domain"]);
     assert!(
-        ood["by_cause"]["non-finite output (NaN / Inf)"]
-            .as_f64()
-            .unwrap()
-            > 0.99,
-        "{ood}"
+        j["p_nonfinite"]["element"][1].as_f64().unwrap() > 0.98,
+        "{}",
+        j["p_nonfinite"]
     );
-    assert!(text.contains("TIER 3 COMPARED NO OUTPUTS"), "{text}");
-    // The simulator's outputs are Inf too: the validation says so and does not agree.
+    // The simulator's outputs are Inf too: no finite output to compare, so the validation does
+    // not agree.
     let v = j["validation"]
         .as_array()
         .unwrap()
@@ -478,7 +479,7 @@ fn tier3_contradicted_by_a_validation_is_no_headline() {
     );
     assert!(!out.status.success(), "{text}");
     assert!(
-        text.contains("summary: no estimate passed its checks (tier 3 refused: sim validation (1000 inputs): Tier 3's interval [0.000e0, 7.076e-1] against the observed inputs' exact bounds")
+        text.contains("summary: no estimate passed its checks (tier 3 refused: sim validation (1000 inputs): Tier 3's interval [0.000e0, 7.679e-1] against the observed inputs' exact bounds")
             && text.contains("refusing to report from it"),
         "{text}"
     );
@@ -716,16 +717,26 @@ fn pre_round_keeps_the_refusals_where_it_changes_nothing() {
 /// and the slice was fitted as that step's function: with 30% of the inputs on another step
 /// errdist reported P(bits differ) 0.300, 0.300 and 0.545 (Tier 1, rc 0), where the step
 /// kernel's is 0 (exact; GB300 0 of 12800 outputs). Each is now refused; on N(0, 1) inputs
-/// (the probes' step) the step kernel still reports P 0.
+/// (the probes' step) the step kernel still reports P 0. Since MISS 138 the mantissa's slice
+/// is refused before its decisions count: the cut makes its only fit's slope 0.1% off 2^-20,
+/// a fitted constant, so it has no exact reference.
 #[test]
 fn integer_steps_inside_a_slice_are_decisions() {
-    for (case, spec) in [("step", "trunc30"), ("exp", "big20"), ("mant", "big20")] {
+    for (case, spec, why) in [
+        ("step", "trunc30", "identification's probes never took"),
+        ("exp", "big20", "identification's probes never took"),
+        (
+            "mant",
+            "big20",
+            "no form with exact constants fits the slice",
+        ),
+    ] {
         let text = run_refused(
             &format!("fixtures/errdist/trunc/{case}"),
             &format!("fixtures/errdist/trunc/{spec}.json"),
         );
         assert!(
-            text.contains("identification's probes never took") && text.contains("refusing"),
+            text.contains(why) && text.contains("refusing"),
             "{case}: {text}"
         );
     }
@@ -782,6 +793,300 @@ fn fp_rounding_steps_inside_a_slice_are_decisions() {
             "{case}: {text}"
         );
     }
+}
+
+/// MISS 138 (the third review's rE_fs3, fixtures/errdist/ident): y = RM(floor(x / 1024) + u)
+/// inside one slice (a FADD.RM floor, u near 2^23). y = u is within 2.8e-6 relative of it on the
+/// probes, inside the 2^-11 acceptance bound, and a snapped form ranked above every fitted one,
+/// so the slice was identified as y = u: Tier 1 0.900 [0.8997, 0.9003], rc 0, against 0 (the
+/// step as part of the function, exact) or 0.5048 (the step as rounding error; GB300, 200
+/// inputs, 6462 of 12800 outputs off RN(u + x / 1024)). y = u leaves out x, on which the slice
+/// depends (another probe's x changes its output bits), and the fit that reads x has fitted
+/// constants: no exact reference, so every output is left out and errdist refuses. fs3b's
+/// probes cross fewer steps (y = u at 1.38e-6). In fs3c (captured x = 64) the probes' floor is
+/// 0 or -1, a step of one output ulp: y = u (4.45e-7) is within EXACT_VETO of the fitted form
+/// (2.24e-7) plus a rounding, so the dependence on x alone refuses it.
+#[test]
+fn slice_form_that_leaves_out_an_argument_is_refused() {
+    for (case, spec) in [
+        ("fs3a", "fs3_nearfar.json"),
+        ("fs3a", "fs3_near.json"),
+        ("fs3b", "fs3_near.json"),
+        ("fs3c", "fs3_near.json"),
+    ] {
+        let text = run_refused(
+            &format!("fixtures/errdist/ident/{case}"),
+            &format!("fixtures/errdist/ident/{spec}"),
+        );
+        assert!(
+            text.contains("leaves out a1, on which the slice depends")
+                && text.contains("with fitted constants, is not an exact reference")
+                && text.contains("refusing to report"),
+            "{case} {spec}: {text}"
+        );
+    }
+}
+
+/// MISS 138: a slice whose only form that fits has fitted constants has no exact reference
+/// (fixtures/errdist/ident/samearg, y = RM(floor(u / 8192) + u): the fit y = 1.000122 u - 0.58
+/// is within a rounding; nothing with exact constants fits). Until MISS 138 the fit stood as
+/// the slice's real function, with a note.
+#[test]
+fn slice_fit_with_fitted_constants_is_refused() {
+    let text = run_refused(
+        "fixtures/errdist/ident/samearg",
+        "fixtures/errdist/ident/samearg.json",
+    );
+    assert!(
+        text.contains("no form with exact constants fits the slice")
+            && text.contains("refusing to report"),
+        "{text}"
+    );
+}
+
+/// MISS 147 (fixtures/errdist/ident/ex2ovf.ptx): of the forms that fit a slice's probes equally
+/// well, the first in the candidates' order stood alone, and a curve that is linear on the
+/// probed range was taken beyond it: the tanh case, y = RN(x 2^-64) probed near x ~ N(0, 1) and
+/// run at x in [2^63, 2^66), as tanh(2^-64 x): P(differ) 1 for 0. The fifth review's D2,
+/// ex2ovf2 (y = RN(RN(x 2^100) C + 2) probed around x = 100), takes the affine form since MISS
+/// 138 by a deviation a rounding's worth smaller than exp2(1 + 3 2^-21 x)'s (5.93e-8 against
+/// 1.45e-7). Both slices are FP multiplies and FMAs, whose real function is a polynomial: the
+/// affine form is the only candidate now (no alternative listed; as one, exp2 would leave out
+/// the overflowing outputs), and the headlines hold 0.2993 and 0. With a MUFU inside the slice
+/// (scale_mufu: the same scaling times ex2.approx(x 0) = 1) the curve stays a candidate, and
+/// where tanh(2^-64 x) and 2^-64 x disagree the exact value is not established: every output is
+/// left out, and errdist refuses.
+#[test]
+fn forms_the_probes_cannot_tell_apart_leave_the_exact_value_open() {
+    for (case, spec, exact) in [
+        ("ex2ovf2", "ex2ovf_mix.json", 0.2993),
+        ("scale", "scale_big.json", 0.0),
+    ] {
+        let (text, j) = run_args(
+            &format!("ident-{case}"),
+            &format!("fixtures/errdist/ident/{case}"),
+            &format!("fixtures/errdist/ident/{spec}"),
+            &["--mc", "300", "--sim-trials", "0"],
+        );
+        assert!(
+            text.contains("(x64): affine(") && !text.contains("as close on the probes"),
+            "{case}: {text}"
+        );
+        let b = j["best"].as_u64().expect("a headline") as usize;
+        let p = &j["estimates"][b]["p_differ"];
+        let (lo, hi) = (p[1].as_f64().unwrap(), p[2].as_f64().unwrap());
+        assert!(lo <= exact && exact <= hi, "{case}: {text}");
+    }
+    let text = run_refused_args(
+        "fixtures/errdist/ident/scalem",
+        "fixtures/errdist/ident/scale_big.json",
+        &["--mc", "300", "--sim-trials", "0"],
+    );
+    assert!(
+        text.contains("as close on the probes")
+            && text.contains("have no established exact value in Tier 3")
+            && text.contains("refusing to report"),
+        "{text}"
+    );
+}
+
+/// MISS 138: a slope that is a product of two of the slice's constants snaps, and the closest
+/// form with exact constants stands. The fifth review's ex2ovf probes (fixtures/errdist/ident,
+/// y = RN(RN(x 2^100) C + 2), 2 + (2^100 C) x in the real arithmetic): probed around x = 1000
+/// (ex2ovf) only the affine form fits, and with a fitted slope it would be no exact reference;
+/// probed around x = 100 (ex2ovf2, the review's D2) exp2(1 + 3 2^-21 x) fits too, and snapped
+/// it outranked the fitted affine form: it overflows where the kernel's x 2^100 does, every
+/// overflow an equal infinity, Tier 3 0 [0, 1.22e-2]. Both take the affine form now, and the
+/// elementwise law's 0.300 holds GB300's 0.2993 (0.3 of the inputs overflow x 2^100, where the
+/// exact value is finite).
+#[test]
+fn slice_slope_from_two_constants_is_exact() {
+    for case in ["ex2ovf", "ex2ovf2"] {
+        let (text, j) = run(
+            &format!("ident-{case}"),
+            &format!("fixtures/errdist/ident/{case}"),
+            "fixtures/errdist/ident/ex2ovf_mix.json",
+        );
+        assert!(
+            text.contains("affine(2.000000e0 + 1.98310") && !text.contains("constants fitted"),
+            "{case}: {text}"
+        );
+        let b = j["best"].as_u64().expect("a headline") as usize;
+        let p = &j["estimates"][b]["p_differ"];
+        let (lo, hi) = (p[1].as_f64().unwrap(), p[2].as_f64().unwrap());
+        assert!(lo <= 0.2993 && 0.2993 <= hi, "{case}: {text}");
+    }
+}
+
+/// MISS 66 follow-up (the fifth review's D1, fixtures/errdist/tie): an exact value at the
+/// output format's overflow tie with a low part of the other sign rounds to max, on both sides.
+/// round_out gave the infinity there: equal to a kernel that rounds the tie first, Tier 3 0
+/// [0, 1.22e-2] where 1/6 of the outputs differ (bf16, the negative tie, f16; 1/12 at f32
+/// through a rounded product; GB300 2115, 2177, 2115 and 1058 of 12800), and different from
+/// one FFMA's correct max, a false alarm of 0.0835 (GB300 0 of 12800). The headline holds the
+/// exact P (within the N(0, 1) half's share at the format's ties, below 1e-4). Correct
+/// overflows (equal infinities) are not over the worst-case bound, only those that differ from
+/// RN of the exact value (D5: all 9561 NaN / Inf outputs of rE_tieb were).
+#[test]
+fn overflow_tie_rounds_by_the_low_part() {
+    for (case, spec, exact) in [
+        ("tieb", "tieb.json", 1.0 / 6.0),
+        ("tieb", "tiebn.json", 1.0 / 6.0),
+        ("tieh", "tieh.json", 1.0 / 6.0),
+        ("tiefm", "tiefm.json", 1.0 / 12.0),
+        ("tief", "tief.json", 0.0),
+    ] {
+        let (text, j) = run_args(
+            &format!("tie-{spec}"),
+            &format!("fixtures/errdist/tie/{case}"),
+            &format!("fixtures/errdist/tie/{spec}"),
+            &["--mc", "300", "--sim-trials", "0"],
+        );
+        let b = j["best"].as_u64().expect("a headline") as usize;
+        let p = &j["estimates"][b]["p_differ"];
+        let (lo, hi) = (p[1].as_f64().unwrap(), p[2].as_f64().unwrap());
+        assert!(
+            lo <= exact + 1e-4 && exact - 1e-4 <= hi,
+            "{case} {spec}: {text}"
+        );
+        let differ = text
+            .split("compared in P(differ) (")
+            .nth(1)
+            .and_then(|t| t.split(' ').next())
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0);
+        let exceed = j["worst_case"]["checks"][0]["exceed"].as_u64();
+        assert_eq!(exceed, Some(differ), "{case} {spec}: {text}");
+    }
+}
+
+/// MISS 139 in the left-out share (the fifth review's D3, fixtures/errdist/lmix): 4096 outputs
+/// of an input are left out together on 2e-3 of the inputs and in pairs on most (share
+/// 2.2395e-3, P(differ) over every output 0.06490, GB300 + exact). With 20 or more inputs
+/// holding a left-out output the share's bound q was the batch-means interval, about 2.9e-4
+/// where no input drew the rare value: seeds 19 and 21 headlined Tier 3 0.0625 [0.0614,
+/// 0.0635] and 0.0626 [0.0616, 0.0636], without 0.0649. q takes the input-level bound at any
+/// count now: refused, or the headline holds 0.0649. Tier 3's own interval is at 97.5% where
+/// q widens it, so that the widened interval holds at 95% (D7).
+#[test]
+fn left_out_share_holds_at_any_count() {
+    let p_all = 0.06490;
+    for s in [19, 21] {
+        let (text, j, ok) = run_any(
+            &format!("lmix{s}"),
+            "fixtures/errdist/lmix/rare",
+            &format!("fixtures/errdist/lmix/s{s}.json"),
+            &["--mc", "200", "--sim-trials", "0"],
+        );
+        let t3 = j["estimates"]
+            .as_array()
+            .and_then(|es| es.iter().find(|e| e["tier"].as_u64() == Some(3)))
+            .expect("a Tier 3 estimate");
+        assert!(
+            t3["applicability"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|x| x
+                    .as_str()
+                    .is_some_and(|x| x.contains("P(differ) interval at 97.50%")))),
+            "s{s}: {text}"
+        );
+        if ok {
+            let b = j["best"].as_u64().expect("a headline") as usize;
+            let p = &j["estimates"][b]["p_differ"];
+            let (lo, hi) = (p[1].as_f64().unwrap(), p[2].as_f64().unwrap());
+            assert!(lo <= p_all && p_all <= hi, "s{s}: {text}");
+        } else {
+            assert!(text.contains("refusing to report"), "s{s}: {text}");
+        }
+    }
+}
+
+/// MISS 64 follow-up (the fifth review): a Tier 3 whose compared outputs are all NaN / Inf
+/// stands where they differ from their reference. y = RN(RN(x 2^100) C + 2) at x in [2^28, 2^29)
+/// overflows on every output, while its exact value 2 + B x is 534 to 1066: Tier 3 1.0, GB300
+/// 12800 of 12800 outputs differ. Until then the run was refused (a true alarm lost), and the
+/// simulator's validation, whose outputs differ alike, disagreed for want of a finite output.
+#[test]
+fn all_nonfinite_tier3_with_differing_outputs_stands() {
+    let (text, j) = run(
+        "ex2ovf-all",
+        "fixtures/errdist/ident/ex2ovf",
+        "fixtures/errdist/ident/ex2ovf_all.json",
+    );
+    let b = j["best"].as_u64().expect("a headline") as usize;
+    assert_eq!(j["estimates"][b]["tier"].as_u64(), Some(3), "{text}");
+    let p = &j["estimates"][b]["p_differ"];
+    assert!(
+        p[0].as_f64() == Some(1.0) && p[1].as_f64().unwrap() > 0.95,
+        "{text}"
+    );
+    assert!(
+        text.contains("of them unlike their reference, so its P(differ) counts overflows"),
+        "{text}"
+    );
+    let v = j["validation"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["source"] == "sim")
+        .unwrap();
+    assert_eq!(v["agree"], true, "{v}");
+}
+
+/// MISS 64 follow-up (the fifth review): the refusal at no compared output names the slices
+/// whose outputs have no exact value. rE_fs4 (y = RN(floor(|x| / 1024) + v), the floor the
+/// slice's whole output, not identified) cited MISS 64 alone in its Error line.
+#[test]
+fn refusal_names_the_slice_without_an_exact_value() {
+    let text = run_refused(
+        "fixtures/errdist/ident/fs4",
+        "fixtures/errdist/ident/fs4_mix.json",
+    );
+    let err = text
+        .lines()
+        .find(|l| l.starts_with("Error:"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        err.contains(" (not identified) without an exact value (MISS 88, MISS 147)"),
+        "{text}"
+    );
+}
+
+/// The third review's controls for MISS 138 keep their results: rE_sm1, y = RN(x / 1024 + v)
+/// (the add a DAG node, the slice x * 2^-10), Tier 1 0 [0, 0] (GB300: 0 of 12800 outputs off
+/// RN(v + x / 1024)); rE_fs4, y = RN(floor(|x| / 1024) + v), the floor the slice's whole output:
+/// not identified, refused (since MISS 88 / 64).
+#[test]
+fn identification_controls_keep_their_results() {
+    for spec in ["fs4_mix.json", "fs4_big.json"] {
+        let (text, j) = run(
+            &format!("ident-sm1-{spec}"),
+            "fixtures/errdist/ident/sm1",
+            &format!("fixtures/errdist/ident/{spec}"),
+        );
+        assert!(text.contains("affine(9.765625000e-4 a0)"), "{spec}: {text}");
+        let b = j["best"].as_u64().expect("a headline") as usize;
+        assert_eq!(
+            j["estimates"][b]["tier"].as_u64(),
+            Some(1),
+            "{spec}: {text}"
+        );
+        let p = &j["estimates"][b]["p_differ"];
+        assert_eq!(
+            (p[0].as_f64(), p[1].as_f64(), p[2].as_f64()),
+            (Some(0.0), Some(0.0), Some(0.0)),
+            "{spec}: {text}"
+        );
+    }
+    let text = run_refused(
+        "fixtures/errdist/ident/fs4",
+        "fixtures/errdist/ident/fs4_mix.json",
+    );
+    assert!(
+        text.contains("not identified: no form fits the slice")
+            && text.contains("refusing to report"),
+        "{text}"
+    );
 }
 
 /// MISS 87 follow-up: `--pre-round` marked every MMA chain output as taken before its rounding,

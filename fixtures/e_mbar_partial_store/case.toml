@@ -1,0 +1,84 @@
+name = "e_mbar_partial_store"
+description = "RMK4 A3: partial-width and wider stores over an mbarrier unordered with its inval / first init"
+ptx = "kernel.ptx"
+entry = "e_mbar_partial_store"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "DEAD_W4"
+summary = "t32: mov.u32 %r10, 7; st.shared.u32 [%r2+4], %r10; unordered with the inval"
+edits = [{ marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.u32 [%r2+4], %r10;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "PREU_W4"
+summary = "t32: mov.u32 %r10, 7; st.shared.u32 [%r2+4], %r10; unordered with the first init (no inval, no bar.sync)"
+edits = [{ marker = "@B1", replace = "<delete>" }, { marker = "@INV", replace = "<delete>" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.u32 [%r2+4], %r10;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "DEAD_W1"
+summary = "t32: mov.u32 %r10, 7; st.shared.u8 [%r2+7], %r10; unordered with the inval"
+edits = [{ marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.u8 [%r2+7], %r10;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "PREU_W1"
+summary = "t32: mov.u32 %r10, 7; st.shared.u8 [%r2+7], %r10; unordered with the first init (no inval, no bar.sync)"
+edits = [{ marker = "@B1", replace = "<delete>" }, { marker = "@INV", replace = "<delete>" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.u8 [%r2+7], %r10;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "DEAD_W16"
+summary = "t32: mov.u32 %r10, 7; st.shared.v4.u32 [%r2], {%r10, %r10, %r10, %r10}; unordered with the inval"
+edits = [{ marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.v4.u32 [%r2], {%r10, %r10, %r10, %r10};" }]
+expect = ["violation"]
+
+[[variants]]
+id = "PREU_W16"
+summary = "t32: mov.u32 %r10, 7; st.shared.v4.u32 [%r2], {%r10, %r10, %r10, %r10}; unordered with the first init (no inval, no bar.sync)"
+edits = [{ marker = "@B1", replace = "<delete>" }, { marker = "@INV", replace = "<delete>" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.v4.u32 [%r2], {%r10, %r10, %r10, %r10};" }]
+expect = ["violation"]
+
+[[variants]]
+id = "DEAD_ADJ"
+summary = "t32: mov.u32 %r10, 7; st.shared.u64 [%r2+8], %rd5; unordered with the inval"
+edits = [{ marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.u64 [%r2+8], %rd5;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "PREU_ADJ"
+summary = "t32: mov.u32 %r10, 7; st.shared.u64 [%r2+8], %rd5; unordered with the first init (no inval, no bar.sync)"
+edits = [{ marker = "@B1", replace = "<delete>" }, { marker = "@INV", replace = "<delete>" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.u64 [%r2+8], %rd5;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "DEADS_W4"
+summary = "t32 invals, t0: mov.u32 %r10, 7; st.shared.u32 [%r2+4], %r10; unordered with the inval"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.u32 [%r2+4], %r10;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "DEADS_W1"
+summary = "t32 invals, t0: mov.u32 %r10, 7; st.shared.u8 [%r2+7], %r10; unordered with the inval"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.u8 [%r2+7], %r10;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "DEADS_W16"
+summary = "t32 invals, t0: mov.u32 %r10, 7; st.shared.v4.u32 [%r2], {%r10, %r10, %r10, %r10}; unordered with the inval"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mov.u32 %r10, 7; st.shared.v4.u32 [%r2], {%r10, %r10, %r10, %r10};" }]
+expect = ["violation"]
+

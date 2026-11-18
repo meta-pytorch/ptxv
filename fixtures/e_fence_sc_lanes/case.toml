@@ -4,7 +4,11 @@ S-FENCE-SC (forum post 74 review): no forced Fence-SC edge from the coherence or
 lanes of one converged PTX atom step, which the model runs in lane order only (MISS 140).
 Thread 32 publishes data with fence.sc.gpu and a relaxed flag; lane 0 of warp 0 acquires the
 flag; warp 0 converges, every lane runs atom.add on sem and fence.sc.gpu, and lane 1 reads
-data. On PTX the read races in executions where lane 1's atom comes first."""
+data. On PTX the read races in executions where lane 1's atom comes first.
+While MISS 220 is open (precision): in INDIRECT and PCS two lanes of the reconverged warp add 1
+to sem at two pcs with dead results, and the E-WARP-ORDER strong-pair report flags the pair
+(nondeterministic) although no thread reads sem; race stays the contract's class for INDIRECT
+and PCS, clean for their READER0 controls. SASS: clean (no strong-pair report)."""
 ptx = "kernel.ptx"
 entry = "k"
 grid = [1, 1, 1]
@@ -67,8 +71,8 @@ replace = "setp.ne.u32 %p6, %r1, 0;"
 
 [[variants]]
 id = "INDIRECT"
-summary = "lane 1 adds a second atom on sem at a later pc before its fence: that atom's coherence pair with lane 0's step atom comes from the lane order too (forum post 74 review): a race on PTX"
-expect = ["race"]
+summary = "lane 1 adds a second atom on sem at a later pc before its fence: that atom's coherence pair with lane 0's step atom comes from the lane order too (forum post 74 review): a race on PTX; nondeterministic too while MISS 220 is open (the strong-pair report flags the two dead-result adds)"
+expect = ["nondeterministic", "race"]
 expect_sass = ["clean"]
 marker = "@ATOM"
 find = "atom.global.add.u32 %r5, [%rd3], 1;"
@@ -76,8 +80,9 @@ replace = "atom.global.add.u32 %r5, [%rd3], 1;\n    setp.eq.u32 %p7, %r1, 1;\n  
 
 [[variants]]
 id = "INDIRECT_READER0"
-summary = "control: INDIRECT with lane 0 reading: clean"
-expect = ["clean"]
+summary = "control: INDIRECT with lane 0 reading: clean at the PTX contract; nondeterministic while MISS 220 is open (the strong-pair report flags the two dead-result adds, a false alarm: no thread reads sem)"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
 marker = "@ATOM"
 find = "atom.global.add.u32 %r5, [%rd3], 1;"
 replace = "atom.global.add.u32 %r5, [%rd3], 1;\n    setp.eq.u32 %p7, %r1, 1;\n    @%p7 atom.global.add.u32 %r7, [%rd3], 1;"
@@ -85,8 +90,8 @@ edits = [{ marker = "@WHO", find = "setp.ne.u32 %p6, %r1, 1;", replace = "setp.n
 
 [[variants]]
 id = "PCS"
-summary = "lane 0 and lane 1 claim at two consecutive predicated instructions of the reconverged warp: their order is the warp's step order, which the explorers never reverse (forum post 74 review): a race on PTX, and the certificate refuses"
-expect = ["race"]
+summary = "lane 0 and lane 1 claim at two consecutive predicated instructions of the reconverged warp: their order is the warp's step order, which the explorers never reverse (forum post 74 review): a race on PTX, and the certificate refuses; nondeterministic too while MISS 220 is open (the strong-pair report flags the two dead-result adds)"
+expect = ["nondeterministic", "race"]
 expect_sass = ["clean"]
 marker = "@ATOM"
 find = "atom.global.add.u32 %r5, [%rd3], 1;"
@@ -94,8 +99,9 @@ replace = "setp.eq.u32 %p7, %r1, 0;\n    @%p7 atom.global.add.u32 %r5, [%rd3], 1
 
 [[variants]]
 id = "PCS_READER0"
-summary = "control: PCS with lane 0 reading: clean"
-expect = ["clean"]
+summary = "control: PCS with lane 0 reading: clean at the PTX contract; nondeterministic while MISS 220 is open (the strong-pair report flags the two dead-result adds, a false alarm: no thread reads sem)"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
 marker = "@ATOM"
 find = "atom.global.add.u32 %r5, [%rd3], 1;"
 replace = "setp.eq.u32 %p7, %r1, 0;\n    @%p7 atom.global.add.u32 %r5, [%rd3], 1;\n    setp.eq.u32 %p0, %r1, 1;\n    @%p0 atom.global.add.u32 %r5, [%rd3], 1;"

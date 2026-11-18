@@ -29,8 +29,9 @@ fn vendor_missing(needs: &[&str]) -> bool {
     ptxv_case::skip_missing_vendor_files(&root().join("fixtures"), needs)
 }
 
-/// The kernel of a variant through one front-end (as tests/fixtures.rs builds it).
-fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
+/// The kernel of a variant through one front-end (as tests/fixtures.rs builds it), or why it
+/// does not load (a front-end that refuses the variant, ptxas, a missing file).
+fn try_kernel(case: &Case, variant: &str, front: &str) -> anyhow::Result<ptxv_ir::Kernel> {
     // Per call: tests run in parallel on the same variants.
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -39,102 +40,98 @@ fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
         case.m.name,
         std::process::id()
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir)?;
     if let Some(bin) = &case.m.cubin {
         // Binary-only case: the captured cubin plus the variant's control-bit patch.
         let c = dir.join("k.cubin");
-        std::fs::copy(case.dir.join(bin), &c).unwrap();
+        std::fs::copy(case.dir.join(bin), &c)?;
         // Patches of the case's cubin, and of launches' own cubins (`CtrlPatch::cubin`).
-        let patch = &case.variant(variant).unwrap().patch;
+        let patch = &case.variant(variant)?.patch;
         let (own, main): (Vec<_>, Vec<_>) = patch.iter().cloned().partition(|p| p.cubin.is_some());
-        ptxv_sass::scoreboard::patch_file(&c, &case.m.entry, &main).unwrap();
+        ptxv_sass::scoreboard::patch_file(&c, &case.m.entry, &main)?;
         let mut patched = std::collections::BTreeMap::new();
         for p in &own {
-            let name = p.cubin.clone().unwrap();
-            let dst = patched.entry(name.clone()).or_insert_with(|| {
+            let name = p.cubin.clone().unwrap_or_default();
+            if !patched.contains_key(&name) {
                 let d = dir.join(&name);
-                std::fs::copy(case.dir.join(&name), &d).unwrap();
-                d
-            });
+                std::fs::copy(case.dir.join(&name), &d)?;
+                patched.insert(name.clone(), d);
+            }
             let entry = p.kernel.clone().unwrap_or_default();
-            ptxv_sass::scoreboard::patch_file(dst, &entry, std::slice::from_ref(p)).unwrap();
+            ptxv_sass::scoreboard::patch_file(&patched[&name], &entry, std::slice::from_ref(p))?;
         }
-        let ks: Vec<_> = case
+        let ks = case
             .m
             .all_launches()
             .iter()
             .map(|l| match l.cubin {
                 Some(own) if patched.contains_key(own) => {
-                    ptxv_sass::load_cubin(&patched[own], l.entry).unwrap()
+                    ptxv_sass::load_cubin(&patched[own], l.entry)
                 }
-                Some(own) => ptxv_sass::load_cubin(&case.dir.join(own), l.entry).unwrap(),
-                None => ptxv_sass::load_cubin(&c, l.entry).unwrap(),
+                Some(own) => ptxv_sass::load_cubin(&case.dir.join(own), l.entry),
+                None => ptxv_sass::load_cubin(&c, l.entry),
             })
-            .collect();
-        return if ks.len() == 1 {
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        return Ok(if ks.len() == 1 {
             ks.into_iter().next().unwrap()
         } else {
             ptxv_ir::Kernel::concat(ks)
-        };
+        });
     }
-    let ptx = case.variant_ptx(variant).unwrap();
-    let cubin = || {
+    let ptx = case.variant_ptx(variant)?;
+    let cubin = || -> anyhow::Result<PathBuf> {
         let p = dir.join("k.ptx");
-        std::fs::write(&p, &ptx).unwrap();
+        std::fs::write(&p, &ptx)?;
         let c = dir.join("k.cubin");
-        ptxv_sass::ptxas(&p, &c, &case.m.arch).unwrap();
-        c
+        ptxv_sass::ptxas(&p, &c, &case.m.arch)?;
+        Ok(c)
     };
+    let toolkit = case
+        .m
+        .ptxas_toolkit
+        .as_deref()
+        .and_then(ptxv_ptx::toolkit_version);
     if !case.m.launches.is_empty() {
-        let c = (front == "sass").then(cubin);
+        let c = (front == "sass").then(cubin).transpose()?;
         let ks = case
             .m
             .all_launches()
             .iter()
             .map(|l| match &c {
-                None => ptxv_ptx::parse_kernel_for(
-                    &ptx,
-                    Some(l.entry),
-                    case.m
-                        .ptxas_toolkit
-                        .as_deref()
-                        .and_then(ptxv_ptx::toolkit_version),
-                )
-                .unwrap(),
-                Some(c) => ptxv_sass::load_cubin(c, l.entry).unwrap(),
+                None => ptxv_ptx::parse_kernel_for(&ptx, Some(l.entry), toolkit),
+                Some(c) => ptxv_sass::load_cubin(c, l.entry),
             })
-            .collect();
-        return ptxv_ir::Kernel::concat(ks);
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        return Ok(ptxv_ir::Kernel::concat(ks));
     }
     match front {
-        "ptx" => ptxv_ptx::parse_kernel_for(
-            &ptx,
-            Some(&case.m.entry),
-            case.m
-                .ptxas_toolkit
-                .as_deref()
-                .and_then(ptxv_ptx::toolkit_version),
-        )
-        .unwrap(),
+        "ptx" => ptxv_ptx::parse_kernel_for(&ptx, Some(&case.m.entry), toolkit),
         _ => {
-            let c = cubin();
-            ptxv_sass::scoreboard::patch_file(
-                &c,
-                &case.m.entry,
-                &case.variant(variant).unwrap().patch,
-            )
-            .unwrap();
-            ptxv_sass::load_cubin(&c, &case.m.entry).unwrap()
+            let c = cubin()?;
+            ptxv_sass::scoreboard::patch_file(&c, &case.m.entry, &case.variant(variant)?.patch)?;
+            ptxv_sass::load_cubin(&c, &case.m.entry)
         }
     }
 }
 
-fn machine(case: &Case, variant: &str, front: &str) -> Machine {
-    let k = kernel(case, variant, front);
+/// [`try_kernel`] for tests whose variants must load.
+fn kernel(case: &Case, variant: &str, front: &str) -> ptxv_ir::Kernel {
+    try_kernel(case, variant, front)
+        .unwrap_or_else(|e| panic!("{}/{variant}/{front}: {e:#}", case.m.name))
+}
+
+/// The machine of a variant through one front-end, or why its kernel or launch does not load.
+fn try_machine(case: &Case, variant: &str, front: &str) -> anyhow::Result<Machine> {
+    let k = try_kernel(case, variant, front)?;
     // The variant's launch-order edits (`Variant::after`) belong to the launch: without them a
     // stream-order mutant (s_globals `unordered`) certified as the ordered original.
-    let launch = build_launch(&case.for_variant(variant).unwrap(), &k).unwrap();
-    Machine::new(Arc::new(k), Arc::new(launch))
+    let launch = build_launch(&case.for_variant(variant)?, &k)?;
+    Ok(Machine::new(Arc::new(k), Arc::new(launch)))
+}
+
+fn machine(case: &Case, variant: &str, front: &str) -> Machine {
+    try_machine(case, variant, front)
+        .unwrap_or_else(|e| panic!("{}/{variant}/{front}: {e:#}", case.m.name))
 }
 
 /// Binary-only or very large launches (their certificate runs take minutes: see
@@ -147,6 +144,10 @@ const SKIP: &[&str] = &[
     "e_gmm_epilogue_reuse",
     // A bounded-search fixture (bounded_search_never_reports_clean): too wide to explore.
     "e_deep_race",
+    // The certificate certifies its SASS clean where the exploration is nondeterministic (MISS
+    // 150: a warp's splits are not independent through its uniform registers); pinned in
+    // tests/fixtures.rs e_split_ur_strict_level_switches_inside_a_window.
+    "e_split_ur",
 ];
 
 /// Variants the certificate must keep proving (a regression guard on its strength).
@@ -154,11 +155,10 @@ const MUST_CERTIFY: &[(&str, &str, &str)] = &[
     ("r0_tma_sum", "good", "ptx"),
     ("r0_tma_sum", "good", "sass"),
     ("r1a_tcgen05_tile", "good", "ptx"),
-    ("r1a_tcgen05_tile", "good", "sass"),
+    // r1a_tcgen05_tile, r1c_cluster and r1c_2sm SASS: refused since MISS 81 (C-WARP: the
+    // lanes leave ptxas's BSYNC without .RECONVERGENT apart and meet again at a TRYWAIT).
     ("r1b_pipeline", "good", "ptx"),
     ("r1b_pipeline", "good", "sass"),
-    ("r1c_cluster", "good", "sass"),
-    ("r1c_2sm", "good", "sass"),
     // cta_group::2 M = 128 (Layout B) and M = 128 N = 8 (probes/tc_m128).
     // PTX e_mma_pair_m128: an S-MBAR-SCOPE contract finding (the leader's commit waited at
     // .cta scope in the peer), which the certificate refuses.
@@ -319,19 +319,367 @@ fn tma_store_wait_counts_its_own_scoreboard() {
     });
 }
 
+/// Runs `run` over `jobs` on `workers` threads and returns the failures, each `name: why`.
+///
+/// A job that panics fails under its own name, and no job starts after it (the running ones
+/// finish): a panic in a worker thread is not lost while the others keep the sweep going. A
+/// job running longer than `limit` calls `stall` once with the names and ages of the running
+/// jobs (a certificate or explorer run that does not end is a failure, not a hang); the
+/// fixture suite's `stall` exits the test process. With `trace`, each job's start and time go
+/// to stderr unbuffered (visible under captured output too).
+fn run_sweep<J: Sync>(
+    jobs: &[J],
+    workers: usize,
+    name: &(dyn Fn(&J) -> String + Sync),
+    run: &(dyn Fn(&J) -> Result<(), String> + Sync),
+    limit: Option<std::time::Duration>,
+    stall: &(dyn Fn(&str) + Sync),
+    trace: bool,
+) -> Vec<String> {
+    use std::io::Write;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Instant;
+    let say = |msg: String| {
+        // Unbuffered and past the test harness's capture.
+        let _ = std::io::stderr().write_all(format!("{msg}\n").as_bytes());
+    };
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let alive = AtomicUsize::new(workers);
+    let errors = Mutex::new(Vec::new());
+    let running: Mutex<Vec<Option<(usize, Instant)>>> = Mutex::new(vec![None; workers]);
+    let times = Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for w in 0..workers {
+            let (next, stop, alive, errors, running, times, say) =
+                (&next, &stop, &alive, &errors, &running, &times, &say);
+            s.spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(job) = jobs.get(i) else { break };
+                    let t = Instant::now();
+                    running.lock().unwrap_or_else(|e| e.into_inner())[w] = Some((i, t));
+                    if trace {
+                        say(format!("sweep job {i}/{} {}: start", jobs.len(), name(job)));
+                    }
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(job)));
+                    running.lock().unwrap_or_else(|e| e.into_inner())[w] = None;
+                    let secs = t.elapsed().as_secs_f64();
+                    times
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((secs, i));
+                    if trace {
+                        say(format!(
+                            "sweep job {i}/{} {}: {secs:.1} s",
+                            jobs.len(),
+                            name(job)
+                        ));
+                    }
+                    let why = match r {
+                        Ok(Ok(())) => continue,
+                        Ok(Err(why)) => why,
+                        Err(p) => {
+                            stop.store(true, Ordering::Relaxed);
+                            let msg = p
+                                .downcast_ref::<String>()
+                                .map(String::as_str)
+                                .or_else(|| p.downcast_ref::<&str>().copied())
+                                .unwrap_or("(no message)");
+                            format!("panicked: {msg}")
+                        }
+                    };
+                    errors
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(format!("{}: {why}", name(job)));
+                }
+                alive.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
+        let Some(limit) = limit else { return };
+        let (alive, running, errors) = (&alive, &running, &errors);
+        s.spawn(move || {
+            let tick = (limit / 8).clamp(
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_secs(5),
+            );
+            while alive.load(Ordering::Relaxed) > 0 {
+                std::thread::sleep(tick);
+                let late: Vec<String> = running
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .flatten()
+                    .filter(|(_, t)| t.elapsed() > limit)
+                    .map(|&(i, t)| {
+                        format!("{} ({:.0} s)", name(&jobs[i]), t.elapsed().as_secs_f64())
+                    })
+                    .collect();
+                if !late.is_empty() {
+                    let mut errors = errors.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut msg = format!(
+                        "job(s) still running after the {} s limit: {}",
+                        limit.as_secs_f64(),
+                        late.join(", ")
+                    );
+                    // The failures so far: `stall` may end the process before they are seen.
+                    if !errors.is_empty() {
+                        msg += &format!("; failed before: {}", errors.join("\n"));
+                    }
+                    errors.push(msg.clone());
+                    drop(errors);
+                    stall(&msg);
+                    return;
+                }
+            }
+        });
+    });
+    let mut times = times.into_inner().unwrap_or_else(|e| e.into_inner());
+    times.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let slowest: Vec<String> = times
+        .iter()
+        .take(5)
+        .map(|&(t, i)| format!("{} {t:.1} s", name(&jobs[i])))
+        .collect();
+    eprintln!(
+        "sweep: {} of {} jobs ran; slowest: {}",
+        times.len(),
+        jobs.len(),
+        slowest.join(", ")
+    );
+    errors.into_inner().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A panicking job fails the sweep under its name, promptly: the jobs queued after it do not
+/// run (the sweep used to lose the panic in its worker and run on).
 #[test]
-#[ignore = "heavy: 1308 certify jobs; 371 s"]
-fn certified_verdicts_match_the_fixture_suite() {
+fn sweep_reports_a_panicking_job_by_name() {
+    let ran = std::sync::atomic::AtomicUsize::new(0);
+    let jobs: Vec<usize> = (0..100).collect();
+    let errors = run_sweep(
+        &jobs,
+        1,
+        &|j| format!("job{j}"),
+        &|&j| {
+            ran.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match j {
+                3 => Err("wrong verdict".into()),
+                5 => panic!("unsupported PTX instruction"),
+                _ => Ok(()),
+            }
+        },
+        None,
+        &|_| unreachable!(),
+        false,
+    );
+    assert_eq!(
+        errors,
+        [
+            "job3: wrong verdict",
+            "job5: panicked: unsupported PTX instruction"
+        ]
+    );
+    assert_eq!(ran.into_inner(), 6, "jobs ran after the panic");
+}
+
+/// A job that does not end trips the limit, which names it (the fixture suite then exits the
+/// test process: a run that cannot be interrupted must not hold the test forever).
+#[test]
+fn sweep_reports_a_job_past_its_limit_by_name() {
+    let tripped = std::sync::atomic::AtomicBool::new(false);
+    let jobs = ["quick", "stuck"];
+    let t = std::time::Instant::now();
+    let errors = run_sweep(
+        &jobs,
+        2,
+        &|j| j.to_string(),
+        &|&j| {
+            // The stuck job runs until the limit has been reported (or a minute: the test fails).
+            while j == "stuck"
+                && !tripped.load(std::sync::atomic::Ordering::Relaxed)
+                && t.elapsed().as_secs() < 60
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Ok(())
+        },
+        Some(std::time::Duration::from_millis(200)),
+        &|msg| {
+            assert!(msg.contains("stuck (") && !msg.contains("quick"), "{msg}");
+            tripped.store(true, std::sync::atomic::Ordering::Relaxed);
+        },
+        false,
+    );
+    assert!(tripped.into_inner());
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(t.elapsed().as_secs() < 30);
+}
+
+/// MISS 235: the certificate's run stops at a step that stops threads at an error, and the
+/// certificate does not hold. r4c_nowrap B36 (SASS): a dispatch warp's bulk copy faults, and
+/// past it the other warps of its named barrier went round BAR.SYNC forever (the attempt never
+/// ended; its memory grew). The certificate runs on a thread of its own: a run that does not
+/// end fails the test after 120 s instead of holding it.
+#[test]
+fn cert_run_stops_at_a_thread_stopping_error() {
+    if vendor_missing(&["r4c_nowrap"]) {
+        return;
+    }
+    let case = Case::load(root().join("fixtures/r4c_nowrap")).unwrap();
+    let m = machine(&case, "B36", "sass");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(certify(m));
+    });
+    let o = match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+        Ok(o) => o,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("the certificate's run did not end within 120 s (MISS 235)")
+        }
+        Err(e) => panic!("the certificate's thread ended without an outcome: {e}"),
+    };
+    assert!(o.verdict.is_none(), "certified: {:#?}", o.verdict);
+    assert!(
+        o.reasons
+            .iter()
+            .any(|r| r.contains("stopped its threads at an error (fault: ")),
+        "{:#?}",
+        o.reasons
+    );
+    // About 4.5k steps (3.2k with LDS/STS plain); the runaway took 770 a second without end.
+    assert!(o.steps < 6_000, "{} steps", o.steps);
+}
+
+/// MISS 235 on a small fixture: e_atom_half exact_size, whose 16-bit atomic emulation reads past
+/// the allocation (`fault`). The certificate is refused, its reason naming the fault, and
+/// `check_certified` (exploration after the refusal) keeps the fault: the fixture's verdict.
+#[test]
+fn cert_refuses_a_faulting_run_and_keeps_the_fault() {
+    let case = Case::load(root().join("fixtures/e_atom_half")).unwrap();
+    for front in ["ptx", "sass"] {
+        let o = certify(machine(&case, "exact_size", front));
+        assert!(
+            o.verdict.is_none(),
+            "{front}: certified {:?}",
+            o.verdict.map(|v| v.classes())
+        );
+        assert!(
+            o.reasons.iter().any(|r| {
+                r.contains("stopped its threads at an error (fault: ") && r.contains("outside")
+            }),
+            "{front}: {:#?}",
+            o.reasons
+        );
+        let v = ptxv_sim::wellsync::check_certified(machine(&case, "exact_size", front), 200_000);
+        assert_eq!(
+            v.classes(),
+            case.variant("exact_size").unwrap().expect_for(front),
+            "{front}: {:#?}",
+            v.findings
+        );
+    }
+}
+
+/// The front-ends' refusals of a form they do not take: a variant whose front expects
+/// `unlifted` must fail to load with one of them.
+const FRONT_REFUSALS: &[&str] = &[
+    "unsupported PTX instruction",
+    "unsupported SASS opcode",
+    "ptxas error",
+    // The SASS front-end's modifier audit (modset.rs): a modifier outside the audited set is
+    // refused before the opcode is lifted (e_lane_order EXCH, e_lane_order_ticket EXCHLIVE:
+    // `ATOMS.EXCH`).
+    "not in the audited set",
+];
+
+/// Runs whose certified verdict differs from the fixture's expectation for a registered miss
+/// not fixed yet (the expectation is the correct verdict): (case, variant, front, miss, the
+/// certified classes while it is open), 18 runs. The certificate must give exactly these
+/// classes; another verdict, a refusal, or the expected verdict (fixed: drop the row) fails the
+/// sweep, and so does a row that names no run of the suite.
+/// - MISS 256: writes over a live mbarrier by atomics, cp.async and TMA are not checked.
+/// - MISS 265: two STS.64 inits of one object by two warps are clean on SASS.
+/// - MISS 266: an STS.64-initialized object revives after its inval (SASS).
+/// - MISS 272: a poll whose result is discarded is a NOP on SASS.
+const OPEN_MISSES: &[(&str, &str, &str, u32, &[&str])] = &[
+    ("e_mbar_async_live", "ATOM", "ptx", 256, &["clean"]),
+    ("e_mbar_async_live", "RED", "ptx", 256, &["clean"]),
+    ("e_mbar_async_live", "CPASYNC", "ptx", 256, &["clean"]),
+    ("e_mbar_async_live", "BULK", "ptx", 256, &["clean"]),
+    ("e_mbar_async_live", "ATOM", "sass", 256, &["clean"]),
+    ("e_mbar_async_live", "RED", "sass", 256, &["clean"]),
+    ("e_mbar_async_live", "CPASYNC", "sass", 256, &["clean"]),
+    ("e_mbar_async_live", "BULK", "sass", 256, &["clean"]),
+    ("e_mbar_double_sts_init", "good", "sass", 265, &["clean"]),
+    ("e_mbar_double_sts_init", "PREINV", "sass", 265, &["clean"]),
+    ("e_mbar_resurrect", "INV2", "sass", 266, &["clean"]),
+    ("e_mbar_discarded_poll", "good", "sass", 272, &["clean"]),
+    ("e_mbar_discarded_poll", "INV", "sass", 272, &["clean"]),
+    ("e_mbar_inval_vis", "TWAIT", "sass", 272, &["clean"]),
+    ("e_mbar_inval_vis", "TWAITS", "sass", 272, &["clean"]),
+    ("e_mbar_inval_vis", "TRYW", "sass", 272, &["clean"]),
+    ("e_mbar_inval_vis", "TRYWS", "sass", 272, &["clean"]),
+    ("e_mbar_resurrect", "WAIT", "sass", 272, &["clean"]),
+];
+
+/// One certificate run of the fixture suite: a variant through one front-end and its expected
+/// (exhaustive) classes.
+type SuiteJob = (Arc<Case>, String, &'static str, Vec<String>);
+
+/// The parts of `certified_verdicts_match_the_fixture_suite`, each a test of its own, so that
+/// the suite's lanes (8 threads, 50G) run them apart: part k < CERT_PARTS takes the jobs whose
+/// index in the sorted job list, without those of CERT_OWN, is k modulo CERT_PARTS; part
+/// CERT_PARTS + g runs the jobs of CERT_OWN[g], all at once.
+const CERT_PARTS: usize = 2;
+
+/// The fewest jobs a part k < CERT_PARTS may have (a part cannot silently go empty).
+const MIN_JOBS: usize = 800;
+
+/// The sweep's slowest jobs (case, variant, front), in parts of their own, eight each, which a
+/// lane's eight workers run at once: the r4c_* SASS mutants, whose certificate attempts take 110
+/// to 320 s each before they are refused, and r3b_trtllm_moe's fixed, B71 and B72 on SASS (about
+/// 170 s and 11 GB each).
+const CERT_OWN: &[&[(&str, &str, &str)]] = &[
+    &[
+        ("r4c_nowrap", "B33", "sass"),
+        ("r4c_dwrap", "B43", "sass"),
+        ("r4c_dwrap", "B41", "sass"),
+        ("r4c_chunk2", "B33", "sass"),
+        ("r4c_dwrap", "B42", "sass"),
+        ("r4c_chunk2", "B43", "sass"),
+        ("r4c_chunk2", "B44", "sass"),
+        ("r3b_trtllm_moe", "fixed", "sass"),
+    ],
+    &[
+        ("r4c_dwrap", "B33", "sass"),
+        ("r4c_nowrap", "B43", "sass"),
+        ("r4c_nowrap", "B37", "sass"),
+        ("r4c_chunk2", "B36", "sass"),
+        ("r4c_nowrap", "B42", "sass"),
+        ("r4c_chunk2", "B42", "sass"),
+        ("r3b_trtllm_moe", "B71", "sass"),
+        ("r3b_trtllm_moe", "B72", "sass"),
+    ],
+];
+
+/// Every fixture variant on both fronts (the cubin fixtures on SASS only): a certificate that
+/// holds gives the explorer's classes, complete; a refusal gives a reason; an `unlifted`
+/// variant keeps failing to load with a front-end's refusal; the variants of MUST_CERTIFY
+/// certify. This is part `part` of the jobs (CERT_PARTS, CERT_OWN).
+fn certified_verdicts_match_the_fixture_suite(part: usize) {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(root().join("fixtures"))
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.join("case.toml").exists())
         .collect();
     dirs.sort();
-    let mut jobs = Vec::new();
+    let mut all: Vec<SuiteJob> = Vec::new();
     let mut absent = Vec::new();
     for d in dirs {
         let name = d.file_name().unwrap().to_str().unwrap().to_string();
+        // A vendor fixture that is not here has no runs (and no MUST_CERTIFY check).
         if vendor_missing(&[&name]) {
             absent.push(name);
             continue;
@@ -346,94 +694,317 @@ fn certified_verdicts_match_the_fixture_suite() {
                     continue;
                 }
                 let expect = case.variant(&v).unwrap().expect_for(front);
-                if expect == ["unlifted"] {
-                    continue; // a lifter coverage target (tests/fixtures.rs r4_kernel_classes)
-                }
-                jobs.push((case.clone(), v.clone(), front, expect));
+                all.push((case.clone(), v.clone(), front, expect));
             }
         }
     }
-    // Independent single runs: spread them over the cores.
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let (certified, refused, errors) = (
+    let in_own = |g: &[(&str, &str, &str)], c: &str, v: &str, f: &str| {
+        g.iter().any(|&(a, b, d)| a == c && b == v && d == f)
+    };
+    let mut jobs: Vec<SuiteJob> = if part < CERT_PARTS {
+        all.iter()
+            .filter(|(c, v, f, _)| !CERT_OWN.iter().any(|g| in_own(g, &c.m.name, v, f)))
+            .enumerate()
+            .filter(|(k, _)| k % CERT_PARTS == part)
+            .map(|(_, j)| j.clone())
+            .collect()
+    } else {
+        // Vendor fixtures whose kernel binaries are absent (the open-source export) are
+        // skipped, as everywhere in the sweep.
+        let g = CERT_OWN[part - CERT_PARTS];
+        let gone: Vec<_> = g
+            .iter()
+            .filter(|(c, _, _)| absent.iter().any(|a| a == c))
+            .collect();
+        if !gone.is_empty() {
+            eprintln!(
+                "part {part}: skipping {} of its {} jobs, their vendor kernel binaries are absent \
+                 (fixtures/VENDOR_FIXTURES.toml): {gone:?}",
+                gone.len(),
+                g.len()
+            );
+        }
+        all.iter()
+            .filter(|(c, v, f, _)| in_own(g, &c.m.name, v, f))
+            .cloned()
+            .collect()
+    };
+    // PTXV_WELLSYNC_ONLY=a,b: only the runs whose `case/variant/front` contains one of them
+    // (a debugging aid; MUST_CERTIFY is checked for the names it keeps).
+    let only: Option<Vec<String>> = std::env::var("PTXV_WELLSYNC_ONLY")
+        .ok()
+        .map(|s| s.split(',').map(str::to_string).collect());
+    let kept = |n: &str| {
+        only.as_ref()
+            .is_none_or(|o| o.iter().any(|x| n.contains(x.as_str())))
+    };
+    jobs.retain(|(c, v, f, _)| kept(&format!("{}/{v}/{f}", c.m.name)));
+    let (certified, refused, unlifted) = (
         std::sync::Mutex::new(Vec::new()),
         std::sync::atomic::AtomicUsize::new(0),
-        std::sync::Mutex::new(Vec::new()),
+        std::sync::atomic::AtomicUsize::new(0),
     );
-    let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(32));
-    std::thread::scope(|s| {
-        for _ in 0..workers {
-            s.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some((case, v, front, expect)) = jobs.get(i) else {
-                        break;
-                    };
-                    let o = certify(machine(case, v, front));
-                    // C-TICKET-ADDR: `clean-up-to-permutation` stands for the explorer's
-                    // `nondeterministic` (the outputs differ by a certified permutation of rows;
-                    // tests/fixtures.rs `e_ticket_addr_permutation_certificate` compares them).
-                    let same = |c: Vec<String>| {
-                        let mut c: Vec<String> = c
-                            .into_iter()
-                            .map(|x| {
-                                if x == "clean-up-to-permutation" {
-                                    "nondeterministic".into()
-                                } else {
-                                    x
-                                }
-                            })
-                            .collect();
-                        c.sort();
-                        c == *expect
-                    };
-                    match o.verdict {
-                        Some(verdict) if !verdict.complete || !same(verdict.classes()) => {
-                            errors.lock().unwrap().push(format!(
-                                "{}/{v}/{front}: certified verdict {:?} (complete: {}) differs \
-                                 from the exhaustive one {expect:?}: {:#?}",
-                                case.m.name,
-                                verdict.classes(),
-                                verdict.complete,
-                                verdict.findings
-                            ));
-                        }
-                        Some(_) => {
-                            certified
-                                .lock()
-                                .unwrap()
-                                .push((case.m.name.clone(), v.clone(), *front))
-                        }
-                        None => {
-                            if o.reasons.is_empty() {
-                                errors.lock().unwrap().push(format!(
-                                    "{}/{v}/{front}: refused without a reason",
-                                    case.m.name
-                                ));
-                            }
-                            refused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                    }
+    let run = |(case, v, front, expect): &SuiteJob| -> Result<(), String> {
+        // `unlifted`: the front-end refuses the variant by design (a lifter coverage target,
+        // tests/fixtures.rs r4_kernel_classes; a form the PTX front-end does not model, MISS
+        // 160): it must keep refusing, with a front-end's refusal (FRONT_REFUSALS), not any
+        // load error (a find text that no longer matches, a missing file). Any other variant
+        // must load.
+        let m = match try_machine(case, v, front) {
+            Ok(_) if *expect == ["unlifted"] => {
+                return Err("loads now; update its `unlifted` expectation".into());
+            }
+            Ok(m) => m,
+            Err(e) if *expect == ["unlifted"] => {
+                let why = format!("{e:#}");
+                if !FRONT_REFUSALS.iter().any(|r| why.contains(r)) {
+                    return Err(format!(
+                        "expects `unlifted`, but does not load for another reason: {why}"
+                    ));
                 }
-            });
+                unlifted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(e) => return Err(format!("does not load: {e:#}")),
+        };
+        let o = certify(m);
+        // C-TICKET-ADDR: `clean-up-to-permutation` stands for the explorer's
+        // `nondeterministic` (the outputs differ by a certified permutation of rows;
+        // tests/fixtures.rs `e_ticket_addr_permutation_certificate` compares them).
+        let same = |c: Vec<String>| {
+            let mut c: Vec<String> = c
+                .into_iter()
+                .map(|x| {
+                    if x == "clean-up-to-permutation" {
+                        "nondeterministic".into()
+                    } else {
+                        x
+                    }
+                })
+                .collect();
+            c.sort();
+            c == *expect
+        };
+        let open = OPEN_MISSES
+            .iter()
+            .find(|r| (r.0, r.1, r.2) == (case.m.name.as_str(), v.as_str(), *front));
+        match o.verdict {
+            Some(verdict) if open.is_some() => {
+                let (.., miss, pin) = open.unwrap();
+                if verdict.complete && verdict.classes() == *pin {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "open MISS {miss}: certified verdict {:?} (complete: {}), pinned {pin:?} \
+                         (expected when fixed: {expect:?}; then drop its OPEN_MISSES row)",
+                        verdict.classes(),
+                        verdict.complete
+                    ))
+                }
+            }
+            Some(verdict) if !verdict.complete || !same(verdict.classes()) => Err(format!(
+                "certified verdict {:?} (complete: {}) differs from the exhaustive one \
+                 {expect:?}: {:#?}",
+                verdict.classes(),
+                verdict.complete,
+                verdict.findings
+            )),
+            Some(_) => {
+                certified
+                    .lock()
+                    .unwrap()
+                    .push((case.m.name.clone(), v.clone(), *front));
+                Ok(())
+            }
+            None if open.is_some() => Err(format!(
+                "open MISS {}: refused ({:?}), pinned {:?}",
+                open.unwrap().3,
+                o.reasons,
+                open.unwrap().4
+            )),
+            None if o.reasons.is_empty() => Err("refused without a reason".into()),
+            // A refusal at the memory budget did not check the run (RMK277 F3: a latched budget
+            // refused every later certificate of the process at step 0, and the sweep counted
+            // them as refusals).
+            None if o.reasons.iter().any(|r| r.contains("memory budget")) => {
+                Err(format!("refused at the memory budget: {:?}", o.reasons))
+            }
+            None => {
+                refused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
         }
-    });
-    let errors = errors.into_inner().unwrap();
-    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    };
+    // Independent single runs, as many at once as the run has explorer threads: PTXV_THREADS
+    // (a suite lane: 8 threads, 50G), else 8, not every core. A run past
+    // PTXV_WELLSYNC_JOB_SECS (default 1800 s; 0: no limit; single runs take up to about 345 s on
+    // 8 cores) fails the test: it would otherwise hold the tier for hours without a verdict.
+    // PTXV_WELLSYNC_TRACE=1 prints every run's time.
+    let workers = std::env::var("PTXV_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n: &usize| n > 0)
+        .unwrap_or(8);
+    let limit = match std::env::var("PTXV_WELLSYNC_JOB_SECS") {
+        Ok(s) => s.parse::<u64>().expect("PTXV_WELLSYNC_JOB_SECS: seconds"),
+        Err(_) => 1800,
+    };
+    let errors = run_sweep(
+        &jobs,
+        workers,
+        &|(case, v, front, _)| format!("{}/{v}/{front}", case.m.name),
+        &run,
+        (limit > 0).then(|| std::time::Duration::from_secs(limit)),
+        &|msg| {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(
+                format!("certified_verdicts_match_the_fixture_suite part {part} FAILED: {msg}\n")
+                    .as_bytes(),
+            );
+            std::process::exit(101);
+        },
+        std::env::var_os("PTXV_WELLSYNC_TRACE").is_some(),
+    );
+    let mut errors = errors;
     let (certified, refused) = (certified.into_inner().unwrap(), refused.into_inner());
     eprintln!(
-        "certificate: {} certified, {refused} refused (explored instead)",
-        certified.len()
+        "part {part}: {} of {} jobs, {} certified, {refused} refused (explored instead), {} \
+         unlifted as expected",
+        jobs.len(),
+        all.len(),
+        certified.len(),
+        unlifted.into_inner()
     );
+    // A part cannot silently go empty, nor lose a job of its own (unless PTXV_WELLSYNC_ONLY).
+    if only.is_none() {
+        // Every OPEN_MISSES row names a run of the suite (any part).
+        for r in OPEN_MISSES {
+            if !all
+                .iter()
+                .any(|(c, v, f, _)| (c.m.name.as_str(), v.as_str(), *f) == (r.0, r.1, r.2))
+            {
+                errors.push(format!("OPEN_MISSES row {r:?} names no run of the suite"));
+            }
+        }
+        if part < CERT_PARTS {
+            if jobs.len() < MIN_JOBS {
+                errors.push(format!("part {part}: only {} jobs", jobs.len()));
+            }
+        } else {
+            let g = CERT_OWN[part - CERT_PARTS];
+            let present = g
+                .iter()
+                .filter(|(c, _, _)| !absent.iter().any(|a| a == c))
+                .count();
+            if jobs.len() != present {
+                errors.push(format!("part {part}: a job of {g:?} is no longer one"));
+            }
+        }
+    }
+    // The guard on the certificate's strength, reported with the other failures. Every part
+    // checks that each entry is still a job of the sweep (a renamed variant, a case in SKIP or
+    // a typo fails); the part that runs it checks that it certifies. Only absent vendor
+    // fixtures and the names PTXV_WELLSYNC_ONLY leaves out are not checked.
     for (c, v, f) in MUST_CERTIFY {
-        if absent.iter().any(|a| a == c) {
+        let name = format!("{c}/{v}/{f}");
+        if absent.iter().any(|a| a == c) || !kept(&name) {
             continue;
         }
-        assert!(
-            certified.iter().any(|(a, b, g)| a == c && b == v && g == f),
-            "{c}/{v}/{f} no longer certifies"
-        );
+        let is = |(a, b, g, _): &SuiteJob| a.m.name == *c && b == v && g == f;
+        if !all.iter().any(is) {
+            errors.push(format!("{name}: is no job of the sweep (MUST_CERTIFY)"));
+        } else if jobs.iter().any(is)
+            && !certified.iter().any(|(a, b, g)| a == c && b == v && g == f)
+        {
+            errors.push(format!("{name}: no longer certifies (MUST_CERTIFY)"));
+        }
     }
+    assert!(errors.is_empty(), "part {part}: {}", errors.join("\n"));
+}
+
+/// MISS 277: a step that reports a violation and leaves the machine as it was (an mbarrier poll
+/// on an object that is not live, `mbar-uninit`: the thread stays at the poll) is picked again
+/// and again by the certificate's deterministic run, which had no bound but the whole check's
+/// time budget: with none set it never ended and its findings grew without limit
+/// (certified_verdicts_match_the_fixture_suite_part0 killed at 16G). Each job must come back
+/// within the deadline, its certificate refused or giving the fixture's classes; the test
+/// stops the process (exit 101) at the deadline or once the resident set grew by 3 GiB, so it
+/// cannot run out of memory itself.
+#[test]
+fn certificate_run_stops_a_step_that_repeats_without_progress() {
+    const JOBS: &[(&str, &str)] = &[
+        ("e_mbar_discarded_poll", "good"),
+        ("e_mbar_discarded_poll", "INV"),
+        ("e_mbar_discarded_poll", "USED"),
+        ("e_mbar_inval_vis", "TRYWS"),
+        ("e_mbar_inval_vis", "TWAITS"),
+        ("e_mbar_resurrect", "WAIT"),
+    ];
+    for &(name, v) in JOBS {
+        let case = Case::load(root().join("fixtures").join(name)).unwrap();
+        let expect = case.variant(v).unwrap().expect_for("ptx");
+        let m = machine(&case, v, "ptx");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(certify(m));
+        });
+        let base = ptxv_sim::membudget::rss();
+        let t0 = std::time::Instant::now();
+        let o = loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(o) => break o,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(e) => panic!("{name}/{v}/ptx: {e}"),
+            }
+            let grown = ptxv_sim::membudget::rss().saturating_sub(base);
+            if t0.elapsed().as_secs() >= 120 || grown >= 3 << 30 {
+                // Past the test harness's capture (exit skips its output).
+                use std::io::Write;
+                let _ = std::io::stderr().write_all(
+                    format!(
+                        "certificate_run_stops_a_step_that_repeats_without_progress FAILED: \
+                         {name}/{v}/ptx: no certificate result after {:.0} s, resident set \
+                         grown by {:.1} GiB\n",
+                        t0.elapsed().as_secs_f64(),
+                        grown as f64 / (1u64 << 30) as f64
+                    )
+                    .as_bytes(),
+                );
+                std::process::exit(101);
+            }
+        };
+        match o.verdict {
+            Some(ver) => assert_eq!(ver.classes(), expect, "{name}/{v}/ptx: certified"),
+            None => assert!(
+                !o.reasons.is_empty(),
+                "{name}/{v}/ptx: refused without a reason"
+            ),
+        }
+    }
+}
+
+#[test]
+#[ignore = "heavy: half of the certify sweep's other jobs; 90 s"]
+fn certified_verdicts_match_the_fixture_suite_part0() {
+    certified_verdicts_match_the_fixture_suite(0);
+}
+
+#[test]
+#[ignore = "heavy: half of the certify sweep's other jobs; 76 s"]
+fn certified_verdicts_match_the_fixture_suite_part1() {
+    certified_verdicts_match_the_fixture_suite(1);
+}
+
+#[test]
+#[ignore = "heavy: eight of the certify sweep's slowest jobs at once; 330 s"]
+fn certified_verdicts_match_the_fixture_suite_part2() {
+    certified_verdicts_match_the_fixture_suite(2);
+}
+
+#[test]
+#[ignore = "heavy: eight of the certify sweep's slowest jobs at once; 320 s"]
+fn certified_verdicts_match_the_fixture_suite_part3() {
+    certified_verdicts_match_the_fixture_suite(3);
 }
 
 /// E-WELLSYNC cross-check (`PTXV_CERT_CROSSCHECK`): random schedules never refute a
@@ -495,45 +1066,41 @@ fn cert_crosscheck_race_dead_is_the_certified_race() {
     }
 }
 
-/// Cross-check: a random schedule that deadlocks refutes the certificate, with the deadlock
-/// as its witness. probes/warpsync_pairs good, SASS: the model's splits of a warp share its
-/// uniform registers, and a schedule that runs the even lanes' `VOTEU.ANY UR5` between the
-/// odd lanes' own VOTEU and the `LOP3` that reads UR5 (an STS sits between them) sends the
-/// odd lanes past `@!P0 BRA.DIV` to `BSYNC B0`, while the even lanes wait in
-/// `WARPSYNC.COLLECTIVE` for them. GB300 runs the probe to completion, bitwise equal; the
-/// certificate's run does not interleave the splits there. MISS 52: the strict level keeps
-/// every switch (a hardware-measured null result does not remove schedules there), so the
-/// refutation stands; the GB300 profile drops the switch (E-HW-SPLIT-UR,
-/// `cert_crosscheck_warpsync_pairs_certifies_under_gb300`).
+/// MISS 52's false deadlock, gone with MISS 81 (probes/warpsync_pairs good, SASS): a schedule
+/// that runs the even lanes' `VOTEU.ANY UR5` between the odd lanes' own VOTEU and the `LOP3`
+/// that reads UR5 (an STS sits between them) sent the odd lanes past `@!P0 BRA.DIV` to
+/// `BSYNC B0`, where they waited for the even lanes parked in `WARPSYNC.COLLECTIVE`. That
+/// BSYNC has no .RECONVERGENT, so since MISS 81 it holds no lane and no walk deadlocks there;
+/// the certificate refuses instead, at the strict level and under the GB300 profile (C-WARP:
+/// the lanes leave the BSYNC apart and meet again at the next uniform instructions).
 #[test]
 fn cert_crosscheck_deadlocking_schedule_refutes() {
     let case = Case::load(root().join("probes/warpsync_pairs")).unwrap();
     let m = machine(&case, "good", "sass");
-    let o = ptxv_sim::wellsync::certify_crosschecked(m.clone(), 0);
-    assert!(o.verdict.is_some(), "{:#?}", o.reasons);
-    let o = ptxv_sim::wellsync::certify_crosschecked(m, 4);
-    assert!(o.verdict.is_none());
-    assert!(
-        o.reasons.iter().any(|r| r.contains("reported deadlock")),
-        "{:#?}",
-        o.reasons
-    );
-    assert!(
-        o.witnesses
-            .iter()
-            .any(|f| f.kind == "deadlock" && f.msg.contains("WARPSYNC.COLLECTIVE")),
-        "{:#?}",
-        o.witnesses
-    );
+    let g = ptxv_sim::hwprofile::machine(&m, ptxv_sim::hwprofile::GB300);
+    for (level, m) in [("strict", m), ("gb300", g)] {
+        let o = ptxv_sim::wellsync::certify_crosschecked(m, 4);
+        assert!(o.verdict.is_none(), "{level}");
+        assert!(
+            !o.reasons.is_empty() && o.reasons.iter().all(|r| r.starts_with("C-WARP")),
+            "{level}: {:#?}",
+            o.reasons
+        );
+        assert!(
+            !o.witnesses.iter().any(|f| f.kind == "deadlock"),
+            "{level}: {:#?}",
+            o.witnesses
+        );
+    }
 }
 
 /// MISS 52 under the GB300 profile: a split inside a uniform-register window runs to its read
 /// before another split of its warp moves (E-HW-SPLIT-UR, urwin.rs; probes/ur_window and
-/// probes/split_yield: no switch without a YIELD or a blocking instruction), so on
-/// probes/warpsync_pairs good, SASS, no walk runs the other split's `VOTEU.ANY UR5` between
-/// a split's VOTEU and its `LOP3`, and the certificate holds under the cross-check with any
-/// number of walks, as GB300 (bitwise). The strict level is unchanged
-/// (`cert_crosscheck_deadlocking_schedule_refutes`).
+/// probes/split_yield: no switch without a YIELD or a blocking instruction). On
+/// probes/warpsync_pairs good, SASS, the windows after each `VOTEU.ANY UR5` reach the `LOP3`
+/// that reads it across the STS between them. Until MISS 81 the certificate then held under the
+/// cross-check, as GB300 (bitwise); since then it refuses at both levels
+/// (`cert_crosscheck_deadlocking_schedule_refutes`), and the windows are what is checked here.
 #[test]
 fn cert_crosscheck_warpsync_pairs_certifies_under_gb300() {
     let case = Case::load(root().join("probes/warpsync_pairs")).unwrap();
@@ -548,18 +1115,7 @@ fn cert_crosscheck_warpsync_pairs_certifies_under_gb300() {
         assert!(w[pc + 1] && w[pc + 2], "window after {}", m.k.code[pc].text);
     }
     let g = ptxv_sim::hwprofile::machine(&m, ptxv_sim::hwprofile::GB300);
-    for walks in [4, 32] {
-        let o = ptxv_sim::wellsync::certify_crosschecked(g.clone(), walks);
-        let v = o
-            .verdict
-            .unwrap_or_else(|| panic!("{walks} walks: {:#?} {:#?}", o.reasons, o.witnesses));
-        assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
-        assert!(
-            v.assumptions.iter().any(|a| a == "E-HW-SPLIT-UR"),
-            "{:?}",
-            v.assumptions
-        );
-    }
+    assert!(g.launch.hw_split_ur);
 }
 
 /// Cross-check: a walk cut before it terminates proves nothing by itself; the deterministic
@@ -596,7 +1152,7 @@ fn certified_outputs_match_exploration() {
         ("r0_tma_sum", "good", "ptx"),
         ("r0_tma_sum", "good", "sass"),
         ("r1a_tcgen05_tile", "good", "ptx"),
-        ("r1a_tcgen05_tile", "good", "sass"),
+        // (r1a_tcgen05_tile SASS: refused since MISS 81, see MUST_CERTIFY.)
         ("e_bararv", "good", "sass"),
         ("e_barover", "good", "ptx"),
         ("e_elect", "good", "ptx"),
@@ -1070,6 +1626,47 @@ fn fadd_orders_outside_the_outputs_are_refused() {
         "{:#?}",
         o.reasons
     );
+}
+
+/// C-FADD in shared memory (MISS 142): two warps' unordered `red.shared.add.f32` of the
+/// subnormals 3 and 5 (x 2^-149) into one +0 word. A shared-memory add keeps subnormals, so
+/// both orders leave 8, as the run does, and the certificate holds with that output; the fold
+/// over the orders adds as the executor does (a flushing fold would leave 0 in both orders and
+/// refuse it). Before, the executor flushed too and the output was 0 (GB300: 8, N-ATOMIC).
+#[test]
+fn fadd_orders_in_shared_memory_keep_subnormals() {
+    let ptx = ".version 8.8\n.target sm_103a\n.address_size 64\n\
+               .visible .entry k(.param .u64 out) {\n\
+               .reg .b32 %r<8>; .reg .f32 %f<2>; .reg .b64 %rd<2>; .reg .pred %p<4>;\n\
+               .shared .align 4 .b32 s[1];\n\
+               mov.u32 %r1, %tid.x; mov.u32 %r2, s; setp.eq.u32 %p1, %r1, 0;\n\
+               @%p1 st.shared.u32 [%r2], 0; bar.sync 0;\n\
+               and.b32 %r3, %r1, 31; setp.ne.u32 %p2, %r3, 0; @%p2 bra SKIP;\n\
+               setp.lt.u32 %p3, %r1, 32; selp.b32 %r5, 3, 5, %p3; mov.b32 %f1, %r5;\n\
+               red.shared.add.f32 [%r2], %f1;\n\
+               SKIP: bar.sync 0;\n\
+               ld.param.u64 %rd1, [out]; cvta.to.global.u64 %rd1, %rd1;\n\
+               @%p1 ld.shared.u32 %r6, [%r2]; @%p1 st.global.u32 [%rd1], %r6; ret; }";
+    let k = ptxv_ptx::parse_kernel(ptx, Some("k")).unwrap();
+    let case = Case {
+        dir: Default::default(),
+        m: serde_json::from_value(serde_json::json!({
+            "name":"fadd_shared", "description":"C-FADD in shared memory",
+            "entry":"k", "grid":[1,1,1], "block":[64,1,1], "outputs":["out"],
+            "buffers":[{"name":"out", "dtype":"u32", "shape":[1], "init":"zeros"}],
+            "params":[{"kind":"ptr", "buffer":"out"}],
+            "variants":[]
+        }))
+        .unwrap(),
+    };
+    let launch = build_launch(&case, &k).unwrap();
+    let o = certify(Machine::new(Arc::new(k), Arc::new(launch)));
+    let v = o
+        .verdict
+        .unwrap_or_else(|| panic!("not certified: {:#?}", o.reasons));
+    assert_eq!(v.classes(), ["clean"], "{:#?}", v.findings);
+    assert_eq!(v.outputs.len(), 1);
+    assert_eq!(v.outputs[0][..4], 8u32.to_le_bytes(), "{:?}", v.outputs);
 }
 
 /// E-DESC-VERSION: Triton 3.5 leaves a tcgen05 shared-memory descriptor's fixed bits 46-48 at

@@ -1,0 +1,75 @@
+name = "c_num_mufu_inf_f32"
+description = """
+MISS 258: out[32 k + t] = chain_k(x[t]), x[t] = ((a[t] + b[t]) + c[t]) + e[t], for the 13 chains
+lg2, rsqrt, rcp (.approx.f32), lg2f, rsqrtf, rcpf (.approx.ftz.f32), max(lg2f, -1000),
+min(rsqrtf, 1000), min(rcpf, 1000), ex2f(lg2f), rcpf(rsqrtf), max(lg2, -1000) and add(lg2f, 1000).
+(a, b, c, e) = (1e8, -1, -1e8, 1) in lanes 0..15: x = 1 in f32, exactly 0, where lg2, rsqrt and rcp
+have no finite true value (-inf, +inf, a pole): those elements' exact values are not determined
+(N-NUM-NONFINITE). Lanes 16..31: x = 2, 0.5, 3, 1.5, exact. expected/: GB300."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "num_mufu_inf"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/b.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/c.bin"
+
+[[buffers]]
+name = "e"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/e.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [416]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "e"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

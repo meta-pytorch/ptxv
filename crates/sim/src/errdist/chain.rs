@@ -772,7 +772,7 @@ impl Prog {
             .launch
             .allocs
             .iter()
-            .map(|a| (a.name.clone(), a.init.clone()))
+            .map(|a| (a.name.clone(), (*a.init).clone()))
             .collect();
         let v = self.eval(&self.leaves(&bytes)?);
         Ok(v.iter()

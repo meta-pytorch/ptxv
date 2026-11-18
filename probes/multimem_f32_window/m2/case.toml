@@ -1,0 +1,76 @@
+name = "multimem_f32_window_m2"
+description = """
+MISS 225 repro: multimem.ld_reduce f32 adds of 2 members (one per GPU) on lanes picked from
+GB300 sweeps (mklanes.py, expected/lanes.csv): out = the reduced lanes of the tests f32, f32w
+and f32x4 (16, 0, 16 lanes). GB300's output for the same lanes: expected/m2.out.bin
+(check.py compares lane by lane)."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "mm32"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "mem0"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "../data/m2.in0.bin"
+device = 0
+
+[[buffers]]
+name = "mem1"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "../data/m2.in1.bin"
+device = 1
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+device = 0
+
+[[multicast]]
+name = "mc"
+size = 128
+binds = [
+    { device = 0, offset = 0, buffer = "mem0", byte_offset = 0, size = 128 },
+    { device = 1, offset = 0, buffer = "mem1", byte_offset = 0, size = 128 },
+]
+
+[[params]]
+kind = "ptr"
+buffer = "mc"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 16
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[params]]
+kind = "u32"
+value = 4
+
+[[params]]
+kind = "u32"
+value = 16
+
+[[params]]
+kind = "u32"
+value = 16
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

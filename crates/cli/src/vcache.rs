@@ -13,9 +13,11 @@
 //! The key covers everything the verdict is a function of: every file under the case
 //! directory (recursively: `data/` holds the inputs that steer control flow; ptxv's own output
 //! directories there are not input, `is_output_dir`), the variant,
-//! the front-end, the ptxv binary (path, size, modification time) and every `PTXV_*`
-//! environment variable except the ones that only change scheduling of the search threads,
-//! output and caching. A stored verdict serves any request when it is complete (the same
+//! the front-end, the ptxv binary (path, size, modification time), the CUDA tools it runs
+//! (`$CUDA_HOME/bin` ptxas, nvdisasm and cuobjdump: path, size, modification time; they decide
+//! the lifted SASS) and every `PTXV_*` environment variable except the ones that only change
+//! scheduling of the search threads, output and caching. A stored verdict serves any request
+//! when it is complete (the same
 //! verdict at every state cap), and an incomplete one serves requests for at most as many
 //! states as it was computed with (it explored at least as far as the request would).
 //! Files: `$PTXV_CACHE/check/<key>.json` (default `~/.cache/ptxv`). `PTXV_NO_VCACHE=1`
@@ -143,6 +145,34 @@ pub(crate) fn key(case_dir: &Path, variant: &str, front: &str, mode: &str) -> Op
 
 /// `key` whatever PTXV_NO_VCACHE says (the tests read the key with it set too).
 fn key_of(case_dir: &Path, variant: &str, front: &str, mode: &str) -> Option<String> {
+    key_with(case_dir, variant, front, mode, &ptxv_sass::cuda_home())
+}
+
+/// The CUDA tools of toolkit directory `cuda` into the key: each tool's path, and its size and
+/// modification time when it exists (an upgrade in place changes the key too). MISS 190: the
+/// key covered PTXV_* variables only, so a verdict computed with one toolkit's nvdisasm served
+/// errdist / equiv run with another's.
+fn eat_toolkit(h: &mut Fnv, cuda: &str) {
+    for name in ptxv_sass::CUDA_TOOLS {
+        let p = ptxv_sass::tool_in(cuda, name);
+        h.eat(p.as_bytes());
+        match std::fs::metadata(&p) {
+            Ok(md) => {
+                h.eat(&md.len().to_le_bytes());
+                let t = md
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_nanos());
+                h.eat(&t.to_le_bytes());
+            }
+            Err(_) => h.eat(b"missing"),
+        }
+    }
+}
+
+/// `key_of` with toolkit directory `cuda` (the tests compare two toolkits).
+fn key_with(case_dir: &Path, variant: &str, front: &str, mode: &str, cuda: &str) -> Option<String> {
     let mut h = Fnv(0xcbf29ce484222325);
     h.eat(&VERSION.to_le_bytes());
     h.eat(env!("CARGO_PKG_VERSION").as_bytes());
@@ -167,6 +197,7 @@ fn key_of(case_dir: &Path, variant: &str, front: &str, mode: &str) -> Option<Str
         h.eat(k.as_bytes());
         h.eat(v.as_bytes());
     }
+    eat_toolkit(&mut h, cuda);
     let dir = case_dir.canonicalize().ok()?;
     eat_dir(&mut h, &dir, &dir).ok()?;
     let case = ptxv_case::Case::load(&dir).ok()?;
@@ -371,6 +402,71 @@ expect = ["clean"]
         store_in(&cache, &k1, 1000, &verdict(true));
         assert!(load_in(&cache, &k1, 2000).is_some());
         assert!(load_in(&cache, &k0, 10).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// MISS 190: the key covers the CUDA tools ptxv runs (CUDA_HOME's ptxas, nvdisasm and
+    /// cuobjdump decide the lifted SASS): another toolkit directory, even one linking to the
+    /// same tools, or a tool changed in place, gives another key.
+    #[test]
+    fn key_follows_the_toolkit() {
+        let d = std::env::temp_dir().join(format!("ptxv-vcache-tk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("case")).unwrap();
+        std::fs::write(
+            d.join("case/case.toml"),
+            r#"
+name = "x"
+description = "toolkit"
+ptx = "kernel.ptx"
+cubin = "kernel.cubin"
+entry = "k"
+grid = [1,1,1]
+block = [1,1,1]
+outputs = ["out"]
+params = []
+[[buffers]]
+name = "out"
+dtype = "u8"
+shape = [3]
+init = "zeros"
+[[variants]]
+id = "good"
+expect = ["clean"]
+"#,
+        )
+        .unwrap();
+        for file in ["kernel.ptx", "kernel.cubin"] {
+            std::fs::write(d.join("case").join(file), [1u8]).unwrap();
+        }
+        for tk in ["a", "b", "none"] {
+            std::fs::create_dir_all(d.join(tk).join("bin")).unwrap();
+        }
+        for name in ptxv_sass::CUDA_TOOLS {
+            std::fs::write(d.join("a/bin").join(name), [1u8, 2, 3]).unwrap();
+            std::os::unix::fs::symlink(d.join("a/bin").join(name), d.join("b/bin").join(name))
+                .unwrap();
+        }
+        let k = |tk: &str| {
+            key_with(
+                &d.join("case"),
+                "good",
+                "sass",
+                "certify",
+                d.join(tk).to_str().unwrap(),
+            )
+            .unwrap()
+        };
+        let ka = k("a");
+        assert_eq!(ka, k("a"));
+        assert_ne!(ka, k("b"), "another CUDA_HOME must change the key");
+        assert_ne!(
+            ka,
+            k("none"),
+            "a toolkit without the tools must change the key"
+        );
+        std::fs::write(d.join("a/bin/nvdisasm"), [1u8, 2, 3, 4]).unwrap();
+        assert_ne!(ka, k("a"), "nvdisasm changed in place must change the key");
         let _ = std::fs::remove_dir_all(&d);
     }
 

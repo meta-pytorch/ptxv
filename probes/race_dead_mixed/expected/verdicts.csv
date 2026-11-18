@@ -1,0 +1,9 @@
+variant,front,expected,basis
+good,ptx,race,PTX ISA 9.5 8.7.1 / 8.7.2: an unordered strong u8 read and strong u32 write overlap partially: a mixed-size data race; the axioms do not apply so a dead loaded value does not discharge it
+PLAIN,ptx,race,8.7.1 / 8.7.2: a weak u8 read and the u32 write are a data race whose operations overlap partially: a mixed-size data race
+LIVE,ptx,race,control: the same race with the loaded value used in a predicate
+SAME,ptx,clean,control: 8.7: equal sizes overlap completely and .gpu scopes on one GPU include each other: morally strong: no data race
+UNIFORM,ptx,clean,control: 8.7.1 / 8.7.2: the .cta read is not morally strong with the write: a uniform-size data race the axioms describe; its loaded value reaches nothing (E-RACE-DEAD)
+UNIFORM_PLAIN,ptx,clean,control: 8.7.2: a weak u32 read of the u32 word: a uniform-size data race the axioms describe; its loaded value reaches nothing (E-RACE-DEAD)
+e_nic_cta:WORDDEAD,ptx,race,8.7.1 / 8.7.2: a 4-byte relaxed.sys read of the 8-byte chunk an RDMA write lands (S-NIC-WORD) and unordered with it: a mixed-size data race; masked to 0 its value is dead
+e_nic_cta:CQEDEAD,ptx,race,8.7.1: a .cta read of CQE bytes 60-63 is not morally strong with the NIC's CQE write (the NIC is in no CTA): a data race whose complete overlap the model does not decide (S-NIC-CQE): not dropped

@@ -1,0 +1,66 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CLOCK (MISS 76): a lane-varying clock-derived branch. Every lane reads %clock and branches on the
+// parity of (%clock + %tid.x): the lanes of a converged warp read one clock value on GB300, so
+// the lanes of one parity take the branch and the others fall through (the warp splits).
+// The taken side stores 1 to sm[lane], the fall-through side stores 1 to sm[lane ^ 1] (each
+// side in a do-while loop bounded by n[0] = 0, so that ptxas keeps a branch). When all lanes go
+// one way every slot gets 1; when they split, lanes 2k and 2k+1 store the same slot and the
+// other slot of the pair keeps 0. out[lane] = sm[lane] after the CTA barrier.
+//   good: as above. GB300: 1,0,1,0,... or 0,1,0,1,... (one parity per run).
+//   UNI: the branch on the parity of %clock alone (warp-uniform on GB300): out all 1.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_lanes(.param .u64 out_p, .param .u64 n_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<6>;
+    .shared .align 4 .b32 sm[32];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd4, [n_p];
+    cvta.to.global.u64 %rd4, %rd4;
+    ld.global.u32 %r20, [%rd4];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r10, sm;
+    shl.b32 %r2, %r1, 2;
+    add.u32 %r3, %r10, %r2;
+    mov.u32 %r4, 0;
+    st.shared.u32 [%r3], %r4;
+    bar.sync 0;
+    mov.u32 %r5, %clock;
+    add.u32 %r6, %r5, %r1;               // @LANE
+    and.b32 %r6, %r6, 1;
+    setp.eq.u32 %p1, %r6, 0;
+    mov.u32 %r7, 1;
+    mov.u32 %r21, 0;
+    @%p1 bra TAKE;
+    xor.b32 %r8, %r1, 1;
+    shl.b32 %r8, %r8, 2;
+    add.u32 %r8, %r10, %r8;
+FLOOP:
+    st.shared.u32 [%r8], %r7;
+    add.u32 %r21, %r21, 1;
+    setp.lt.u32 %p2, %r21, %r20;
+    @%p2 bra FLOOP;
+    bra JOIN;
+TAKE:
+TLOOP:
+    st.shared.u32 [%r3], %r7;
+    add.u32 %r21, %r21, 1;
+    setp.lt.u32 %p3, %r21, %r20;
+    @%p3 bra TLOOP;
+JOIN:
+    bar.sync 0;
+    ld.shared.u32 %r9, [%r3];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r9;
+    ret;
+}

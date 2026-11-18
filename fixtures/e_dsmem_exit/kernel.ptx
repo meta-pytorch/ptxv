@@ -1,0 +1,44 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-CLUSTER-LIFE against the explorers' local reduction (MISS 153). A 2-CTA cluster of one
+// thread each: CTA 1 stores into CTA 0's shared word through st.shared::cluster; CTA 0 writes
+// its word, reads it back after bar.sync and stores it to out.
+//   good: barrier.cluster after CTA 1's store, before CTA 0's write: clean.
+//   NOBAR: no barrier.cluster: CTA 1's store races with CTA 0's accesses of the word when it
+//          lands before CTA 0 exits, and is a lifetime violation after: race, violation. Until
+//          the local reduction stopped expanding CTA 0's exit alone, both fronts reported the
+//          violation only.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_dsmem_exit(.param .u64 out_p)
+.reqnctapercluster 2, 1, 1
+{
+    .shared .align 4 .b32 w;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %cluster_ctarank;
+    mov.u32 %r2, w;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 bra OWN;
+    mapa.shared::cluster.u32 %r4, %r2, 0;
+    st.shared::cluster.u32 [%r4], %r1;
+    barrier.cluster.arrive.release;      // @BAR_A1
+    barrier.cluster.wait.acquire;        // @BAR_W1
+    ret;
+OWN:
+    barrier.cluster.arrive.release;      // @BAR_A0
+    barrier.cluster.wait.acquire;        // @BAR_W0
+    st.shared.u32 [%r2], 5;
+    bar.sync 0;
+    ld.shared.u32 %r6, [%r2];
+    st.global.u32 [%rd1], %r6;
+    ret;
+}

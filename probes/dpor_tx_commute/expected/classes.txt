@@ -1,0 +1,8 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# Racy PTX: DPOR keeps the outcomes behind the race too (nondeterministic, E-DRF), as here.
+good  ptx  stateful [nondeterministic,race]
+good  ptx  dpor     [nondeterministic,race]
+good  ptx  certify  [nondeterministic,race]
+good  sass stateful [nondeterministic]
+good  sass dpor     [nondeterministic]
+good  sass certify  [nondeterministic]

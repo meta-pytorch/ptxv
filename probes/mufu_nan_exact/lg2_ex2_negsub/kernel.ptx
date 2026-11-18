@@ -1,0 +1,30 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 258 repro: out = ex2.approx.ftz(lg2.approx.ftz(x)) (probes/mufu_nan_exact).
+
+.visible .entry lg2_ex2_negsub(.param .u64 px, .param .u64 pout)
+{
+    .reg .b32 %r<8>;
+    .reg .f32 %f<16>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f4, [%rd4];
+    lg2.approx.ftz.f32 %f6, %f4;
+    ex2.approx.ftz.f32 %f5, %f6;
+    st.global.f32 [%rd5], %f5;
+    ret;
+}

@@ -3059,7 +3059,7 @@ pub fn apply(m0: &Machine, mu: &Mutation) -> Machine {
     for &(a, off, bytes, v) in &mu.writes {
         if let Some(al) = l.allocs.get_mut(a) {
             for i in 0..bytes as usize {
-                if let Some(b) = al.init.get_mut(off as usize + i) {
+                if let Some(b) = Arc::make_mut(&mut al.init).get_mut(off as usize + i) {
                     *b = (v >> (8 * i)) as u8;
                 }
             }

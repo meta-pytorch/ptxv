@@ -1,0 +1,63 @@
+name = "c_num_fold_ptxref_f32"
+description = """
+N-NUM-TRACK (MISS 160, SASS claims of a kernel whose PTX the PTX front-end refused; the
+independent review's probe): out[t] = rn(x[t] + mul.rn(0.1f, 3)), whose product ptxas folds into
+the FADD immediate 0x3e99999a; thread t also runs atom.dec.u32 on junk[t] (not an output). Exact
+out[t] = x[t] + 3 * 0.1f (0.1f the f32 nearest 0.1). Variant `refused` runs activemask.b32
+instead, which ptxas compiles (VOTE.ANY) and the PTX front-end refuses. x uniform in [1, 2).
+expected/ is GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_fold_ptxref_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "junk"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "junk"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]
+
+[[variants]]
+id = "refused"
+summary = "activemask.b32 for the atom.dec (the PTX front-end refuses it)"
+marker = "@DEC"
+find = "atom.global.dec.u32 %r1, [%rd7], 5;"
+replace = "activemask.b32 %r1;"
+# The PTX front-end refuses activemask.b32 by design (MISS 160: `ptxv num` then runs the SASS
+# front without claims): `unlifted` on PTX, so a front-end that starts taking it is noticed.
+expect = ["unlifted"]
+expect_sass = ["clean"]

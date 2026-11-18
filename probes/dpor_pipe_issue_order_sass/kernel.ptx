@@ -1,0 +1,87 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// DPOR repro (MISS 222), the SASS case: probes/dpor_pipe_issue_order is clean on SASS in every
+// explorer (ptxas if-converts its two lane paths), and on probes/sync_pipe_issue_order DPOR
+// finds both issue orders without the issue key (the two splits reconverge, and their steps
+// conflict at the merge point). Here lane 0's one-trip loop keeps the warp diverged and both
+// lanes leave on their own paths (ret), so the two issues into rank 1's M1 pipe conflict only
+// in the pipe.
+// Lane 0 arrives on rank 1's M1 (X), runs the loop and exits. Lane 1 arrives on M1 (Y), runs
+// fence.acq_rel.cluster (drains its own remote ops: lands the pipe prefix up to Y), arrives
+// .release.cluster on rank 1's M2 and exits.
+//   issue order X,Y: lane 1's drain lands X then Y: rank 1's test_wait of M1, after its wait
+//                    on M2, is always true.
+//   issue order Y,X: X can still be in flight: the test can be false. out = 1 or 0.
+// The other lanes reach the end-of-kernel cluster barrier without lanes 0 and 1 (non-aligned).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry dpor_pipe_issue_order_sass(.param .u64 out_p)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b64 m1;
+    .shared .align 8 .b64 m2;
+    .shared .align 4 .b32 g;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r3, %cluster_ctarank;
+    mov.u32 %r4, m1;
+    mov.u32 %r5, m2;
+    mov.u32 %r8, g;
+    setp.ne.u32 %p0, %r3, 1;
+    setp.ne.u32 %p1, %r1, 0;
+    or.pred %p2, %p0, %p1;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r4], 2;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    fence.mbarrier_init.release.cluster;
+INIT_DONE:
+    @%p1 bra G1;
+    st.shared.u32 [%r8], 0;
+G1:
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    setp.gt.u32 %p3, %r1, 1;
+    @%p3 bra END;
+    @!%p0 bra RANK1;
+    mapa.shared::cluster.u32 %r9, %r4, 1;
+    mapa.shared::cluster.u32 %r10, %r5, 1;
+    @%p1 bra LANE0;
+    mbarrier.arrive.relaxed.cluster.shared::cluster.b64 _, [%r9];
+    mov.u32 %r17, 0;
+SPINX:
+    ld.volatile.shared.u32 %r16, [%r8];
+    add.u32 %r17, %r17, 1;
+    setp.lt.u32 %p7, %r17, %r16;
+    @%p7 bra SPINX;
+    ret;
+LANE0:
+    mbarrier.arrive.relaxed.cluster.shared::cluster.b64 _, [%r9];
+    fence.acq_rel.cluster;
+    mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%r10];
+    ret;
+RANK1:
+    @%p1 bra END;
+WAIT2:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p5, [%r5], 0;
+    @!%p5 bra WAIT2;
+    mbarrier.test_wait.parity.acquire.cluster.shared::cta.b64 %p6, [%r4], 0;
+    selp.u32 %r15, 1, 0, %p6;
+    st.global.u32 [%rd1], %r15;
+WAIT:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p4, [%r4], 0;
+    @!%p4 bra WAIT;
+END:
+    barrier.cluster.arrive.release;
+    barrier.cluster.wait.acquire;
+    ret;
+}

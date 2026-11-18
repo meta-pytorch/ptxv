@@ -35,7 +35,11 @@ replace = "fence.proxy.async.shared::cluster; mbarrier.arrive.release.cta"
 expect = ["race"]
 # SASS: ST.E; MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; FENCE.VIEW.ASYNC.S; SYNCS.ARRIVE.TRANS64.RED.A1T0:
 # no CGAERRBAR before the arrive, so the remote store can land after it (S-REMOTE-INFLIGHT).
-expect_sass = ["race"]
+# The read sees the store or not: nondeterministic, as without the synchronization reduction
+# and under DPOR; until MISS 232 the reduction kept the landing in one place ([race] only).
+# Independently, since MISS 81 the lanes pass ptxas's plain BSYNC B0, which reaches the stale
+# read without MISS 232's change as well. Same in PFCW, NOF, PCTA.
+expect_sass = ["nondeterministic", "race"]
 edits = [{ marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]
 
 [[variants]]
@@ -45,7 +49,9 @@ marker = "@ARRIVE"
 find = "release.cluster"
 replace = "release.cta"
 expect = ["race"]
-expect_sass = ["race"]
+# The read sees the store or not: nondeterministic, as without the synchronization reduction
+# and under DPOR; until MISS 232 the reduction kept the landing in one place ([race] only).
+expect_sass = ["nondeterministic", "race"]
 
 [[variants]]
 id = "PFCA"
@@ -108,7 +114,9 @@ replace = "mbarrier.arrive.release.cta"
 expect = ["race"]
 # SASS: ST.E; MEMBAR.ALL.CTA; SYNCS.ARRIVE.TRANS64.RED.A1T0. GB300 hardware model: observable
 # (the remote store stays in flight past the arrive, S-REMOTE-INFLIGHT).
-expect_sass = ["race"]
+# The read sees the store or not: nondeterministic, as without the synchronization reduction
+# and under DPOR; until MISS 232 the reduction kept the landing in one place ([race] only).
+expect_sass = ["nondeterministic", "race"]
 edits = [{ marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]
 
 [[variants]]
@@ -119,5 +127,7 @@ find = "mbarrier.arrive.release.cluster"
 replace = "fence.proxy.async.shared::cta; mbarrier.arrive.release.cta"
 expect = ["race"]
 # SASS: MEMBAR.ALL.CTA; FENCE.VIEW.ASYNC.S before the arrive: GB300 hardware model observable.
-expect_sass = ["race"]
+# The read sees the store or not: nondeterministic, as without the synchronization reduction
+# and under DPOR; until MISS 232 the reduction kept the landing in one place ([race] only).
+expect_sass = ["nondeterministic", "race"]
 edits = [{ marker = "@WAIT", find = "acquire.cluster", replace = "acquire.cta" }]

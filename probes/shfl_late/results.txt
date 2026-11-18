@@ -1,0 +1,7 @@
+# GB300 (one GPU), 2026-11-11, rev 676cfd47 + this probe: ptxv hw --runs 1000 --scrub
+# grid 1x1x1, block 256; out[t] = {SHFL result, SHFL result + IMAD chain}
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 1.0s) distinct outputs (count, words differing): [(1000, 0)]
+hw LATE   [scrubbed smem] matches simulator bitwise (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 0)]
+# A SHFL with no write scoreboard writes its result (here within the ~260 issue cycles of the
+# chain): probes/shared_queue REV_COVER's failure is the SHFL landing after the later LDS, not a
+# lost write. Static check: LATE a violation at both levels (no SHFL latency is modeled).

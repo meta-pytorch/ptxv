@@ -88,8 +88,20 @@ fn unrecorded_order_concurrent_drops_unknown_predecessors() {
 /// The classes `ptxv check fixtures/<fx> --variant <variant>` reports (PTX front, no GB300
 /// re-run, `--json`) with `PTXV_UNRECORDED_ORDER` set to `order`, or unset.
 fn got(fx: &str, variant: &str, order: Option<&str>) -> Vec<String> {
+    row(fx, variant, order)["got"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{fx} {variant}: no got"))
+        .iter()
+        .map(|x| x.as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+/// The first row of `ptxv check fixtures/<fx> --variant <variant>` (PTX front, no GB300 re-run,
+/// `--json`) with `PTXV_UNRECORDED_ORDER` set to `order`, or unset.
+fn row(fx: &str, variant: &str, order: Option<&str>) -> serde_json::Value {
     let dir = std::env::temp_dir().join(format!(
-        "ptxv-test-launch-order-got-{fx}-{variant}-{}",
+        "ptxv-test-launch-order-got-{fx}-{variant}-{}-{}",
+        order.unwrap_or("unset"),
         std::process::id()
     ));
     let mut c = Command::new(env!("CARGO_BIN_EXE_ptxv"));
@@ -119,12 +131,42 @@ fn got(fx: &str, variant: &str, order: Option<&str>) -> Vec<String> {
     let _ = std::fs::remove_dir_all(&dir);
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("{fx} {variant}: {e}: {}", text(&out)));
-    doc["rows"][0]["got"]
-        .as_array()
-        .unwrap_or_else(|| panic!("{fx} {variant}: no got: {doc:#}"))
-        .iter()
-        .map(|x| x.as_str().unwrap_or("").to_string())
-        .collect()
+    doc["rows"][0].clone()
+}
+
+/// MISS 191: a check row names the launch order its verdict was computed under: the variant's
+/// `launch_order` and, for an unknown one, the reading (`--json` rows' `launch_order`; the text
+/// report's "launch order:" line when there are several launches). Before, the two readings of
+/// e_equiv_order UNK ([race, violation] / [violation]) left no trace in the row.
+#[test]
+fn check_rows_record_the_reading_of_an_unknown_order() {
+    let r = row("e_equiv_order", "UNK", None);
+    assert_eq!(
+        r["launch_order"],
+        serde_json::json!({"case": "unknown", "reading": "concurrent"}),
+        "{r:#}"
+    );
+    let r = row("e_equiv_order", "UNK", Some("ordered"));
+    assert_eq!(
+        r["launch_order"],
+        serde_json::json!({"case": "unknown", "reading": "ordered"}),
+        "{r:#}"
+    );
+    let r = row("e_equiv_order", "good", Some("ordered"));
+    assert_eq!(
+        r["launch_order"],
+        serde_json::json!({"case": "declared"}),
+        "{r:#}"
+    );
+    let (_, t) = check("PLAIN_UNKNOWN", None);
+    assert!(
+        t.contains("launch order: unknown, read as concurrent"),
+        "{t}"
+    );
+    let (_, t) = check("PLAIN_UNKNOWN", Some("ordered"));
+    assert!(t.contains("launch order: unknown, read as ordered"), "{t}");
+    let (_, t) = check("PLAIN", None);
+    assert!(!t.contains("launch order: unknown"), "{t}");
 }
 
 /// The launch-order gates (`Launch::order_recorded`) under `PTXV_UNRECORDED_ORDER=ordered`, where
@@ -345,6 +387,26 @@ fn equiv_precondition_is_the_variants_launch_order() {
     for (i, (toml, want)) in rows.iter().enumerate() {
         let doc = equiv(toml, &tmp.join(format!("out{i}")), None);
         assert_precondition(&doc, *want, &toml.display().to_string());
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// MISS 189 (E-LAUNCH-ORDER): equiv's and errdist's precondition 1, as `ptxv check`, also
+/// checks an unknown order of several launches in the list's order, for its deadlocks.
+/// probes/miss189_order_hang good (wait_flag spins on a flag that set_flag, the next launch of
+/// the list, sets) is not clean: before, it was (the strict reading lets the grids overlap, and
+/// every schedule finishes). CONCURRENT (declared, set_flag after nothing) stays clean. The
+/// verdict cache is off.
+#[test]
+fn equiv_precondition_checks_the_list_order_for_deadlocks() {
+    let tmp =
+        std::env::temp_dir().join(format!("ptxv-test-equiv-list-order-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let rows: [(&str, Option<&[&str]>); 2] = [("good", Some(&["deadlock"])), ("CONCURRENT", None)];
+    for (i, (v, want)) in rows.iter().enumerate() {
+        let toml = spec(&tmp, "probes/miss189_order_hang", v);
+        let doc = equiv(&toml, &tmp.join(format!("out{i}")), None);
+        assert_precondition(&doc, *want, v);
     }
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -4,7 +4,8 @@ S-DSMEM: shared addresses carry the cluster rank in bits 24+; a shared::cta acce
 peer's rank faults (GB300: illegal instruction, probes/reserved_smem), the same address through
 shared::cluster is a DSMEM access of the peer. good: own rank, clean. PEER: shared::cta store to
 the peer's rank: fault. CLUSTER: st.shared::cluster to the peer: a store into a CTA that may have exited
-(S-CLUSTER-LIFE: no cluster barrier) and an unwritten own word read (S-INIT): violation."""
+(S-CLUSTER-LIFE: no cluster barrier) and an unwritten own word read (S-INIT): violation; the
+store also races with the peer's read of that word: race."""
 ptx = "kernel.ptx"
 entry = "e_dsmem_rank"
 grid = [2, 1, 1]
@@ -42,8 +43,8 @@ edits = [
     { marker = "@FLIP", find = "mov.u32 %r3, 0;", replace = "mov.u32 %r3, 0x1000000;" },
     { marker = "@SPACE", find = "st.shared.u32", replace = "st.shared::cluster.u32" },
 ]
-expect = ["violation"]
-# SASS: the remote store is in flight (S-REMOTE-INFLIGHT); it also races with the peer's read
-# of its own word (on the PTX front the schedules reaching that read end at the lifetime
-# violation first).
-expect_sass = ["race", "violation"]
+# The store races with the peer's read of its own word when it lands before the peer exits
+# (on SASS it is in flight, S-REMOTE-INFLIGHT). The PTX front found only the lifetime
+# violation until the local reduction stopped treating the peer's exit as commuting with the
+# store (MISS 153).
+expect = ["race", "violation"]

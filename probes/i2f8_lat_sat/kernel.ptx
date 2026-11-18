@@ -1,0 +1,165 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPCLASS): the result latency of an I2F.S8 with no write scoreboard under a saturated
+// conversion pipe. Two warp pools per CTA: the odd warps (the saturating pool) run `iters`
+// rounds of 16 independent I2F.S16 / I2F.S8 each; the even warps (the probe pool) spin `delay`
+// dependent IMADs (so the saturating pool is running), then issue probes/i2f8_lat's window: an
+// I2F.S8, K I2F.S16 followers, an FMUL reading the I2F.S8's result D stall cycles later.
+// gen.py (probes/i2f8_lat/gen.py sat) rewrites the probe pool's window per variant. clk (not
+// compared): per warp (SM id, clock at the start, clock at the end of the saturating loop / at
+// the probe window), for the overlap check in results.txt.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry i2f8s(.param .u64 out_p, .param .u32 seed, .param .f32 scale, .param .u32 iters,
+                      .param .u32 delay, .param .u64 clk_p)
+{
+    .reg .b32 %r<80>;
+    .reg .b16 %h<12>;
+    .reg .f32 %f<48>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd5, [clk_p];
+    cvta.to.global.u64 %rd5, %rd5;
+    ld.param.u32 %r2, [seed];
+    ld.param.f32 %f20, [scale];
+    ld.param.u32 %r60, [iters];
+    ld.param.u32 %r61, [delay];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r30, %ctaid.x;
+    mov.u32 %r32, %ntid.x;
+    mad.lo.u32 %r31, %r30, %r32, %r1;
+    mul.wide.u32 %rd2, %r31, 64;
+    add.s64 %rd3, %rd1, %rd2;
+    // clk slot of this warp (lane 0 writes it): 4 words per warp
+    shr.u32 %r62, %r31, 5;
+    mul.wide.u32 %rd6, %r62, 16;
+    add.s64 %rd7, %rd5, %rd6;
+    and.b32 %r63, %r1, 31;
+    setp.eq.u32 %p2, %r63, 0;
+    mov.u32 %r64, %smid;
+    shr.u32 %r65, %r1, 5;
+    and.b32 %r66, %r65, 1;
+    setp.ne.u32 %p1, %r66, 0;
+    @%p1 bra SAT;
+    // The probe pool: `delay` dependent IMADs, then the window.
+    mov.u32 %r40, %r31;
+    mov.u32 %r41, 0;
+DLY:
+    mad.lo.u32 %r40, %r40, %r2, %r41;
+    add.u32 %r41, %r41, 1;
+    setp.lt.u32 %p3, %r41, %r61;
+    @%p3 bra DLY;
+    mov.u32 %r67, %clock;
+    @%p2 st.global.v2.u32 [%rd7], {%r64, %r67};
+    mul.lo.u32 %r3, %r31, %r2;
+    add.u32 %r3, %r3, %r40;
+    shr.u32 %r10, %r3, 3;
+    cvt.u16.u32 %h0, %r10;
+    shr.u32 %r11, %r3, 4;
+    cvt.u16.u32 %h1, %r11;
+    shr.u32 %r12, %r3, 5;
+    cvt.u16.u32 %h2, %r12;
+    shr.u32 %r13, %r3, 6;
+    cvt.u16.u32 %h3, %r13;
+    shr.u32 %r14, %r3, 7;
+    cvt.u16.u32 %h4, %r14;
+    shr.u32 %r15, %r3, 8;
+    cvt.u16.u32 %h5, %r15;
+    shr.u32 %r16, %r3, 9;
+    cvt.u16.u32 %h6, %r16;
+    shr.u32 %r17, %r3, 10;
+    cvt.u16.u32 %h7, %r17;
+    shr.u32 %r18, %r3, 11;
+    cvt.u16.u32 %h8, %r18;
+    cvt.rn.f32.s8 %f0, %h0;        // I2F.S8
+    cvt.rn.f32.s16 %f1, %h1;       // I2F.S16 followers
+    cvt.rn.f32.s16 %f2, %h2;
+    cvt.rn.f32.s16 %f3, %h3;
+    cvt.rn.f32.s16 %f4, %h4;
+    cvt.rn.f32.s16 %f5, %h5;
+    cvt.rn.f32.s16 %f6, %h6;
+    cvt.rn.f32.s16 %f7, %h7;
+    cvt.rn.f32.s16 %f8, %h8;
+    mul.rn.f32 %f9, %f0, %f20;     // FMUL: the I2F.S8's reader
+    st.global.f32 [%rd3], %f9;
+    st.global.f32 [%rd3+4], %f1;
+    st.global.f32 [%rd3+8], %f2;
+    st.global.f32 [%rd3+12], %f3;
+    st.global.f32 [%rd3+16], %f4;
+    st.global.f32 [%rd3+20], %f5;
+    st.global.f32 [%rd3+24], %f6;
+    st.global.f32 [%rd3+28], %f7;
+    st.global.f32 [%rd3+32], %f8;
+    ret;
+SAT:
+    // The saturating pool: `iters` rounds of 16 independent narrow I2F.
+    mov.u32 %r67, %clock;
+    mov.u32 %r50, %r31;
+    mov.u32 %r51, 0;
+    mov.f32 %f30, 0f00000000;
+SLOOP:
+    mul.lo.u32 %r50, %r50, 1664525;
+    add.u32 %r50, %r50, 1013904223;
+    shr.u32 %r52, %r50, 1;
+    shr.u32 %r53, %r50, 2;
+    shr.u32 %r54, %r50, 3;
+    shr.u32 %r55, %r50, 4;
+    shr.u32 %r56, %r50, 5;
+    shr.u32 %r57, %r50, 6;
+    shr.u32 %r58, %r50, 7;
+    shr.u32 %r59, %r50, 9;
+    cvt.u16.u32 %h0, %r50;
+    cvt.u16.u32 %h1, %r52;
+    cvt.u16.u32 %h2, %r53;
+    cvt.u16.u32 %h3, %r54;
+    cvt.u16.u32 %h4, %r55;
+    cvt.u16.u32 %h5, %r56;
+    cvt.u16.u32 %h6, %r57;
+    cvt.u16.u32 %h7, %r58;
+    cvt.u16.u32 %h8, %r59;
+    cvt.rn.f32.s16 %f31, %h0;
+    cvt.rn.f32.s16 %f32, %h1;
+    cvt.rn.f32.s16 %f33, %h2;
+    cvt.rn.f32.s16 %f34, %h3;
+    cvt.rn.f32.s16 %f35, %h4;
+    cvt.rn.f32.s16 %f36, %h5;
+    cvt.rn.f32.s16 %f37, %h6;
+    cvt.rn.f32.s16 %f38, %h7;
+    cvt.rn.f32.s8 %f39, %h1;
+    cvt.rn.f32.s8 %f40, %h2;
+    cvt.rn.f32.s8 %f41, %h3;
+    cvt.rn.f32.s8 %f42, %h4;
+    cvt.rn.f32.s8 %f43, %h5;
+    cvt.rn.f32.s8 %f44, %h6;
+    cvt.rn.f32.s8 %f45, %h7;
+    cvt.rn.f32.s8 %f46, %h8;
+    add.f32 %f31, %f31, %f32;
+    add.f32 %f33, %f33, %f34;
+    add.f32 %f35, %f35, %f36;
+    add.f32 %f37, %f37, %f38;
+    add.f32 %f39, %f39, %f40;
+    add.f32 %f41, %f41, %f42;
+    add.f32 %f43, %f43, %f44;
+    add.f32 %f45, %f45, %f46;
+    add.f32 %f31, %f31, %f33;
+    add.f32 %f35, %f35, %f37;
+    add.f32 %f39, %f39, %f41;
+    add.f32 %f43, %f43, %f45;
+    add.f32 %f31, %f31, %f35;
+    add.f32 %f39, %f39, %f43;
+    add.f32 %f31, %f31, %f39;
+    add.f32 %f30, %f30, %f31;
+    add.u32 %r51, %r51, 1;
+    setp.lt.u32 %p3, %r51, %r60;
+    @%p3 bra SLOOP;
+    mov.u32 %r68, %clock;
+    @%p2 st.global.v4.u32 [%rd7], {%r64, %r67, %r68, %r51};
+    st.global.f32 [%rd3+60], %f30;
+    ret;
+}

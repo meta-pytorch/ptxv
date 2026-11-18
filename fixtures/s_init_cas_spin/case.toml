@@ -1,0 +1,47 @@
+name = "s_init_cas_spin"
+description = """
+S-INIT through ptxas's compare-and-swap loop (kernel.ptx): a shared f32 or u64 add reduction
+becomes an `ATOMS.CAST.SPIN[.64] P` loop whose back branch reads the success predicate P. When
+the word was never written, P is the compare of undefined bytes and is undefined like the
+register form's result (`ATOM.E.CAST.SPIN PT, Rd`), so the SASS front reports the branch (f32,
+u64); the PTX front's single read-modify-write with a discarded result is clean. Until
+2026-11-11 P was written as defined and f32 and u64 were clean on SASS."""
+ptx = "kernel.ptx"
+entry = "s_init_cas_spin"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "f32"
+summary = "red.shared.add.f32 into a never-written shared word (ATOMS.CAST.SPIN)"
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "u64"
+marker = "@RED"
+summary = "red.shared.add.u64 into a never-written shared word (ATOMS.CAST.SPIN.64)"
+find = "red.shared.add.f32 [%r3], %f1;              // @RED"
+replace = "red.shared.add.u64 [%r3], %rd1;"
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "init"
+marker = "@INIT"
+summary = "f32 after each thread stores 0 to its word"
+find = "// @INIT"
+replace = "st.shared.u64   [%r3], %rd0;"
+expect = ["clean"]
+expect_sass = ["clean"]

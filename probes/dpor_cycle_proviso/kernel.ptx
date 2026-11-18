@@ -1,0 +1,48 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// DPOR repro (MISS 274, the stack proviso): thread 0 zeroes an mbarrier word with a plain store
+// and test_waits it; the mbarrier was never initialized, so the thread stays at the test_wait
+// and repeats one state (probes/mbar_zero). Warps 1 and 2 store to x unordered: a race. None of
+// their steps conflicts with thread 0's, and thread 0 is the first process DPOR picks, so a
+// search that cuts the repeated state without adding the other processes there never runs
+// warps 1 and 2 and loses the race.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry dpor_cycle_proviso(.param .u64 out_p)
+.maxntid 96, 1, 1
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b8 bar[8];
+    .shared .align 4 .b32 x;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r4, bar;
+    mov.u32 %r8, x;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 bra T0;
+    setp.eq.u32 %p2, %r1, 32;
+    @%p2 bra T32;
+    setp.eq.u32 %p3, %r1, 64;
+    @%p3 bra T64;
+    bra END;
+T0:
+    mov.u32 %r2, 0;
+    st.shared.v2.b32 [%r4], {%r2, %r2};
+    mbarrier.test_wait.parity.shared::cta.b64 %p4, [%r4], 0;
+    bra END;
+T32:
+    mov.u32 %r5, 1;
+    st.shared.u32 [%r8], %r5;
+    bra END;
+T64:
+    mov.u32 %r6, 2;
+    st.shared.u32 [%r8], %r6;
+END:
+    ret;
+}

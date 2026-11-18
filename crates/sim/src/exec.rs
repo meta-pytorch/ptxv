@@ -115,8 +115,24 @@ type VaSeen = (usize, usize, u64, u64, u16);
 
 /// S-VA-ALIAS: note that thread `t` reaches bytes [off, off + n) of `alloc` through mapping
 /// `view`.
-fn va_note(t: usize, alloc: usize, off: u64, n: u64, view: u16) {
+pub(crate) fn va_note(t: usize, alloc: usize, off: u64, n: u64, view: u16) {
     VA_SEEN.with(|v| v.borrow_mut().push((t, alloc, off, n, view)));
+}
+
+/// S-VA-ALIAS: the mapping `resolve` last noted for thread `t`'s access to `n` bytes at `loc`
+/// (None: no note, e.g. an allocation with one mapping). A replay outside the instruction (a
+/// blocked warp-level poll's race-detector reads, `spin::blocked_wpoll_read`) notes it again.
+pub(crate) fn va_noted(t: usize, loc: Loc, n: usize) -> Option<u16> {
+    let Loc::Global { alloc, off } = loc else {
+        return None;
+    };
+    VA_SEEN.with(|v| {
+        v.borrow()
+            .iter()
+            .rev()
+            .find(|e| e.0 == t && e.1 == alloc && e.2 <= off && off + n as u64 <= e.2 + e.3)
+            .map(|e| e.4)
+    })
 }
 
 /// Front-aware memory sources (otherwise `Op::src_regs`) for `inst` = `k.code[pc]`,
@@ -244,6 +260,144 @@ fn max_local_steps() -> usize {
             .and_then(|s| s.parse().ok())
             .unwrap_or(MAX_LOCAL_STEPS)
     })
+}
+
+/// Is a SASS `BSYNC` of this form a reconvergence point? Only `.RECONVERGENT` (MISS 81):
+/// ptxas lowers `bar.warp.sync` after a divergent region to it alone, while a plain `BSYNC`
+/// (around regions that can yield or block) is followed by a `WARPSYNC.ALL` where the warp
+/// must be synchronized, and GB300 lets lanes pass it while the rest of its mask sleeps
+/// (probes/mbar_init_diverge late_sleep_reconv). `.RELIABLE` is neither measured nor relied on
+/// by ptxas for a warp sync. Nor is a `.RECONVERGENT` one whose region can yield or wait in a
+/// collective (`BarForm::ReconvergentYield`, gap G1): GB300 lets lanes pass it too while a lane
+/// of its mask sleeps (late_sleep_reconvform). ASSUME(E-BSYNC)
+pub fn bsync_holds(form: BarForm) -> bool {
+    form == BarForm::Reconvergent
+}
+
+/// Why a `BSYNC` of a form `bsync_holds` rejects is no reconvergence point (messages).
+pub fn bsync_form_why(form: BarForm) -> &'static str {
+    match form {
+        BarForm::ReconvergentYield => {
+            "is .RECONVERGENT, but a lane of its region can yield or wait in a collective before it (G1)"
+        }
+        _ => "has no .RECONVERGENT",
+    }
+}
+
+/// Does a SASS instruction yield its warp's scheduling slot (`YIELD`, `NANOSLEEP`, both
+/// lifted as no-ops)? E-HW-BSYNC-YIELD.
+fn yields(text: &str) -> bool {
+    let t = text.trim_start();
+    let t = t.strip_prefix('@').map_or(t, |r| {
+        r.split_once(char::is_whitespace)
+            .map_or("", |x| x.1.trim_start())
+    });
+    t.starts_with("YIELD") || t.starts_with("NANOSLEEP")
+}
+
+/// MISS 74: lane orders of one instruction that may leave different results
+/// (`Machine::lane_orders`).
+pub(crate) struct LaneOrders {
+    /// Each a permutation of the split's members.
+    pub list: Vec<Vec<usize>>,
+    /// Why `list` is not every order that may differ, if so.
+    pub truncated: Option<String>,
+}
+
+/// One active lane's access in `lane_orders`: (lane, memory (space, CTA or allocation), first
+/// byte, bytes written or operand (filled for lanes that share bytes), location).
+type LaneAccess = (usize, (u8, u64), u64, Vec<u8>, Loc);
+
+/// Explorer choices `LANE_ORDER_BASE + k` take `LaneOrders::list[k]` (below the clock
+/// choices, `clock::CLOCK_FALL`).
+pub const LANE_ORDER_BASE: usize = usize::MAX - (1 << 20);
+/// Lanes of one atomic group up to which every order is explored (4! = 24).
+const LANE_PERM_ALL: usize = 4;
+/// Orders of one instruction up to which every combination of its groups' orders is taken.
+const LANE_ORDERS_MAX: usize = 32;
+
+/// MISS 74: floating-point adds of the operands `xs` into a word holding `init` whose every
+/// partial sum, in any order, is exact, so every order leaves the same bits: per element, every
+/// value finite and normal (or zero), all multiples of the smallest one's lowest set bit
+/// `2^e`, the magnitudes summing to less than `2^(p + e)` (p: the significand's bits), and
+/// `2^e` at least the smallest normal (no flush or rounding on the way, and no overflow).
+/// False for other operations.
+fn adds_exact(op: AtomOp, init: &[u8], xs: &[&[u8]]) -> bool {
+    // (bytes per element, exponent bits, explicit significand bits)
+    let (w, eb, mb) = match op {
+        AtomOp::FAddFtz => (4usize, 8u32, 23u32),
+        AtomOp::FAdd64 => (8, 11, 52),
+        AtomOp::AddBf16x2 | AtomOp::AddBf16 => (2, 8, 7),
+        _ => return false,
+    };
+    let bias = (1i32 << (eb - 1)) - 1;
+    // (odd significand, exponent): a nonzero finite normal value is +-m * 2^e; None for zero.
+    let split = |b: &[u8]| -> Result<Option<(u64, i32)>, ()> {
+        let mut x = 0u64;
+        for (i, &v) in b.iter().enumerate() {
+            x |= (v as u64) << (8 * i);
+        }
+        let ex = (x >> mb) & ((1u64 << eb) - 1);
+        let man = x & ((1u64 << mb) - 1);
+        if ex == (1u64 << eb) - 1 || ex == 0 && man != 0 {
+            return Err(());
+        }
+        if ex == 0 {
+            return Ok(None);
+        }
+        let m = man | 1u64 << mb;
+        let tz = m.trailing_zeros();
+        Ok(Some((m >> tz, ex as i32 - bias - mb as i32 + tz as i32)))
+    };
+    if init.len() < w || !init.len().is_multiple_of(w) || xs.iter().any(|x| x.len() != init.len()) {
+        return false;
+    }
+    (0..init.len() / w).all(|k| {
+        let mut vals = Vec::with_capacity(xs.len() + 1);
+        for b in std::iter::once(init).chain(xs.iter().copied()) {
+            match split(&b[k * w..(k + 1) * w]) {
+                Ok(Some(v)) => vals.push(v),
+                Ok(None) => {}
+                Err(()) => return false,
+            }
+        }
+        let Some(e) = vals.iter().map(|v| v.1).min() else {
+            return true;
+        };
+        let p = mb as i32 + 1;
+        if e < 1 - bias || e + p > bias + 1 {
+            return false;
+        }
+        let mut sum = 0u128;
+        for (m, ex) in vals {
+            let sh = (ex - e) as u32;
+            if sh > 64 {
+                return false;
+            }
+            sum += (m as u128) << sh;
+            if sum >= 1u128 << p {
+                return false;
+            }
+        }
+        true
+    })
+}
+
+/// Every order of `xs`, lane order first.
+fn permutations(xs: &[usize]) -> Vec<Vec<usize>> {
+    if xs.len() <= 1 {
+        return vec![xs.to_vec()];
+    }
+    let mut out = Vec::new();
+    for i in 0..xs.len() {
+        let mut rest = xs.to_vec();
+        let x = rest.remove(i);
+        for mut p in permutations(&rest) {
+            p.insert(0, x);
+            out.push(p);
+        }
+    }
+    out
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -712,6 +866,23 @@ impl Machine {
         Ok(v)
     }
 
+    /// ASSUME(S-DSMEM): GB300 traps ("an illegal instruction was encountered") on an st.async
+    /// (`STAS`) and on a cp.async.bulk.shared::cluster.shared::cta (`UBLKCP.S.S`) outside a
+    /// cluster launch, also into the issuing CTA's own shared memory. In a cluster launch (the
+    /// case's `cluster`, or the kernel's `.reqnctapercluster` / `.explicitcluster`:
+    /// `ClusterDecl::resolve`), 1 x 1 x 1 included, both run (probes/cluster_launch_ops; MISS
+    /// 209: before, they ran without a fault). red.async into shared::cluster traps the same way
+    /// and is not lifted; the other cluster-scope forms measured there run.
+    fn needs_cluster_launch(&self, t: usize, what: &str) -> Result<(), String> {
+        let cta = self.threads[t].cta;
+        if self.launch.g(cta as u32).explicit_cluster {
+            return Ok(());
+        }
+        Err(format!(
+            "{what} in a launch without cluster dimensions (illegal instruction on GB300, probes/cluster_launch_ops)"
+        ))
+    }
+
     /// A local-memory address (LDL / STL, `ld` / `st` `.local`): an offset in the thread's
     /// frame. An operand sum that leaves the 32-bit window (PTX `cvta.to.local` of a generic
     /// address outside the local window, undefined in PTX) is an error, not truncated.
@@ -801,6 +972,19 @@ impl Machine {
                         .ok_or_else(|| {
                             if self.mc_object(a).is_some() {
                                 self.mc_misuse(a)
+                            } else if space == Space::Generic
+                                && a >> 32 == LOCAL_GENERIC_BASE >> 32
+                            {
+                                // ASSUME(S-CBANK): the local window is unmapped. ptxas's local
+                                // fallback of a generic f16x2 / bf16x2 atomic is an integer
+                                // add (fixtures/e_atom_local), which the in-place model
+                                // would get wrong.
+                                format!(
+                                    "generic address {a:#x} (+{n}) is in the local window \
+                                     (local offset {:#x}): a generic access or atomic to local \
+                                     memory faults here",
+                                    a - LOCAL_GENERIC_BASE
+                                )
                             } else {
                                 format!("global address {a:#x} (+{n}) is outside every allocation")
                             }
@@ -979,18 +1163,7 @@ impl Machine {
         if actor >= self.nthreads() {
             return self.async_view;
         }
-        VA_SEEN.with(|v| {
-            v.borrow()
-                .iter()
-                .rev()
-                .find(|e| {
-                    e.0 == actor as usize
-                        && e.1 == alloc
-                        && e.2 <= off
-                        && off + n as u64 <= e.2 + e.3
-                })
-                .map(|e| e.4)
-        })
+        va_noted(actor as usize, Loc::Global { alloc, off }, n)
     }
 
     /// ASSUME(S-VA-ALIAS): an access through one mapping of a byte that an earlier access went
@@ -1531,28 +1704,27 @@ impl Machine {
         // races, found by vector clocks in either order (E-DRF), strong-vs-strong are not. Two
         // strong reads commute (memory, the synchronization source and the per-actor reader
         // shadow are unchanged by either), so a strong read is recorded as a read.
-        if atomic && !vip {
-            let w = write.is_some();
-            match loc {
-                Loc::Shared { cta, off } => self.rec(
-                    Resource {
-                        space: ResourceSpace::StrongShared,
-                        owner: cta as u32,
-                        start: off as u64,
-                        end: off as u64 + n as u64,
-                    },
-                    w,
-                ),
-                Loc::Global { alloc, off } => self.rec(
-                    Resource {
-                        space: ResourceSpace::StrongGlobal,
-                        owner: alloc as u32,
-                        start: off,
-                        end: off + n as u64,
-                    },
-                    w,
-                ),
-                Loc::Param { .. } => {}
+        let strong_resource = match loc {
+            Loc::Shared { cta, off } => Some(Resource {
+                space: ResourceSpace::StrongShared,
+                owner: cta as u32,
+                start: off as u64,
+                end: off as u64 + n as u64,
+            }),
+            Loc::Global { alloc, off } => Some(Resource {
+                space: ResourceSpace::StrongGlobal,
+                owner: alloc as u32,
+                start: off,
+                end: off + n as u64,
+            }),
+            Loc::Param { .. } => None,
+        };
+        if let (true, Some(r)) = (atomic, strong_resource) {
+            if !vip {
+                self.rec(r, write.is_some());
+            } else if self.fp.is_some() {
+                // MISS 295: left out of this step's footprint, kept for the learned sets.
+                self.vip_learn.push(effects::resource_range(r));
             }
         }
         if write.is_some() && n != 0 && self.observes_barrier_memory() {
@@ -1711,7 +1883,15 @@ impl Machine {
         };
         let hw_order = self.launch.hw_order;
         let kern: &Kernel = &self.k;
-        let keep = |e: &Epoch, ordered: bool| -> bool {
+        // The NIC's accesses decide complete overlap too (MISS 194, `overlap_with_nic`): one of
+        // another extent, or whose overlap is not modeled, is kept.
+        let nic_state = self.nic.as_deref();
+        let abase = async_base(nth);
+        let galloc = match loc {
+            Loc::Global { alloc, .. } => Some(alloc),
+            _ => None,
+        };
+        let keep = |e: &Epoch, ordered: bool, a: usize| -> bool {
             if strong == 0 {
                 false
             } else if e.strong == 0 {
@@ -1721,7 +1901,16 @@ impl Machine {
                     || !(hw_order
                         || cta_of(e.actor) == my_cta
                             && e.strong >= strong
-                            && same_location(kern, nth, true, (e.actor, e.pc), (actor, pc)))
+                            && overlap_with_nic(
+                                kern,
+                                nth,
+                                true,
+                                nic_state,
+                                abase,
+                                (e.actor, e.pc),
+                                (actor, pc),
+                                galloc.map(|al| (al, a as u64)),
+                            ) == Overlap::Complete)
             }
         };
         // ASSUME(S-SAME-VALUE): a plain write of the byte the last (plain) write left there
@@ -1978,11 +2167,14 @@ impl Machine {
                         s.mixed = false;
                     } else {
                         let w_ord = |w: &Epoch| w.actor == actor || vm.hb(w);
-                        let mut hw: Vec<Epoch> =
-                            s.writes().filter(|w| keep(w, w_ord(w))).copied().collect();
+                        let mut hw: Vec<Epoch> = s
+                            .writes()
+                            .filter(|w| keep(w, w_ord(w), a))
+                            .copied()
+                            .collect();
                         hw.sort_unstable_by_key(|e| (e.actor, e.strong, e.clock));
                         s.hw = (!hw.is_empty()).then(|| hw.into_boxed_slice());
-                        s.r.retain(|r| keep(r, rd_ord(r)));
+                        s.r.retain(|r| keep(r, rd_ord(r), a));
                         s.r.forget_rf();
                     }
                     s.w = Some(me);
@@ -2067,6 +2259,15 @@ impl Machine {
                                     v | (*mem.bytes.get(o as usize + i) as u64) << (8 * i)
                                 });
                                 if set.insert(v) {
+                                    vl.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                // S-INIT: a write that leaves a byte undefined (MISS 282).
+                                let und = (0..nb as usize).any(|i| {
+                                    let b = o as usize + i;
+                                    let s = mem.sh.get(b);
+                                    s.undef || shared && s.w.is_none() && b >= SMEM_RESERVED
+                                });
+                                if und && vl.undef.lock().unwrap().insert((a, o, nb)) {
                                     vl.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 // A write that lowers the value: the location is not monotone.
@@ -2162,7 +2363,11 @@ impl Machine {
         // ASSUME(S-SAME-VALUE): reported as a note (kind "note": no class, does not stop the
         // certificate); the PTX model calls the pair a race.
         if let Some(&(other, a)) = benign.first() {
-            if !self.morally_strong(other.actor, other.strong, other.pc, actor, strong, pc) {
+            let at = Self::global_at(loc).map(|(al, _)| (al, a));
+            if !self
+                .morally_strong_at(other.actor, other.strong, other.pc, actor, strong, pc, at)
+                .0
+            {
                 let sig = format!("same-value:{}:{}:{pc}", Self::space_name(&loc), other.pc);
                 if !self.findings.iter().any(|f| f.sig == sig) {
                     let msg = format!(
@@ -2238,7 +2443,13 @@ impl Machine {
             };
             red(x).is_some() && red(x) == red(y)
         };
-        let warp_nd: Vec<(u32, u32, &'static str, u64)> = if self.k.front == Front::Ptx {
+        // Reported where the two lanes are in one lockstep group (`Machine::mgrp`): the model
+        // has run them as one split since they were last gathered (`note_gathered`) or since
+        // launch, so the first access ran with the other lane in the split, or before the
+        // gathering, which held the other lane back: the model shows the program-order outcome
+        // only. Labelled latent-needs-divergence where GB300 also issues them in order (`wdiv`,
+        // `div_clk`).
+        let warp_nd: Vec<(u32, u32, &'static str, u64, bool)> = if self.k.front == Front::Ptx {
             races
                 .iter()
                 .filter(|(other, _, _)| {
@@ -2259,18 +2470,20 @@ impl Machine {
                                 &self.threads[other.actor as usize],
                                 &self.threads[actor as usize],
                             );
-                            x.warp == y.warp
-                                && !self.warp_div(y.warp)
-                                && other.clock
-                                    >= self.div_clk.get(other.actor as usize).copied().unwrap_or(0)
+                            x.warp == y.warp && self.lockstep(other.actor, actor)
                         }
                 })
-                .map(|(other, kind, a)| (other.actor, other.pc, *kind, *a))
+                .map(|(other, kind, a)| {
+                    let hw = !self.warp_div(self.threads[actor as usize].warp)
+                        && other.clock
+                            >= self.div_clk.get(other.actor as usize).copied().unwrap_or(0);
+                    (other.actor, other.pc, *kind, *a, hw)
+                })
                 .collect()
         } else {
             Vec::new()
         };
-        for (oactor, opc, kind, a) in warp_nd {
+        for (oactor, opc, kind, a, hw) in warp_nd {
             let sig = format!("warp-order:{}:{opc}:{pc}", Self::space_name(&loc));
             if self.findings.iter().any(|f| f.sig == sig) {
                 continue;
@@ -2284,7 +2497,7 @@ impl Machine {
                 self.k.describe(pc as usize)
             );
             self.report_pcs("nondeterministic", sig, msg, vec![opc, pc]);
-            if let Some(f) = self.findings.last_mut() {
+            if let Some(f) = self.findings.last_mut().filter(|_| hw) {
                 f.gb300 = Some(crate::twolevel::Gb300 {
                     class: crate::twolevel::LATENT_DIV.into(),
                     reason: "intra-warp strong accesses of a converged warp: GB300 issues them in program order (probes/warp_order), so the other order needs divergence (or a compiler reordering) to show".into(),
@@ -2292,10 +2505,31 @@ impl Machine {
                 });
             }
         }
-        // Strong accesses that are morally strong with each other do not race (S-SCOPE).
-        races.retain(|(other, _, _)| {
-            !self.morally_strong(other.actor, other.strong, other.pc, actor, strong, pc)
+        // Strong accesses that are morally strong with each other do not race (S-SCOPE). On
+        // global memory the NIC's accesses decide complete overlap too (MISS 194); a pair with
+        // a CQE whose overlap is not modeled counts as one location, reported when its scopes
+        // make it morally strong.
+        let mut nic_unmodeled: Vec<(Epoch, u64)> = Vec::new();
+        races.retain(|(other, _, a)| {
+            let (ms, unmodeled) = self.morally_strong_at(
+                other.actor,
+                other.strong,
+                other.pc,
+                actor,
+                strong,
+                pc,
+                galloc.map(|al| (al, *a)),
+            );
+            if unmodeled {
+                nic_unmodeled.push((*other, *a));
+            }
+            !ms
         });
+        if let Some(al) = galloc {
+            for (other, a) in nic_unmodeled {
+                self.report_nic_overlap(other.actor, other.pc, actor, pc, al, a);
+            }
+        }
         // One finding per (instruction pair, kind); report the first byte.
         let mut seen = std::collections::BTreeSet::new();
         for (other, kind, a) in races {
@@ -2344,6 +2578,22 @@ impl Machine {
                             Op::Ld { sync, .. } if !sync.is_some_and(|s| s.acquires()))
                             || matches!(&self.k.code[at as usize].op, Op::TmapFence { .. }))
                 });
+                // ASSUME(E-RACE-DEAD), mixed-size data races (MISS 226). PTX ISA 9.5 section
+                // 8.7.2: "A data-race between operations that overlap partially is called a
+                // mixed-size data-race", and "The axioms in the memory consistency model do not
+                // apply if a PTX program contains one or more mixed-size data-races": nothing
+                // describes what the racing load returns or what else the program does, so a
+                // dead loaded value does not make the race harmless. A pair not known to be one
+                // location on this byte (`overlap_at`: the strict PTX level decides it by element
+                // size, weak accesses included, and the NIC's accesses by their elements, MISS
+                // 194; a CQE access the fields do not decide counts as not one) keeps its
+                // signature out of E-RACE-DEAD. The SASS front (so also the GB300-profile re-run)
+                // and the level-2 hardware model (`hw_order`, twolevel.rs) take every pair as one
+                // location: the rule applies there as before.
+                let ok = ok.filter(|_| {
+                    self.overlap_at(other.actor, other.pc, actor, pc, galloc.map(|al| (al, a)))
+                        == Overlap::Complete
+                });
                 let mut g = log.lock().unwrap();
                 let e = g
                     .entry(sig.clone())
@@ -2365,7 +2615,8 @@ impl Machine {
             // S-SCOPE, complete overlap: two strong accesses that are not one location.
             let mixed = if other.strong != 0
                 && strong != 0
-                && !self.overlap_complete(other.actor, other.pc, actor, pc)
+                && self.overlap_at(other.actor, other.pc, actor, pc, galloc.map(|al| (al, a)))
+                    == Overlap::Partial
             {
                 " (strong accesses of different sizes: they overlap partially, so they are not morally strong, a mixed-size data race; PTX ISA 9.5 sections 8.7, 8.7.2)"
             } else {
@@ -2858,21 +3109,45 @@ impl Machine {
             // Each thread waits for its own bulk groups: the split runs once all of them can.
             Op::BulkWait { n, sb, .. } => self.bulk_wait_ready(members, *n, sb.map(|s| 1 << s)),
             // TMEM allocation blocks while it cannot succeed (ptxas's SASS spins on failure).
-            Op::TmemAlloc { ncols, .. } => {
+            Op::TmemAlloc { ncols, pair, .. } => {
                 let t = members[0];
-                let request = if !members.iter().any(|&m| self.prd(m, inst.guard)) {
-                    ptxv_memory_write::reduction::AllocationRequest::Disabled
-                } else {
-                    match self.rd(t, ncols) {
-                        Ok(n) if n >= 32 && n.is_power_of_two() && n <= 512 => {
-                            ptxv_memory_write::reduction::AllocationRequest::Valid {
-                                available: self
-                                    .tmem_find(self.threads[t].cta, (n / 32) as u32)
-                                    .is_some(),
+                // A warp whose lanes are all guarded off does not allocate (Triton's
+                // `@p tcgen05.alloc` with p = tid < 32, reached by four warps).
+                if !members.iter().any(|&m| self.prd(m, inst.guard)) {
+                    return ptxv_memory_write::reduction::allocation_ready(
+                        ptxv_memory_write::reduction::AllocationRequest::Disabled,
+                    );
+                }
+                // ASSUME(E-PAIR): a paired alloc's first warp waits for its peer CTA's; the
+                // second can allocate once both CTAs have the columns (`tmem_alloc_pair`).
+                if *pair {
+                    let cta = self.threads[t].cta;
+                    let Ok(peer) = self.pair_peer(cta) else {
+                        return true; // exec reports it
+                    };
+                    return match self.tmem[cta as usize].pair {
+                        Some(PairAlloc::Done { .. }) => true,
+                        Some(PairAlloc::Arrived { warp, .. }) => warp != self.threads[t].warp,
+                        None => match (self.tmem[peer as usize].pair, self.rd(t, ncols)) {
+                            (Some(PairAlloc::Arrived { .. }), Ok(n))
+                                if n >= 32 && n.is_power_of_two() && n <= 512 =>
+                            {
+                                self.tmem_find_group(&[cta, peer], (n / 32) as u32)
+                                    .is_some()
                             }
+                            _ => true,
+                        },
+                    };
+                }
+                let request = match self.rd(t, ncols) {
+                    Ok(n) if n >= 32 && n.is_power_of_two() && n <= 512 => {
+                        ptxv_memory_write::reduction::AllocationRequest::Valid {
+                            available: self
+                                .tmem_find(self.threads[t].cta, (n / 32) as u32)
+                                .is_some(),
                         }
-                        _ => ptxv_memory_write::reduction::AllocationRequest::Invalid,
                     }
+                    _ => ptxv_memory_write::reduction::AllocationRequest::Invalid,
                 };
                 ptxv_memory_write::reduction::allocation_ready(request)
             }
@@ -3109,28 +3384,68 @@ impl Machine {
                 let (gx, gy) = (self.launch.g(cx), self.launch.g(cy));
                 gx.device == gy.device && gx.mem_domain == gy.mem_domain
             }
-            Scope::Cluster => self.launch.cluster_of(cx).0 == self.launch.cluster_of(cy).0,
-            Scope::Cta => cx == cy,
+            Scope::Cluster => {
+                self.launch.cluster_of(cx).0 == self.launch.cluster_of(cy).0
+                    && !self.nic_apart(x, y)
+            }
+            Scope::Cta => cx == cy && !self.nic_apart(x, y),
         }
+    }
+
+    /// ASSUME(S-SCOPE), MISS 193: a NIC actor is in no CTA or cluster. Its accesses take the
+    /// GPU of the thread that rang its doorbell (`actor_thread`), not that thread's CTA or
+    /// cluster: the NIC is not a thread (PTX ISA 9.5 section 8.5: the `.cta` scope is the
+    /// threads of one CTA, `.cluster` those of one cluster), and on GB300 a CTA-scope acquire
+    /// (`LDG.E.STRONG.SM`, no L1 invalidation) can hit a stale L1 line of what the NIC wrote
+    /// (fixtures/e_nic_cta). Until 2026-11-12 it was in the doorbell thread's CTA and cluster,
+    /// so a `.cta` or `.cluster` acquire there synchronized with the NIC's release.
+    fn nic_apart(&self, x: u32, y: u32) -> bool {
+        let base = self.async_base();
+        x != y && ((x >= base && self.is_nic_actor(x)) || (y >= base && self.is_nic_actor(y)))
     }
 
     /// PTX memory model: two strong accesses are morally strong when each one's scope
     /// includes the other's thread and they overlap completely (`overlap_complete`). `0` = a
     /// plain access; `pa`, `pb`: the accesses' instructions.
     pub fn morally_strong(&self, a: u32, sa: u8, pa: u32, b: u32, sb: u8, pb: u32) -> bool {
+        self.morally_strong_at(a, sa, pa, b, sb, pb, None).0
+    }
+
+    /// `morally_strong` of a pair on byte `at` (allocation, offset) of global memory, which
+    /// decides complete overlap with the NIC's accesses (`overlap_at`): (morally strong,
+    /// decided by an overlap that is not modeled). A pair whose overlap is not modeled counts
+    /// as one location; when its scopes make it morally strong the caller reports it
+    /// (`report_nic_overlap`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn morally_strong_at(
+        &self,
+        a: u32,
+        sa: u8,
+        pa: u32,
+        b: u32,
+        sb: u8,
+        pb: u32,
+        at: Option<(usize, u64)>,
+    ) -> (bool, bool) {
         if sa == 0 || sb == 0 {
-            return false;
+            return (false, false);
         }
         // E-HW-L1 hardware ordering: strong accesses are single-copy atomic at any scope.
         if self.launch.hw_order {
-            return true;
+            return (true, false);
         }
-        self.overlap_complete(a, pa, b, pb) && self.scopes_mutual(a, sa, b, sb)
+        match self.overlap_at(a, pa, b, pb, at) {
+            Overlap::Partial => (false, false),
+            o => {
+                let ms = self.scopes_mutual(a, sa, b, sb);
+                (ms, ms && o == Overlap::Unmodeled)
+            }
+        }
     }
 
     /// The scope half of moral strength: each strong access's scope includes the other's
     /// thread (`sa`, `sb` nonzero).
-    fn scopes_mutual(&self, a: u32, sa: u8, b: u32, sb: u8) -> bool {
+    pub(crate) fn scopes_mutual(&self, a: u32, sa: u8, b: u32, sb: u8) -> bool {
         if sa == STRONG_SYS && sb == STRONG_SYS {
             return true;
         }
@@ -3145,13 +3460,48 @@ impl Machine {
     /// mixed-size data race (8.7.1, 8.7.2), and a partially overlapping read does not observe
     /// a write for synchronization (8.9.2, 8.9.4). See `same_location`.
     pub fn overlap_complete(&self, a: u32, pa: u32, b: u32, pb: u32) -> bool {
-        same_location(
+        self.overlap_at(a, pa, b, pb, None) != Overlap::Partial
+    }
+
+    /// `overlap_complete` on byte `at` (allocation, offset) of global memory, where an access
+    /// of the NIC is decided too (`overlap_with_nic`, MISS 194).
+    pub fn overlap_at(
+        &self,
+        a: u32,
+        pa: u32,
+        b: u32,
+        pb: u32,
+        at: Option<(usize, u64)>,
+    ) -> Overlap {
+        overlap_with_nic(
             &self.k,
             self.threads.len() as u32,
             !self.launch.hw_order,
+            self.nic.as_deref(),
+            self.async_base(),
             (a, pa),
             (b, pb),
+            at,
         )
+    }
+
+    /// MISS 194: a thread's strong access and a CQE write of the NIC on byte `off` of
+    /// allocation `alloc` whose overlap is not modeled (`Overlap::Unmodeled`): `unmodeled`,
+    /// once per instruction.
+    fn report_nic_overlap(&mut self, x: u32, px: u32, y: u32, py: u32, alloc: usize, off: u64) {
+        let nic = |a: u32| self.nic.as_ref().is_some_and(|n| n.has_acc(a));
+        let (t, at) = if nic(x) { (y, py) } else { (x, px) };
+        let sig = format!("nic-overlap:{at}");
+        if self.findings.iter().any(|f| f.sig == sig) {
+            return;
+        }
+        let msg = format!(
+            "{} at {} and a CQE write of the NIC overlap at byte {off:#x} of {} with different extents: the access spans or splits a CQE field the model publishes (bytes 56-59, 60-61, 62, 63 of each CQE) or covers a byte outside them, so whether the two are one location is not modeled (S-NIC-CQE, S-SCOPE complete overlap)",
+            self.actor_name(t),
+            self.k.describe(at as usize),
+            self.launch.allocs[alloc].name
+        );
+        self.report("unmodeled", sig, msg);
     }
 
     fn sync_key(loc: Loc) -> Option<(u8, u32, u64)> {
@@ -3366,9 +3716,14 @@ impl Machine {
         // Under the hardware ordering every release is at system scope: one clock.
         let mut cont = Vec::new();
         let mut cont_join = VC::new();
+        // The NIC's write it reads decides complete overlap too (MISS 194); one whose overlap is
+        // not modeled counts as one location and is reported when the sequence continues.
+        let gat = (key.0 == 1).then_some((key.1 as usize, key.2));
+        let mut nic_unmodeled = None;
         if rmw {
             if let Some(old) = self.syncs.get(&key) {
-                if self.overlap_complete(old.writer, old.pc, t as u32, pc)
+                let ov = self.overlap_at(old.writer, old.pc, t as u32, pc, gat);
+                if ov != Overlap::Partial
                     && (old.writer == t as u32
                         || self.launch.hw_order
                         || self.scopes_mutual(
@@ -3378,6 +3733,9 @@ impl Machine {
                             strong_code(m.scope),
                         ))
                 {
+                    if ov == Overlap::Unmodeled {
+                        nic_unmodeled = Some(old.writer);
+                    }
                     if self.launch.hw_order {
                         vc_join(&mut rel, &old.rel);
                         for c in &old.cont {
@@ -3397,6 +3755,9 @@ impl Machine {
                     vc_join(&mut rr, &old.rr);
                 }
             }
+        }
+        if let (Some(w), Some((al, off))) = (nic_unmodeled, gat) {
+            self.report_nic_overlap(w, u32::MAX, t as u32, pc, al, off);
         }
         // Only the strict PTX level reads `pc` (`overlap_complete`) and `own` (the lane-step
         // rule of `sync_observe_cell`): elsewhere the state stays as it was.
@@ -3466,11 +3827,28 @@ impl Machine {
             return;
         };
         let c = self.syncs.get(&key).cloned();
-        self.sync_observe_cell(t, pc, c, m);
+        self.sync_observe_cell(t, pc, c, m, Self::global_at(loc));
     }
 
-    /// `sync_observe` of a given synchronization source (a forced C-RING read).
-    fn sync_observe_cell(&mut self, t: usize, pc: u32, c: Option<SyncCell>, m: MemSync) {
+    /// (allocation, offset) of a global location: where `overlap_at` decides the NIC's
+    /// accesses.
+    fn global_at(loc: Loc) -> Option<(usize, u64)> {
+        match loc {
+            Loc::Global { alloc, off } => Some((alloc, off)),
+            _ => None,
+        }
+    }
+
+    /// `sync_observe` of a given synchronization source (a forced C-RING read); `at`: the read's
+    /// first byte in global memory.
+    fn sync_observe_cell(
+        &mut self,
+        t: usize,
+        pc: u32,
+        c: Option<SyncCell>,
+        m: MemSync,
+        at: Option<(usize, u64)>,
+    ) {
         let Some(c) = c else {
             return;
         };
@@ -3479,8 +3857,11 @@ impl Machine {
         // S-SCOPE, complete overlap: a read that overlaps the write only partially does not
         // observe it (PTX ISA 9.5 section 8.9.2), its own thread's included (program order
         // orders the write before the read, but not the releases the write's read-modify-write
-        // continued). The one overlap check of a synchronization.
-        if !self.overlap_complete(c.writer, c.pc, me, pc) {
+        // continued). The one overlap check of a synchronization. A NIC write decides it by
+        // its element (MISS 194); one whose overlap is not modeled observes (reported below,
+        // when the scopes let it synchronize).
+        let ov = self.overlap_at(c.writer, c.pc, me, pc, at);
+        if ov == Overlap::Partial {
             return;
         }
         // ASSUME(S-SCOPE): the release patterns a read can synchronize with are the write's own
@@ -3542,6 +3923,9 @@ impl Machine {
         // scopes.
         if !hw && !self.scopes_mutual(c.writer, strong_code(c.scope), me, strong_code(m.scope)) {
             return;
+        }
+        if let (Overlap::Unmodeled, Some((al, off))) = (ov, at) {
+            self.report_nic_overlap(c.writer, c.pc, me, pc, al, off);
         }
         let own = !lane && (hw || self.scope_includes(c.rel_scope, c.writer, me));
         let cont: Vec<&SyncRel> = c
@@ -3826,6 +4210,62 @@ impl Machine {
         }
     }
 
+    /// `mbar_note_async` for an update that releases the async operation's own memory
+    /// operations only: its actor's epoch, not the issuer's clock or what the issuer held for
+    /// SM-local memories. PTX ISA 8.9.1.1: the arrive-on of cp.async.mbarrier.arrive is ordered
+    /// with the memory operations of the thread's prior cp.async operations, "but not to those
+    /// of any other instruction issued by the thread" (MISS 118); the complete-tx of every
+    /// cp.async.bulk{.tensor} variant "is ordered only with respect to the memory operations
+    /// performed by the same asynchronous instruction, and in particular it does not
+    /// transitively establish ordering with respect to prior instructions from the issuing
+    /// thread" (MISS 119). Before, both released the issuer's whole clock at issue. The
+    /// operation still happens after its issuer's earlier instructions (8.9.1.1: asynchronous
+    /// operations "are ordered after prior instructions in the same thread"), so the issuer's
+    /// clock at issue, and what it held for SM-local memories, stay as an order of events
+    /// (`Cover::Order`: the certificate's phase determinism, S-CLUSTER-LIFE), which covers no
+    /// memory; so do the landed clocks (async-after-exit). ASSUME(E-CPASYNC-MBAR, S-MBAR-SCOPE)
+    pub fn mbar_note_async_own(
+        &mut self,
+        cta: u16,
+        off: u32,
+        op_issuer: u32,
+        op_actor: u32,
+        vc: &VC,
+    ) {
+        self.mbar_note_async_own_with(cta, off, op_issuer, op_actor, vc, &VC::new());
+    }
+
+    /// `mbar_note_async_own` that also releases the epochs `also` (memory operations of other
+    /// async operations the update is ordered after: a cp.async.mbarrier.arrive's prior copies,
+    /// `AsyncKind::CpArrive::prior`). ASSUME(E-CPASYNC-MBAR)
+    pub fn mbar_note_async_own_with(
+        &mut self,
+        cta: u16,
+        off: u32,
+        op_issuer: u32,
+        op_actor: u32,
+        vc: &VC,
+        also: &VC,
+    ) {
+        let mut own = vc_single(op_actor, vc_get(vc, op_actor));
+        vc_join(&mut own, also);
+        let r = self.mbar_async_rel(op_issuer, cta, own);
+        let order = |rel: &VC| MbRel {
+            rel: rel.clone(),
+            cover: Cover::Order,
+            ..r.clone()
+        };
+        let mut rels = vec![order(vc)];
+        for (_, x) in &self.cur_sh {
+            rels.push(order(x));
+        }
+        rels.push(r);
+        self.mbar_note(cta, off, rels, op_issuer, vc_get(vc, op_issuer));
+        if op_actor != op_issuer {
+            self.mbar_note(cta, off, vec![], op_actor, vc_get(vc, op_actor));
+        }
+    }
+
     /// S-CLUSTER-LIFE: does some thread of `cta` know that `actor`'s step at `clock` happened
     /// (happens-before, or it observed the mbarrier phase that step completed into)?
     fn observed_by(&self, cta: u16, actor: u32, clock: u32) -> bool {
@@ -4084,7 +4524,7 @@ impl Machine {
     /// Complete the try_cancel response `i`: `victim` = the CTA it cancels (one that has not
     /// launched), or None (the request fails; allowed at any time, E-CLC).
     pub fn complete_clc(&mut self, i: usize, victim: Option<u16>) {
-        let op = self.pending.remove(i);
+        let op = self.take_pending(i);
         let AsyncKind::Clc {
             cta,
             resp,
@@ -4180,9 +4620,11 @@ impl Machine {
                 false,
             );
             self.mbar_materialize(c, mbar);
+            self.rec_mbar_init_key(c, mbar);
             if self.mbars.contains_key(&(c, mbar)) {
                 let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, c, mbar);
-                self.rec_late(c, mbar, &op.vc);
+                self.rec_tx(c, mbar, -16, false);
+                self.rec_late(c, mbar, op.actor, &op.vc);
                 if let Err(fault) = self
                     .mbar_counter_transition(c, mbar, TransactionDelta::Subtract(16), 0)
                     .map(|transition| {
@@ -4218,6 +4660,161 @@ impl Machine {
             return Err(format!("UTCATOMSWS.2CTA issued by odd CTA rank {rank}"));
         }
         Ok(vec![cta, self.rank_cta(cta, ((rank + 1) as u64) << 24)?])
+    }
+
+    /// The other CTA of `cta`'s pair (cluster ranks 2i and 2i + 1), for `cta_group::2` (E-PAIR).
+    pub fn pair_peer(&self, cta: u16) -> Result<u16, String> {
+        let (_, rank) = self.launch.cluster_of(cta as u32);
+        self.rank_cta(cta, ((rank ^ 1) as u64) << 24)
+            .map_err(|e| format!("tcgen05 cta_group::2 without a peer CTA: {e}"))
+    }
+
+    /// ASSUME(E-PAIR): `tcgen05.alloc.cta_group::2` is one allocation by a warp of each CTA of
+    /// the pair together: "one warp from each of the peer CTAs must collectively perform the
+    /// allocation", and the first "could block until the second warp in the Peer CTA also
+    /// performs the operation" (PTX ISA 9.7.18.5). The first warp to execute it arrives
+    /// (`PairAlloc::Arrived`) and waits (`split_enabled`; a peer that never comes is a
+    /// deadlock). The second allocates the same columns in both CTAs, marked as a fresh actor's
+    /// epoch 1 at the join of both warps' clocks, writes its address and leaves the columns to
+    /// the first (`PairAlloc::Done`), which writes its own address when it runs again. Each
+    /// warp's representative takes the marks' epoch only: the allocation is not a memory
+    /// operation (TMEM allocation is no memory-model location) and synchronizes no memory
+    /// between the warps, but each warp's later accesses of the columns, and the MMAs it issues
+    /// into either CTA's TMEM, are ordered after the allocation in both CTAs. (MISS 179:
+    /// before, each CTA allocated on its own and marked its TMEM as its own thread's write, so
+    /// the leader's paired MMA into the peer's TMEM raced with the peer's alloc.)
+    fn tmem_alloc_pair(
+        &mut self,
+        t: usize,
+        dst: &Addr,
+        ncols: &Val,
+        pc: u32,
+    ) -> Result<Flow, String> {
+        let cta = self.threads[t].cta;
+        let peer = self.pair_peer(cta)?;
+        for c in [cta, peer] {
+            self.rec(
+                Resource {
+                    space: ResourceSpace::TmemAllocator,
+                    owner: c as u32,
+                    start: 0,
+                    end: 1,
+                },
+                true,
+            );
+        }
+        let n = self.rd(t, ncols)? as u32;
+        if !(32..=512).contains(&n) || !n.is_power_of_two() {
+            return Err(format!(
+                "tcgen05.alloc of {n} columns (must be a power of two in [32, 512])"
+            ));
+        }
+        let warp = self.threads[t].warp;
+        match self.tmem[cta as usize].pair {
+            // The peer's warp allocated for both: take the columns.
+            Some(PairAlloc::Done { col, actor }) => {
+                self.tmem[cta as usize].pair = None;
+                self.pair_alloc_finish(t, dst, col, actor, pc)?;
+                return Ok(Flow::Next);
+            }
+            // Still waiting (`split_enabled` keeps it from running again).
+            Some(PairAlloc::Arrived { warp: w, .. }) if w == warp => return Ok(Flow::Stay),
+            Some(PairAlloc::Arrived { .. }) => {
+                return Err(format!(
+                    "tcgen05.alloc.cta_group::2 by a second warp of {} while one waits for its peer CTA: not modeled",
+                    self.cta_name(cta)
+                ));
+            }
+            None => {}
+        }
+        let Some(PairAlloc::Arrived {
+            rep: other,
+            ncols: m,
+            ..
+        }) = self.tmem[peer as usize].pair
+        else {
+            // The first of the two: wait for the peer CTA's warp.
+            self.tmem[cta as usize].pair = Some(PairAlloc::Arrived {
+                warp,
+                rep: t as u32,
+                ncols: n,
+            });
+            return Ok(Flow::Stay);
+        };
+        if m != n {
+            return Err(format!(
+                "tcgen05.alloc.cta_group::2 of {n} columns in {} and {m} in {}: not modeled",
+                self.cta_name(cta),
+                self.cta_name(peer)
+            ));
+        }
+        for c in [cta, peer] {
+            if self.tmem[c as usize].relinquished {
+                self.report(
+                    "violation",
+                    format!("alloc-after-relinquish:{pc}"),
+                    format!(
+                        "tcgen05.alloc at {} after {}'s tcgen05.relinquish_alloc_permit",
+                        self.k.describe(pc as usize),
+                        self.cta_name(c)
+                    ),
+                );
+            }
+        }
+        let units = n / 32;
+        let ctas = [cta, peer];
+        let idx = match self.tenant_place(&ctas, units) {
+            Some(p) if !ctas.iter().any(|&c| self.tmem_permit_blocked(c)) => p,
+            _ => self
+                .tmem_find_group(&ctas, units)
+                .ok_or("tcgen05.alloc.cta_group::2 cannot succeed")?,
+        };
+        // The marks' actor is an async id of the even CTA's warp, whichever warp came second:
+        // the same id in every schedule.
+        let leader = if self.launch.cluster_of(cta as u32).1 % 2 == 0 {
+            t
+        } else {
+            other as usize
+        };
+        let actor = self.async_actor(leader)?;
+        let mut vc = self.threads[t].vc.clone();
+        vc_join(&mut vc, &self.threads[other as usize].vc);
+        vc_raise(&mut vc, actor, 1);
+        let col = idx * 32;
+        for c in ctas {
+            self.tmem[c as usize].alloc |= (((1u32 << units) - 1) << idx) as u16;
+            self.tmem[c as usize].permit = true;
+            self.tmem_reset(c, col, n, actor, &vc, pc);
+        }
+        self.tmem[peer as usize].pair = Some(PairAlloc::Done { col, actor });
+        self.pair_alloc_finish(t, dst, col, actor, pc)?;
+        Ok(Flow::Next)
+    }
+
+    /// A warp's end of a paired allocation (`tmem_alloc_pair`): its representative `t` is
+    /// ordered after the marks (`actor`'s epoch 1), also for its tcgen05 operations (the alloc
+    /// is one of them, so no fence is needed), and writes the address `col` to `dst`.
+    fn pair_alloc_finish(
+        &mut self,
+        t: usize,
+        dst: &Addr,
+        col: u32,
+        actor: u32,
+        pc: u32,
+    ) -> Result<(), String> {
+        let mark = vc_single(actor, 1);
+        {
+            let th = self.threads[t].make_mut();
+            vc_join(&mut th.vc, &mark);
+            vc_join(&mut th.tc_vc, &mark);
+        }
+        // ASSUME(S-TCGEN05): alloc is synchronous (PTX ISA 9.7.18.6.1): the thread itself
+        // writes the address, ordered by ordinary synchronization.
+        let a = self.addr(t, dst)?;
+        let loc = self.resolve(t, Space::Shared, a, 4)?;
+        let vc = self.threads[t].vc.clone();
+        self.access(t as u32, &vc, pc, loc, 4, Some(&col.to_le_bytes()));
+        Ok(())
     }
 
     /// First run free in every CTA of the group.
@@ -4289,12 +4886,26 @@ impl Machine {
         // keeps race detection independent of the order of the two (E-DRF): the mark clears
         // the shadow. Marks do not race with each other (the allocator orders them).
         let mut races: Vec<(Epoch, &'static str, usize, u32)> = Vec::new();
-        let tm = &mut self.tmem[cta as usize];
         // Columns are contiguous in TMEM storage (`tmem_idx`): the marked words are one run.
         let (lo, hi) = (
             tmem_idx(0, col as usize),
             tmem_idx(0, (col + ncols) as usize),
         );
+        // DPOR footprint: the mark writes every word's allocation state, which a tcgen05.ld / st
+        // of the word reads (`tmem_access` records the word, space 2), so the two do not
+        // commute (MISS 233: with only the allocator key, space 3, DPOR never ran a dealloc
+        // before an unsynchronized STTM / LDTM and lost its tmem-unalloc violation,
+        // probes/dpor_tmem_dealloc). Space 2 is not in sync-only footprints (E-DRF).
+        self.rec(
+            Resource {
+                space: ResourceSpace::Tmem,
+                owner: cta as u32,
+                start: lo as u64,
+                end: hi as u64,
+            },
+            true,
+        );
+        let tm = &mut self.tmem[cta as usize];
         let mut i = lo;
         while i < hi {
             i += tm.sh.for_run(i, hi - i, |j, sh| {
@@ -4861,9 +5472,28 @@ impl Machine {
         if op.sh.is_empty() && (op.issuer as usize) < self.threads.len() {
             op.sh = self.threads[op.issuer as usize].vc_sh.clone();
         }
+        // ASSUME(S-REMOTE-INFLIGHT): an op enters its in-order pipe behind every op already
+        // in it (issue order), whatever its actor and clock.
+        if let Some(f) = op.fifo {
+            op.seq = self.pending.iter().filter(|o| o.fifo == Some(f)).count() as u32;
+        }
         self.pending.push(op);
         self.pending
             .sort_by_key(|o| (o.actor, vc_get(&o.vc, o.actor)));
+    }
+
+    /// Remove pending op `i`; the ops behind it in its in-order pipe move up one position
+    /// (`AsyncOp::seq` stays 0..n-1).
+    pub(crate) fn take_pending(&mut self, i: usize) -> AsyncOp {
+        let op = self.pending.remove(i);
+        if let Some(f) = op.fifo {
+            for o in self.pending.iter_mut() {
+                if o.fifo == Some(f) && o.seq > op.seq {
+                    o.seq -= 1;
+                }
+            }
+        }
+        op
     }
 
     /// Clock for a new op in thread t's in-order tcgen05 pipe (includes all earlier ops).
@@ -4964,6 +5594,23 @@ impl Machine {
                 );
                 let (kind, msg) = remote_reserved(mbar, msg);
                 self.report(kind, format!("remote-unobserved:{pc}"), msg);
+            }
+        }
+        // Drained by a later cluster release of their issuer (S-REMOTE-INFLIGHT): covered by a
+        // wait on their phase or a later one, or by that release happening before a target
+        // thread's exit (S-CLUSTER-LIFE).
+        for &(cta, mbar, phase, pc, issuer, clock) in &self.remote_drained.clone() {
+            let waited = self
+                .mbar_seen
+                .get(&(cta, mbar))
+                .is_some_and(|&s| s > phase);
+            if !waited && !self.observed_by(cta, issuer, clock) {
+                let msg = format!(
+                    "{} at {} accesses the shared memory of CTA {cta}, but is not ordered before the exit of any of its threads: CTA {cta} can exit first (cluster lifetime; a final barrier.cluster is missing)",
+                    self.actor_name(issuer),
+                    self.k.describe(pc as usize)
+                );
+                self.report("violation", format!("cluster-life:{pc}"), msg);
             }
         }
         let completed = std::mem::take(&mut self.completed);
@@ -5186,6 +5833,7 @@ impl Machine {
         self.rec_pc(warp, pc0, true);
         // E-POLL-ANY: a strong load whose step ends the same for every value its location
         // can hold runs as a value-insensitive poll.
+        self.vip_learn.clear();
         if self.vip.is_some() && self.vip_read == 0 && self.vip_ok(warp, pc0) {
             self.vip_read = 1;
         }
@@ -5257,11 +5905,30 @@ impl Machine {
             loc = Some(l);
         }
         let Some(l) = loc else { return false };
+        // S-INIT: the candidate values are concrete, so a load of a byte that is undefined
+        // now (stale shared memory, an unwritten scratch buffer, a store of undefined data),
+        // or that an explored write left undefined (`VipLearn::undef`), is no poll: its
+        // result must stay undefined (MISS 282).
+        let undef = |i: usize| match l {
+            Loc::Shared { cta, off } => {
+                let a = off as usize + i;
+                let s = self.smem[cta as usize].sh.get(a);
+                a >= SMEM_RESERVED && (s.w.is_none() || s.undef)
+            }
+            Loc::Global { alloc, off } => self.gmem[alloc].sh.get(off as usize + i).undef,
+            Loc::Param { .. } => true,
+        };
+        if (0..*bytes as usize).any(undef) {
+            return false;
+        }
         let Some((wh, off)) = vip_where(l) else {
             return false;
         };
         let key = (wh, off, *bytes);
         let vip = self.vip.clone().unwrap();
+        if vip.undef.lock().unwrap().contains(&key) {
+            return false;
+        }
         let mut vals = vip.watch(key);
         let n = *bytes as usize;
         let mem = |m: &Machine| -> Mem {
@@ -5454,9 +6121,30 @@ impl Machine {
         self.wdiv.get(warp as usize).copied().unwrap_or(true)
     }
 
+    /// E-WARP-ORDER (PTX report): are threads `a` and `b` in one lockstep group
+    /// (`Machine::mgrp`)?
+    pub(crate) fn lockstep(&self, a: u32, b: u32) -> bool {
+        match (self.mgrp.get(a as usize), self.mgrp.get(b as usize)) {
+            (Some(&x), Some(&y)) => x == y && x != u32::MAX,
+            _ => false,
+        }
+    }
+
+    /// Restart the divergence clocks of `warp`'s lanes at their own clocks (`div_clk`).
+    fn restart_div_clk(&mut self, warp: u32) {
+        for u in self.warp_threads(warp) {
+            let c = vc_get(&self.threads[u].vc, u as u32);
+            if let Some(x) = Arc::make_mut(&mut self.div_clk).get_mut(u) {
+                *x = c;
+            }
+        }
+    }
+
     /// E-WARP-ORDER: after `members` ran one instruction, the live ones at different pcs (or
-    /// another live lane of the warp not among them) diverge the warp.
+    /// another live lane of the warp not among them) diverge the warp on hardware (`wdiv`);
+    /// in the model the lockstep groups whose lanes now stand apart split (`regroup`).
     fn note_divergence(&mut self, warp: u32, members: &[usize]) {
+        self.regroup(warp, &[]);
         if self.warp_div(warp) {
             return;
         }
@@ -5471,18 +6159,15 @@ impl Machine {
             if let Some(x) = Arc::make_mut(&mut self.wdiv).get_mut(warp as usize) {
                 *x = true;
             }
-            for u in self.warp_threads(warp) {
-                let c = vc_get(&self.threads[u].vc, u as u32);
-                if let Some(x) = Arc::make_mut(&mut self.div_clk).get_mut(u) {
-                    *x = c;
-                }
-            }
+            self.restart_div_clk(warp);
         }
     }
 
     /// E-WARP-ORDER: `lanes` of `warp` were released together (BSYNC / WARPSYNC); if they are
-    /// all of its live lanes, the warp is converged again.
+    /// all of its live lanes, the warp is converged again. On the PTX front (`bar.warp.sync`)
+    /// they form one lockstep group (`note_gathered`).
     fn note_convergence(&mut self, warp: u32, lanes: &[usize]) {
+        self.note_gathered(warp, lanes, false);
         if self.warp_div(warp)
             && self
                 .warp_threads(warp)
@@ -5491,6 +6176,146 @@ impl Machine {
             if let Some(x) = Arc::make_mut(&mut self.wdiv).get_mut(warp as usize) {
                 *x = false;
             }
+        }
+    }
+
+    /// ASSUME(E-WARP-ORDER), PTX: the lockstep groups of `warp` (`Machine::mgrp`) after its
+    /// lanes moved: lanes of one group stay in it while they share a pc and a state, and
+    /// `gathered` (lanes released together, running at one pc) form one group. The others
+    /// keep their groups, split by pc and state. Ids are the groups' lowest thread indices
+    /// (exited lanes: none), so equal partitions hash equal.
+    fn regroup(&mut self, warp: u32, gathered: &[usize]) {
+        if self.k.front != Front::Ptx {
+            return;
+        }
+        let wt: Vec<usize> = self.warp_threads(warp).collect();
+        let first = gathered.iter().copied().min().map(|u| u as u32);
+        let mut keys: Vec<((u32, u32, bool), u32)> = Vec::new();
+        let mut new = Vec::with_capacity(wt.len());
+        for &u in &wt {
+            let th = &self.threads[u];
+            let g = if th.st == St::Exited {
+                u32::MAX
+            } else if gathered.contains(&u) {
+                first.unwrap_or(u as u32)
+            } else {
+                let key = (
+                    self.mgrp.get(u).copied().unwrap_or(u32::MAX),
+                    th.pc,
+                    th.st == St::Run,
+                );
+                match keys.iter().find(|e| e.0 == key) {
+                    Some(e) => e.1,
+                    None => {
+                        keys.push((key, u as u32));
+                        u as u32
+                    }
+                }
+            };
+            new.push(g);
+        }
+        if wt
+            .iter()
+            .zip(&new)
+            .any(|(&u, &g)| self.mgrp.get(u) != Some(&g))
+        {
+            let v = Arc::make_mut(&mut self.mgrp);
+            for (&u, &g) in wt.iter().zip(&new) {
+                if let Some(x) = v.get_mut(u) {
+                    *x = g;
+                }
+            }
+        }
+    }
+
+    /// PTX: the lane sets a warp collective at `pc` gathers when the split `members` runs it:
+    /// those that run it only once every live lane they name is in the split
+    /// (`split_enabled`: `.sync.aligned` instructions, elect, vote / redux / match,
+    /// `Converge`, the whole warp; a membermask collective, each mask whose live lanes are
+    /// all members). None of them orders memory.
+    fn gathered_sets(&self, members: &[usize], pc: u32) -> Vec<Vec<usize>> {
+        if self.k.front != Front::Ptx || members.is_empty() {
+            return Vec::new();
+        }
+        let op = &self.k.code[pc as usize].op;
+        let w = self.threads[members[0]].warp;
+        if let Some(m) = op.member_mask() {
+            let mut out: Vec<Vec<usize>> = Vec::new();
+            let mut seen: Vec<u32> = Vec::new();
+            for &t in members {
+                let Ok(v) = self.rd(t, m) else {
+                    return Vec::new();
+                };
+                let v = v as u32;
+                if seen.contains(&v) {
+                    continue;
+                }
+                seen.push(v);
+                let lanes: Vec<usize> = self
+                    .warp_threads(w)
+                    .filter(|&u| {
+                        let th = &self.threads[u];
+                        th.st != St::Exited && v >> (th.lane & 31) & 1 == 1
+                    })
+                    .collect();
+                if lanes.len() > 1 && lanes.iter().all(|u| members.contains(u)) {
+                    out.push(lanes);
+                }
+            }
+            return out;
+        }
+        if op.is_warp_aligned()
+            || matches!(
+                op,
+                Op::VoteAll { .. }
+                    | Op::VoteAny { .. }
+                    | Op::Redux { .. }
+                    | Op::MatchAny { .. }
+                    | Op::Converge
+            )
+        {
+            return vec![members.to_vec()];
+        }
+        Vec::new()
+    }
+
+    /// ASSUME(E-WARP-ORDER), PTX: `lanes` of `warp` were released together at a point the
+    /// model enforces (a barrier release, a `bar.warp.sync` release, a warp collective that
+    /// waits for the lanes it names, `split_enabled`). If they run at one pc they form one
+    /// lockstep group (`regroup`), so their strong pairs are reported from here (`access_x`).
+    /// An access made before the gathering stays reportable against the other lanes'
+    /// accesses after it: the gathering held them back, so the model shows one order, and a
+    /// collective orders no memory (a barrier does, by happens-before). With `hw` (the
+    /// release of an aligned barrier: every live lane executes it together, PTX ISA
+    /// `.aligned`, and its happens-before covers the accesses before it) and every live lane
+    /// released, the warp counts as converged on hardware too (`wdiv`, labels). Not for a
+    /// collective: an own clock moves at releases only, so `div_clk` cannot tell the accesses
+    /// made apart before it from the converged ones after it. Before MISS 73's fix only a
+    /// `bar.warp.sync` release of the whole warp ended a divergence, so the strong pairs after
+    /// a divergence and a `bar.sync`, or of lanes that stayed together while others branched
+    /// away, were PTX clean.
+    fn note_gathered(&mut self, warp: u32, lanes: &[usize], hw: bool) {
+        if self.k.front != Front::Ptx || lanes.is_empty() {
+            return;
+        }
+        let pc = self.threads[lanes[0]].pc;
+        if !lanes.iter().all(|&u| {
+            let th = &self.threads[u];
+            th.st == St::Run && th.pc == pc && th.warp == warp
+        }) {
+            return;
+        }
+        self.regroup(warp, lanes);
+        if hw
+            && self.warp_div(warp)
+            && self
+                .warp_threads(warp)
+                .all(|u| self.threads[u].st == St::Exited || lanes.contains(&u))
+        {
+            if let Some(x) = Arc::make_mut(&mut self.wdiv).get_mut(warp as usize) {
+                *x = false;
+            }
+            self.restart_div_clk(warp);
         }
     }
 
@@ -5527,6 +6352,19 @@ impl Machine {
                 return;
             }
             first = false;
+            // E-LOCKSTEP: the members' pending LDTM reads, to see whether this instruction's
+            // scoreboard wait completed one (`ldtm_complete`; joined below).
+            let ldtm_pend: Vec<usize> = if k.front == Front::Sass {
+                members
+                    .iter()
+                    .map(|&t| self.threads[t].ldtm_pend.len())
+                    .collect()
+            } else {
+                vec![]
+            };
+            // E-WARP-ORDER (PTX): a warp collective gathers the lanes it waited for
+            // (`note_gathered`, after it ran).
+            let gather = self.gathered_sets(&members, pc);
             if let Err(e) = self.exec(&members, pc) {
                 let sig = format!("fault:{pc}");
                 self.report(
@@ -5540,6 +6378,17 @@ impl Machine {
                 // Stop the faulting threads so exploration can continue elsewhere.
                 for &t in &members {
                     self.threads[t].make_mut().set_status(St::Exited);
+                }
+                // ...and let nothing wait for them: a stopped thread no longer takes part in
+                // its warp's convergence barriers or its CTA's barriers, as after EXIT. On
+                // GB300 a fault aborts the whole grid (probes/fault_abort: a lane's illegal
+                // load inside a BSSY region returns error 700 while its warp-mates wait at the
+                // BSYNC and spin on a flag it would set; no hang), and an in-word over-read
+                // inside an allocation granule (MISS 175) does not fault at all: either way no
+                // thread waits for the faulting one, so a deadlock of threads parked on it was
+                // an artifact. The fault itself is reported above.
+                if let Err(e) = self.release_after_stop(&members) {
+                    self.report(fault_kind(&e), format!("fault-release:{pc}"), e);
                 }
                 return;
             }
@@ -5559,20 +6408,37 @@ impl Machine {
             // STTM itself no longer carries the write: FA4's elected-lane arrive after the
             // warp's STTMs and FENCE.VIEW.ASYNC.T did not cover the other lanes' writes, which
             // were reported racing with the PV UTCHMMA (c_fa4_*, certificate refused).
+            // An instruction whose scoreboard wait completed an LDTM is joined too: an LDTM's
+            // TMEM read enters the thread's clock only there (S-TCGEN05, `ldtm_complete`), so
+            // the join at the LDTM itself does not carry the read, and one lane's completed
+            // tcgen05.ld never reached another lane's mbarrier arrive after the warp's
+            // tcgen05.wait::ld (MISS 163, fixtures/e_ldtm_join: a false TMEM read-write race;
+            // MISS 149 is the STTM side, FENCE.VIEW.ASYNC.T above).
+            let ldtm_done = members
+                .iter()
+                .zip(&ldtm_pend)
+                .any(|(&t, &n)| self.threads[t].ldtm_pend.len() < n);
             if k.front == Front::Sass
                 && members.len() > 1
-                && matches!(
-                    inst.op,
-                    Op::Ld { .. }
-                        | Op::LdReduce { .. }
-                        | Op::St { .. }
-                        | Op::Atom { .. }
-                        | Op::TmemLd { .. }
-                        | Op::TmemSt { .. }
-                        | Op::TmemWaitSt
-                        | Op::StMatrix { .. }
-                        | Op::LdMatrix { .. }
-                )
+                && (ldtm_done
+                    || matches!(
+                        inst.op,
+                        Op::Ld { .. }
+                            | Op::LdReduce { .. }
+                            | Op::St { .. }
+                            | Op::Atom { .. }
+                            | Op::TmemLd { .. }
+                            | Op::TmemSt { .. }
+                            | Op::TmemWaitSt
+                            | Op::StMatrix { .. }
+                            | Op::LdMatrix { .. }
+                            // The lanes' later accesses of the object's bytes come after the
+                            // warp's inval / init (MISS 241 follow-up: a lane's store over `a`
+                            // after another lane's SYNCS.CCTL.IV, both in one converged warp,
+                            // reported "not ordered", fixtures/e_mbar_lane_inval LANESYNC).
+                            | Op::MbarInval { .. }
+                            | Op::MbarInit { .. }
+                    ))
             {
                 // In a certificate run, only lanes that became ready together are joined
                 // (wellsync.rs `lockstep_groups`, MISS 30).
@@ -5590,6 +6456,17 @@ impl Machine {
             }
             // E-WARP-ORDER: lanes leaving an instruction at different pcs diverge the warp.
             self.note_divergence(warp, &members);
+            for lanes in &gather {
+                self.note_gathered(warp, lanes, false);
+            }
+            // E-HW-BSYNC-YIELD (GB300 profile): a yield or a block opens the barriers of the
+            // lanes' regions; woken lanes end the step (they may run next).
+            if self.launch.hw_bsync_yield
+                && k.front == Front::Sass
+                && self.bsync_yield_check(warp, pc, &members)
+            {
+                return;
+            }
             // Continue only while the split stays together, runnable, and not blocked, and no
             // other lane of the warp joined it (it must re-merge at a scheduling point).
             let t0 = &self.threads[members[0]];
@@ -5657,6 +6534,20 @@ impl Machine {
         // instruction: as the explorer chose, or, in a run that does not choose (numerics,
         // coverage), leaving a loop on a back edge and otherwise as evaluated.
         if self.clock_choice_at(pc, members) {
+            // A predicate that may differ between the split's lanes: one choice for all of
+            // them leaves out the outcomes where the split divides (clock.rs
+            // `lane_varying_choices`).
+            if members.len() > 1 && self.clock_lane_pcs.contains(&pc) {
+                self.report(
+                    "unmodeled",
+                    format!("clock-lanes:{pc}"),
+                    format!(
+                        "clock choice at {}: its predicate may differ between the {} lanes that run it together (the clock read per thread, or combined with lane-varying values), and a choice fixes it for all of them: no verdict for the lanes taking different sides",
+                        self.k.describe(pc as usize),
+                        members.len()
+                    ),
+                );
+            }
             let inst = &self.k.code[pc as usize];
             if let Some(p) = crate::clock::choice_pred(inst) {
                 let v = match self.elect_choice {
@@ -5676,7 +6567,7 @@ impl Machine {
         self.exec_unforced(members, pc)
     }
 
-    fn exec_unforced(&mut self, members: &[usize], pc: u32) -> Result<(), String> {
+    pub(crate) fn exec_unforced(&mut self, members: &[usize], pc: u32) -> Result<(), String> {
         if !self.launch.views.is_empty() {
             VA_SEEN.with(|v| v.borrow_mut().clear());
         }
@@ -6312,6 +7203,9 @@ impl Machine {
                     let w = self.threads[t0].warp as usize;
                     // Parts of a warp that reach the BSSY separately each add their lanes (the
                     // BSYNC release removes them again). ASSUME(E-BSYNC)
+                    if self.warps[w].bmask[*b as usize] == 0 {
+                        self.warps[w].make_mut().bopen &= !(1 << *b);
+                    }
                     self.write_convergence_mask(w as u32, *b, MaskOp::Insert(m));
                 }
                 for &t in members {
@@ -6369,8 +7263,18 @@ impl Machine {
                 }
                 return Ok(());
             }
-            // ASSUME(E-BSYNC): see ASSUMPTIONS.md
-            Op::Break { b, cond } => {
+            // ASSUME(E-BSYNC): see ASSUMPTIONS.md. A `BSYNC` without `.RECONVERGENT`, or around a
+            // region that can yield (G1), is no reconvergence point (MISS 81): its lanes leave the
+            // barrier as `BREAK`'s do.
+            Op::Break { .. } | Op::Bsync { .. }
+                if !matches!(inst.op, Op::Bsync { b, form }
+                    if members.first().is_some_and(|&t| self.bsync_waits(self.threads[t].warp, b, form))) =>
+            {
+                let (b, cond) = match &inst.op {
+                    Op::Break { b, cond } => (b, *cond),
+                    Op::Bsync { b, .. } => (b, None),
+                    _ => unreachable!(),
+                };
                 let gone = active
                     .iter()
                     .filter(|&&t| cond.is_none_or(|c| self.prd(t, c)))
@@ -6381,13 +7285,16 @@ impl Machine {
                 if let Some(&t0) = members.first() {
                     let wi = self.threads[t0].warp;
                     self.write_convergence_mask(wi, *b, MaskOp::Remove(gone));
+                    if self.warps[wi as usize].bmask[*b as usize] == 0 {
+                        self.warps[wi as usize].make_mut().bopen &= !(1 << *b);
+                    }
                     // Lanes parked at that BSYNC may be complete now.
                     let parked: Vec<(u32, u32)> = self
                         .warp_threads(wi)
                         .map(|u| &self.threads[u])
                         .filter(|th| {
                             th.st == St::WarpSync
-                                && matches!(self.k.code[th.pc as usize].op, Op::Bsync { b: c } if c == *b)
+                                && matches!(self.k.code[th.pc as usize].op, Op::Bsync { b: c, .. } if c == *b)
                         })
                         .map(|th| (th.lane, th.pc))
                         .collect();
@@ -6504,7 +7411,7 @@ impl Machine {
             Op::WarpSync { .. } | Op::Bsync { .. } => {
                 let m = match (&inst.op, active.first()) {
                     (Op::WarpSync { mask, .. }, Some(&t)) => self.rd(t, mask)? as u32,
-                    (Op::Bsync { b }, Some(&t)) => {
+                    (Op::Bsync { b, .. }, Some(&t)) => {
                         let wi = self.threads[t].warp;
                         self.rec_convergence_barrier(wi, *b, true);
                         let w = &self.warps[wi as usize];
@@ -6521,7 +7428,7 @@ impl Machine {
                             .map(|u| &self.threads[u])
                             .filter(|th| {
                                 th.st == St::WarpSync
-                                    && matches!(self.k.code[th.pc as usize].op, Op::Bsync { b: c } if c == *b)
+                                    && matches!(self.k.code[th.pc as usize].op, Op::Bsync { b: c, .. } if c == *b)
                             })
                             .fold(0u32, |m, th| m | 1 << th.lane);
                         w.bmask[*b as usize] | own | parked
@@ -6556,9 +7463,12 @@ impl Machine {
                 return Ok(());
             }
             Op::TmemAlloc { .. } | Op::TmemDealloc { .. } | Op::TmemRelinquish => {
-                // Warp-wide: one allocation/deallocation per warp, not per lane.
+                // Warp-wide: one allocation/deallocation per warp, not per lane. The first warp
+                // of a paired alloc stays there until its peer CTA's warp allocates (E-PAIR).
                 if let Some(&rep) = active.first() {
-                    self.exec_thread(rep, inst, pc)?;
+                    if matches!(self.exec_thread(rep, inst, pc)?, Flow::Stay) {
+                        return Ok(());
+                    }
                 }
             }
             // ASSUME(E-COLLECTIVE): BRA.DIV / BRA.CONV: the whole split goes one way.
@@ -7291,9 +8201,29 @@ impl Machine {
             }
             _ => {
                 let rev = self.atom_lanes_rev && matches!(inst.op, Op::Atom { .. });
+                // MISS 74 (PTX), MISS 75, 168 (SASS stores): the explorer's choice of lane order
+                // (`lane_orders`).
+                let order = match self.elect_choice {
+                    Some(c) if (LANE_ORDER_BASE..crate::clock::CLOCK_FALL).contains(&c) => {
+                        self.elect_choice = None;
+                        let o = self.lane_orders(members, pc);
+                        if let Some(why) = o.as_ref().and_then(|o| o.truncated.clone()) {
+                            self.lane_order_note(pc, &why);
+                        }
+                        o.and_then(|mut o| {
+                            let k = c - LANE_ORDER_BASE;
+                            (k < o.list.len()).then(|| o.list.swap_remove(k))
+                        })
+                        .filter(|o| o.len() == members.len())
+                    }
+                    _ => self.hw_store_order(inst, members),
+                };
                 let n = members.len();
                 for i in 0..n {
-                    let t = members[if rev { n - 1 - i } else { i }];
+                    let t = match &order {
+                        Some(o) => o[i],
+                        None => members[if rev { n - 1 - i } else { i }],
+                    };
                     // A store under a data-dependent guard: a selection (segment mode).
                     let gst = if matches!(inst.op, Op::St { .. }) {
                         self.num_gst_pre(t, inst, pc)
@@ -7318,6 +8248,510 @@ impl Machine {
             self.threads[t].make_mut().set_pc(pc + 1);
         }
         Ok(())
+    }
+
+    /// The bytes a store `op` of `bytes` bytes of `v` writes for thread `t`: the front-aware
+    /// memory sources (`ptxv_ir::payload`) where they cover the operand layout, else PTX
+    /// `st.vN`: one virtual register per element; SASS: one 32-bit register per word.
+    fn st_data(&self, t: usize, op: &Op, bytes: u8, v: &Val) -> Result<Vec<u8>, String> {
+        if let Some(payload) = ptxv_ir::payload::from_operation(
+            self.k.front,
+            op,
+            &MemoryPayloadReader {
+                machine: self,
+                thread: t,
+            },
+        ) {
+            return payload;
+        }
+        Ok(
+            if let Val::Reg(r @ Reg { file: File::V, .. }, n @ 2..) = v {
+                // PTX `st.vN`: one virtual register per element.
+                let w = (bytes / *n) as usize;
+                let mut d = Vec::with_capacity(bytes as usize);
+                for i in 0..*n as u16 {
+                    let x = self.rd(
+                        t,
+                        &Val::Reg(
+                            Reg {
+                                file: r.file,
+                                idx: r.idx + i,
+                            },
+                            1,
+                        ),
+                    )?;
+                    d.extend_from_slice(&x.to_le_bytes()[..w]);
+                }
+                d
+            } else if let (true, Val::Reg(r @ Reg { file: File::V, .. }, 1)) = (bytes > 8, v) {
+                // One virtual register for a store wider than 8 bytes: the SASS front's
+                // `CCTL.E.RML2` (discard.global.L2) stores a never-written register over the
+                // whole 128-byte line; its 8 bytes repeat (the data is undefined anyway).
+                let x = self.rd(t, &Val::Reg(*r, 1))?.to_le_bytes();
+                (0..bytes as usize).map(|i| x[i % 8]).collect()
+            } else if bytes > 8 && matches!(v, Val::Imm(0)) {
+                // `STS.128 [R8], RZ`: every word is RZ (cuBLAS gemmSN_NN_kernel).
+                vec![0; bytes as usize]
+            } else if bytes > 8 {
+                // STS.128 / st.v4: one 32-bit register per word.
+                let Val::Reg(r, _) = v else {
+                    return Err("store wider than 64 bits of a non-register".into());
+                };
+                let mut d = Vec::with_capacity(bytes as usize);
+                for i in 0..(bytes / 4) as u16 {
+                    let w = self.rd(
+                        t,
+                        &Val::Reg(
+                            Reg {
+                                file: r.file,
+                                idx: r.idx + i,
+                            },
+                            1,
+                        ),
+                    )?;
+                    d.extend_from_slice(&(w as u32).to_le_bytes());
+                }
+                d
+            } else {
+                let x = self.rd(t, v)?;
+                (0..bytes).map(|i| (x >> (8 * i)) as u8).collect()
+            },
+        )
+    }
+
+    /// ASSUME(E-HW-STS-LOWEST): under the GB300 profile one SASS shared store's lanes take
+    /// effect in phases of 32 / (bytes / 4) lanes (one phase up to 4 bytes, 16 lanes for 8, 8
+    /// lanes for 16), the phases in lane order and each phase's lanes from the highest down, so
+    /// the lowest active lane of the last phase with an active lane leaves its bytes (MISS 75).
+    /// ASSUME(E-HW-STG-LOWEST): one 32-bit `STG` (plain, `.STRONG.SM`, `.GPU` or `.SYS`, `.EF`,
+    /// `.NA`), one phase: the lowest active lane's bytes remain (MISS 168); not
+    /// `STG.E.MMIO.SYS`, where GB300 keeps the highest active lane's bytes (explored), and not
+    /// in a launch with multicast objects (one multicast shape measured: every lane, lane 0's
+    /// value on both copies). The lane phase size, or None where the profile has no measured
+    /// order for the store.
+    fn hw_store_phase(&self, inst: &Inst) -> Option<usize> {
+        if self.k.front != Front::Sass {
+            return None;
+        }
+        match &inst.op {
+            Op::St {
+                space: Space::Shared,
+                bytes,
+                ..
+            } if self.launch.hw_sts_lowest => Some(32 / (*bytes as usize / 4).max(1)),
+            Op::St {
+                space: Space::Global,
+                bytes: 4,
+                ..
+            } if self.launch.hw_stg_lowest
+                && self.launch.mcast.is_empty()
+                && !inst.text.contains(".MMIO") =>
+            {
+                Some(32)
+            }
+            _ => None,
+        }
+    }
+
+    /// The order in which the profile runs the lanes of a store `hw_store_phase` covers.
+    fn hw_store_order(&self, inst: &Inst, members: &[usize]) -> Option<Vec<usize>> {
+        let phase = self.hw_store_phase(inst)?;
+        let mut o = members.to_vec();
+        o.sort_by_key(|&t| {
+            let l = self.threads[t].lane as usize;
+            (l / phase, std::cmp::Reverse(l))
+        });
+        Some(o)
+    }
+
+    /// MISS 74, PTX: the lanes of one instruction are threads, so a strong store, `atom.exch`
+    /// or atomic that several of them perform on overlapping bytes takes effect in any lane
+    /// order. The orders that can leave different results, each a permutation of `members`
+    /// (the first takes the groups in lane order), or None where lane order covers them all:
+    /// no two active lanes on one byte, equal stored values, integer reductions that commute
+    /// (`or` / `and` / `xor` / `add` / `min` / `max`) with dead results, or dead-result
+    /// floating-point adds on one word whose partial sums are exact in every order
+    /// (`adds_exact`; a vector add's operand is every element). Per group of
+    /// lanes on overlapping bytes: a store or a dead-result `atom.exch` has one order per
+    /// distinct value (the lowest lane with it goes last; lanes that overlap partly: one
+    /// order per last lane, `truncated`); other atomics (results read, `cas`, floating-point
+    /// adds and `inc` / `dec` of different operands) every order of up to `LANE_PERM_ALL`
+    /// lanes, lane order and its reverse beyond (`truncated`). Combinations of the groups'
+    /// orders beyond `LANE_ORDERS_MAX` are taken diagonally (`truncated`).
+    /// MISS 75, MISS 168, SASS: every store, plain ones too, as a store above (no ISA text
+    /// orders the lanes of one instruction; GB300's order depends on the width), except where
+    /// the gb300 profile runs a measured order (`hw_store_phase`). SASS atomics keep lane
+    /// order (E-LOCKSTEP).
+    pub(crate) fn lane_orders(&self, members: &[usize], pc: u32) -> Option<LaneOrders> {
+        if members.len() < 2 {
+            return None;
+        }
+        let inst = &self.k.code[pc as usize];
+        if inst.uniform {
+            return None;
+        }
+        #[derive(Clone, Copy, PartialEq)]
+        enum Kind {
+            /// The last lane's bytes remain.
+            Last,
+            /// Any order may differ.
+            Perm,
+            /// Every order leaves the same result unless the operands differ.
+            PermIfDiffer,
+            /// Every order leaves the same result.
+            Commute,
+        }
+        let (space, bytes, addr, kind) = match &inst.op {
+            Op::St {
+                space,
+                bytes,
+                addr,
+                sync,
+                ..
+            } => {
+                let explored = match self.k.front {
+                    // Weak stores by several lanes on one word race.
+                    Front::Ptx => sync.is_some(),
+                    // MISS 75 (shared), MISS 168 (global, generic): every store, plain ones
+                    // too, unless the profile has its order.
+                    Front::Sass => self.hw_store_phase(inst).is_none(),
+                };
+                if !explored {
+                    return None;
+                }
+                (*space, *bytes, addr, Kind::Last)
+            }
+            Op::Atom {
+                op,
+                space,
+                bytes,
+                addr,
+                d,
+                p,
+                sync,
+                ..
+            } if self.k.front == Front::Ptx => {
+                // MISS 74 gap B: a lane whose write publishes a clock of its own (a release
+                // atomic; a release fence before it, `membar_vc`, so a relaxed atomic between
+                // fences too; E-READ-DONE's completed reads; the hardware ordering) synchronizes
+                // with the lanes that read its write after it, so their order matters whatever
+                // the result (fixtures/e_lo_sync). The release sequences the lanes continue are
+                // the same in every order.
+                let publishes = self.launch.hw_order
+                    || sync.releases()
+                    || members.iter().any(|&t| {
+                        self.prd(t, inst.guard)
+                            && (!vc_entries(&self.threads[t].membar_vc).is_empty()
+                                || self.launch.read_done
+                                    && !vc_entries(&self.read_release(t)).is_empty())
+                    });
+                let dead =
+                    !publishes && p.is_none() && d.is_none_or(|_| self.atom_dead.contains(&pc));
+                let kind = match op {
+                    AtomOp::Exch if dead => Kind::Last,
+                    AtomOp::Or
+                    | AtomOp::And
+                    | AtomOp::Xor
+                    | AtomOp::Add
+                    | AtomOp::MinU
+                    | AtomOp::MaxU
+                    | AtomOp::MinS
+                    | AtomOp::MaxS
+                        if dead =>
+                    {
+                        Kind::Commute
+                    }
+                    AtomOp::FAddFtz
+                    | AtomOp::FAdd64
+                    | AtomOp::AddBf16x2
+                    | AtomOp::AddBf16
+                    | AtomOp::Inc
+                    | AtomOp::Dec
+                        if dead =>
+                    {
+                        Kind::PermIfDiffer
+                    }
+                    _ => Kind::Perm,
+                };
+                (*space, *bytes, addr, kind)
+            }
+            _ => return None,
+        };
+        if kind == Kind::Commute {
+            return None;
+        }
+        // The bytes a lane writes (or its operands); read only for lanes that share bytes.
+        let data_of = |t: usize| -> Option<Vec<u8>> {
+            Some(match &inst.op {
+                op @ Op::St { v, .. } => self.st_data(t, op, bytes, v).ok()?,
+                // A vector float add (`red.add.v2` / `.v4.f32`, `.v4.bf16`): every element's
+                // register, as exec reads them (one 4-byte atomic per element).
+                Op::Atom {
+                    op: AtomOp::FAddFtz | AtomOp::AddBf16x2,
+                    v: Val::Reg(r, _),
+                    ..
+                } if matches!(bytes, 8 | 16) => {
+                    let mut x = Vec::with_capacity(bytes as usize);
+                    for k in 0..(bytes / 4) as u16 {
+                        let w = self
+                            .rd(
+                                t,
+                                &Val::Reg(
+                                    Reg {
+                                        file: r.file,
+                                        idx: r.idx + k,
+                                    },
+                                    1,
+                                ),
+                            )
+                            .ok()?;
+                        x.extend_from_slice(&(w as u32).to_le_bytes());
+                    }
+                    x
+                }
+                Op::Atom { v, new, .. } => {
+                    let mut x = self.rd(t, v).ok()?.to_le_bytes().to_vec();
+                    if let Some(n) = new {
+                        x.extend(self.rd(t, n).ok()?.to_le_bytes());
+                    }
+                    x
+                }
+                _ => return None,
+            })
+        };
+        let mut acc: Vec<LaneAccess> = Vec::new();
+        // MISS 74 gap A: a multicast address has one location per copy (`mc_resolve`); lanes
+        // whose copies lie in the same allocations, in one order, overlap on every copy where
+        // they overlap on the first (one multicast offset), so they are grouped by the first.
+        // One order is taken for every copy at once, while each copy may take its own: the
+        // note. Lanes whose copies differ: lane order and its reverse, with the note.
+        let mut copies: Option<Vec<(u8, u64)>> = None;
+        let mut multi = false;
+        for &t in members {
+            if !self.prd(t, inst.guard) {
+                continue;
+            }
+            let a = self.addr(t, addr).ok()?;
+            let locs = self.mem_locs(t, space, a, bytes as usize, pc).ok()?;
+            let &loc = locs.first()?;
+            if locs.len() > 1 || multi {
+                let keys: Vec<(u8, u64)> = locs
+                    .iter()
+                    .map(|l| match *l {
+                        Loc::Shared { cta, .. } => (0u8, cta as u64),
+                        Loc::Global { alloc, .. } => (1u8, alloc as u64),
+                        Loc::Param { .. } => (2u8, 0),
+                    })
+                    .collect();
+                if copies.as_ref().is_some_and(|c| *c != keys) || !multi && !acc.is_empty() {
+                    let mut r: Vec<usize> = members.to_vec();
+                    r.reverse();
+                    return Some(LaneOrders {
+                        list: vec![members.to_vec(), r],
+                        truncated: Some(
+                            "lanes of one multicast access whose copies differ: lane order and its reverse"
+                                .into(),
+                        ),
+                    });
+                }
+                copies = Some(keys);
+                multi = true;
+            }
+            let (key, off) = match loc {
+                Loc::Shared { cta, off } => ((0u8, cta as u64), off as u64),
+                Loc::Global { alloc, off } => ((1u8, alloc as u64), off),
+                Loc::Param { .. } => return None,
+            };
+            acc.push((t, key, off, Vec::new(), loc));
+        }
+        if acc.len() < 2 {
+            return None;
+        }
+        // Groups of lanes on overlapping bytes, each in lane order.
+        let mut by_place: Vec<usize> = (0..acc.len()).collect();
+        by_place.sort_by_key(|&i| (acc[i].1, acc[i].2, i));
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut end = None;
+        for &i in &by_place {
+            let (_, key, off, _, _) = &acc[i];
+            match end {
+                Some((k, e)) if k == *key && *off < e => {
+                    groups.last_mut().unwrap().push(i);
+                    end = Some((k, e.max(off + bytes as u64)));
+                }
+                _ => {
+                    groups.push(vec![i]);
+                    end = Some((*key, off + bytes as u64));
+                }
+            }
+        }
+        if groups.iter().all(|g| g.len() < 2) {
+            return None;
+        }
+        for g in groups.iter().filter(|g| g.len() > 1) {
+            for &i in g {
+                acc[i].3 = data_of(acc[i].0)?;
+            }
+        }
+        let mut why: Vec<String> = Vec::new();
+        // Per group: its orders, as sequences of its lanes (the first: lane order).
+        let mut choices: Vec<Vec<Vec<usize>>> = Vec::new();
+        let mut grouped: Vec<usize> = Vec::new();
+        for g in groups.iter_mut().filter(|g| g.len() > 1) {
+            g.sort_unstable();
+            let lanes: Vec<usize> = g.iter().map(|&i| acc[i].0).collect();
+            let exact = g.iter().all(|&i| acc[i].2 == acc[g[0]].2);
+            let same = g.iter().all(|&i| acc[i].3 == acc[g[0]].3);
+            // Floating-point adds whose partial sums are exact in every order (`adds_exact`).
+            let exact_adds = match &inst.op {
+                Op::Atom { op, .. } if kind == Kind::PermIfDiffer && exact && !same && !multi => {
+                    let init = self.loc_bytes(acc[g[0]].4, bytes as usize);
+                    let xs: Vec<&[u8]> = g
+                        .iter()
+                        .map(|&i| &acc[i].3[..acc[i].3.len().min(bytes as usize)])
+                        .collect();
+                    adds_exact(*op, &init, &xs)
+                }
+                _ => false,
+            };
+            let seqs: Vec<Vec<usize>> = match kind {
+                Kind::Last | Kind::PermIfDiffer if same || exact_adds => continue,
+                Kind::Last if exact => {
+                    // One order per distinct value, its lowest lane last; lane order (the
+                    // highest lane's value) first.
+                    let mut vals: Vec<&Vec<u8>> = vec![&acc[*g.last().unwrap()].3];
+                    for &i in g.iter() {
+                        if !vals.contains(&&acc[i].3) {
+                            vals.push(&acc[i].3);
+                        }
+                    }
+                    vals.iter()
+                        .enumerate()
+                        .map(|(n, v)| {
+                            if n == 0 {
+                                return lanes.clone();
+                            }
+                            let w = g.iter().position(|&i| &acc[i].3 == *v).unwrap();
+                            let mut s = lanes.clone();
+                            let x = s.remove(w);
+                            s.push(x);
+                            s
+                        })
+                        .collect()
+                }
+                Kind::Last => {
+                    why.push(format!(
+                        "{} lanes on partly overlapping bytes: one order per last lane",
+                        lanes.len()
+                    ));
+                    (0..lanes.len())
+                        .map(|w| {
+                            let mut s = lanes.clone();
+                            let x = s.remove(w);
+                            s.push(x);
+                            s
+                        })
+                        .rev()
+                        .collect()
+                }
+                _ if lanes.len() <= LANE_PERM_ALL => permutations(&lanes),
+                _ => {
+                    why.push(format!(
+                        "{} lanes of one atomic on one word: lane order and its reverse of {} orders",
+                        lanes.len(),
+                        (1..=lanes.len() as u128)
+                            .try_fold(1u128, |a, x| a.checked_mul(x))
+                            .map_or("more than 2^128".to_string(), |n| n.to_string())
+                    ));
+                    let mut r = lanes.clone();
+                    r.reverse();
+                    vec![lanes.clone(), r]
+                }
+            };
+            grouped.extend(&lanes);
+            choices.push(seqs);
+        }
+        let total = choices
+            .iter()
+            .try_fold(1usize, |a, c| a.checked_mul(c.len()))
+            .unwrap_or(usize::MAX);
+        if total <= 1 {
+            return None;
+        }
+        if multi {
+            why.push("a multicast address: one order for every copy at once".into());
+        }
+        let picks: Vec<Vec<usize>> = if total <= LANE_ORDERS_MAX {
+            let mut out = vec![vec![]];
+            for c in &choices {
+                out = out
+                    .into_iter()
+                    .flat_map(|p| {
+                        (0..c.len()).map(move |k| {
+                            let mut q = p.clone();
+                            q.push(k);
+                            q
+                        })
+                    })
+                    .collect();
+            }
+            out
+        } else {
+            let n = choices.iter().map(|c| c.len()).max().unwrap_or(1);
+            why.push(format!(
+                "{total} combinations of {} groups' orders: {n} taken",
+                choices.len()
+            ));
+            (0..n)
+                .map(|k| choices.iter().map(|c| k % c.len()).collect())
+                .collect()
+        };
+        let rest: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|t| !grouped.contains(t))
+            .collect();
+        let list = picks
+            .into_iter()
+            .map(|p| {
+                let mut o = rest.clone();
+                for (c, k) in choices.iter().zip(p) {
+                    o.extend(&c[k]);
+                }
+                o
+            })
+            .collect();
+        Some(LaneOrders {
+            list,
+            truncated: (!why.is_empty()).then(|| why.join("; ")),
+        })
+    }
+
+    /// The current bytes at `loc` (no access recorded; `lane_orders`).
+    fn loc_bytes(&self, loc: Loc, n: usize) -> Vec<u8> {
+        match loc {
+            Loc::Shared { cta, off } => (0..n)
+                .map(|i| *self.smem[cta as usize].bytes.get(off as usize + i))
+                .collect(),
+            Loc::Global { alloc, off } => (0..n)
+                .map(|i| *self.gmem[alloc].bytes.get(off as usize + i))
+                .collect(),
+            Loc::Param { .. } => vec![],
+        }
+    }
+
+    /// MISS 74: not every lane order of the instruction at `pc` is explored (`lane_orders`):
+    /// a note the launch check turns into an incomplete verdict (`explore::mark_unexplored`).
+    fn lane_order_note(&mut self, pc: u32, why: &str) {
+        let sig = format!("lane-order-bound:{pc}");
+        if self.findings.iter().any(|f| f.sig == sig) {
+            return;
+        }
+        let msg = format!(
+            "the lanes of {} take effect in any order at the strict level; not every order is explored ({why})",
+            self.k.describe(pc as usize)
+        );
+        self.report("note", sig, msg);
     }
 
     fn slots_of(v: &Val) -> u8 {
@@ -7739,14 +9173,30 @@ impl Machine {
     /// flight together, so nothing orders them with each other (PTX ISA 9.7.10.28.3.2,
     /// 9.7.10.28.3.3): copies whose destinations overlap race (`cp_overlap`), and so do a copy
     /// and one an earlier wait landed that it was in flight with (`cp_relanded`). Returns the
-    /// writes' clocks. ASSUME(E-CPASYNC)
+    /// writes' clocks. The copy's global load is checked here too, as the same actor at the
+    /// same clock: PTX ISA 8.9.1.1 orders a cp.async's loads after the issuer's earlier
+    /// instructions but not before its later ones, so the load may happen at any point up to
+    /// the completion, and a store to the source that is ordered after the issue but not after
+    /// the completion races with it (fixtures/e_cpasync_src_war BAR, OWN; MISS 117: before, the
+    /// load was checked only at issue, as the issuer). ASSUME(E-CPASYNC)
     fn cp_land(&mut self, t: usize, actor: u32, epoch: u32, done: Vec<CpPending>) -> Vec<VC> {
         let cta = self.threads[t].cta;
+        if !done.is_empty() {
+            // A later arrive-on of the thread releases these copies too (E-CPASYNC-MBAR).
+            vc_join(
+                &mut self.threads[t].make_mut().cp_done,
+                &vc_single(actor, epoch),
+            );
+        }
         self.cp_overlap(t, &done);
         let raised = vc_raise_many(done.iter().map(|c| &c.vc), actor, epoch);
         let mut vcs = Vec::with_capacity(done.len());
         for (c, vc) in done.into_iter().zip(raised) {
             self.cp_relanded(cta, actor, epoch, &c);
+            if let Some((alloc, off)) = c.src {
+                let src = Loc::Global { alloc, off };
+                self.recheck_read(actor, &vc, c.pc, src, c.data.len());
+            }
             let loc = Loc::Shared { cta, off: c.off };
             self.access(actor, &vc, c.pc, loc, c.data.len(), Some(&c.data));
             vcs.push(vc);
@@ -7754,6 +9204,30 @@ impl Machine {
             self.num_copy_snapshot(loc, &c.data, c.snapshot.as_ref(), c.pc);
         }
         vcs
+    }
+
+    /// The race check of a read whose bytes were taken earlier (at its issue, by `access`),
+    /// again as `actor` at `vc`, where the read may still happen (`cp_land`): its conflicts
+    /// with the writes so far, its epoch in the read shadow for later writes, and its
+    /// footprint. The issue-time access did the rest: coverage, the numerics' records, global
+    /// ownership, clock-derived bytes and C-TICKET rows (each taken out for this check). Bytes
+    /// still undefined here are reported under the issue-time S-INIT signature
+    /// (`uninit-gmem:<pc>`), not collected into an enclosing instruction's undefined-value
+    /// tracking (`stale`).
+    fn recheck_read(&mut self, actor: u32, vc: &VC, pc: u32, loc: Loc, n: usize) {
+        let num = self.num.take();
+        let prov = self.prov.take();
+        let perm = self.perm.take();
+        let gown = self.gown.take();
+        let clock = std::mem::take(&mut self.clock_store_pcs);
+        let stale = self.stale.replace(None);
+        self.access(actor, vc, pc, loc, n, None);
+        self.stale = stale;
+        self.clock_store_pcs = clock;
+        self.gown = gown;
+        self.perm = perm;
+        self.prov = prov;
+        self.num = num;
     }
 
     /// A copy `c` landing as wait actor `actor` at epoch `epoch` over bytes that an earlier
@@ -7887,6 +9361,36 @@ impl Machine {
         Ok(())
     }
 
+    /// After the threads `ts` stopped without EXIT (a fault): release what waits for them, as
+    /// EXIT does (warp-collective, WARPSYNC and BSYNC parks of their warps, their CTAs'
+    /// barriers and cluster arrivals).
+    fn release_after_stop(&mut self, ts: &[usize]) -> Result<(), String> {
+        let mut warps: Vec<u32> = ts.iter().map(|&t| self.threads[t].warp).collect();
+        warps.sort_unstable();
+        warps.dedup();
+        let mut ctas: Vec<u16> = ts.iter().map(|&t| self.threads[t].cta).collect();
+        ctas.sort_unstable();
+        ctas.dedup();
+        for w in warps {
+            self.collective_all_release(w);
+            self.exit_collective_release(w)?;
+            self.exit_warpsync_release(w)?;
+        }
+        for cta in ctas {
+            let ids: Vec<u32> = self
+                .bars
+                .keys()
+                .filter(|k| k.0 == cta)
+                .map(|k| k.1)
+                .collect();
+            for id in ids {
+                self.bar_try_release(cta, id);
+            }
+            self.cluster_try_complete(cta);
+        }
+        Ok(())
+    }
+
     fn exit_warpsync_release(&mut self, warp: u32) -> Result<(), String> {
         let mut ats: Vec<u32> = self
             .warp_threads(warp)
@@ -7930,14 +9434,14 @@ impl Machine {
                     }
                     continue;
                 }
-                Op::Bsync { b } => {
+                Op::Bsync { b, .. } => {
                     let b = *b;
                     self.rec_convergence_barrier(warp, b, false);
                     let parked = self
                         .warp_threads(warp)
                         .filter(|&i| {
                             self.threads[i].st == St::WarpSync
-                                && matches!(self.k.code[self.threads[i].pc as usize].op, Op::Bsync { b: c } if c == b)
+                                && matches!(self.k.code[self.threads[i].pc as usize].op, Op::Bsync { b: c, .. } if c == b)
                         })
                         .fold(0u32, |m, i| m | 1 << self.threads[i].lane);
                     self.warps[warp as usize].bmask[b as usize] | parked
@@ -7947,6 +9451,78 @@ impl Machine {
             self.warpsync_release(warp, m, at);
         }
         Ok(())
+    }
+
+    /// Does a `BSYNC Bb` of `form` make warp `w`'s lanes wait? A reconvergence point always
+    /// (`bsync_holds`, E-BSYNC, MISS 81); under the GB300 profile any other `BSYNC` too, until a
+    /// lane `BSSY Bb` recorded yielded or blocked (`Warp::bopen`, E-HW-BSYNC-YIELD).
+    pub(crate) fn bsync_waits(&self, w: u32, b: u8, form: BarForm) -> bool {
+        bsync_holds(form)
+            || self.launch.hw_bsync_yield && self.warps[w as usize].bopen >> b & 1 == 0
+    }
+
+    /// ASSUME(E-HW-BSYNC-YIELD): after `members` of `warp` ran the instruction at `pc` (GB300
+    /// profile, SASS): a convergence barrier whose recorded lanes include one that yielded
+    /// (`YIELD`, `NANOSLEEP`) or is blocked (parked at another BSYNC, a WARPSYNC, a CTA or
+    /// cluster barrier) opens: its BSYNCs that are no reconvergence point hold no lane until it
+    /// records none, and the lanes parked at one may run on. Returns whether lanes woke.
+    fn bsync_yield_check(&mut self, warp: u32, pc: u32, members: &[usize]) -> bool {
+        let w = &self.warps[warp as usize];
+        if w.bmask.iter().all(|&m| m == 0) {
+            return false;
+        }
+        let k = self.k.clone();
+        let inst = &k.code[pc as usize];
+        let yl = if yields(&inst.text) {
+            members
+                .iter()
+                .filter(|&&t| self.prd(t, inst.guard))
+                .fold(0u32, |m, &t| m | 1 << self.threads[t].lane)
+        } else {
+            0
+        };
+        // Per barrier: the lanes parked at one of its BSYNCs that are no reconvergence point;
+        // and the lanes blocked anywhere else.
+        let mut parked = [0u32; 16];
+        let mut blocked = 0u32;
+        for u in self.warp_threads(warp) {
+            let th = &self.threads[u];
+            match th.st {
+                St::Run | St::Exited | St::Unlaunched => {}
+                St::WarpSync => match k.code[th.pc as usize].op {
+                    Op::Bsync { b, form } if !bsync_holds(form) => {
+                        parked[b as usize] |= 1 << th.lane
+                    }
+                    _ => blocked |= 1 << th.lane,
+                },
+                St::Bar | St::ClusterWait => blocked |= 1 << th.lane,
+            }
+        }
+        let mut woke = false;
+        for b in 0..16usize {
+            let rec = self.warps[warp as usize].bmask[b];
+            if rec == 0 || self.warps[warp as usize].bopen >> b & 1 == 1 {
+                continue;
+            }
+            // A lane parked at this barrier's own BSYNC waits; one parked at another's is
+            // blocked.
+            let elsewhere = (0..16).filter(|&c| c != b).fold(0u32, |m, c| m | parked[c]);
+            if rec & !parked[b] & (yl | blocked | elsewhere) == 0 {
+                continue;
+            }
+            self.warps[warp as usize].make_mut().bopen |= 1 << b;
+            if parked[b] != 0 {
+                let lanes: Vec<usize> = self
+                    .warp_threads(warp)
+                    .filter(|&u| parked[b] >> self.threads[u].lane & 1 == 1)
+                    .collect();
+                for u in lanes {
+                    self.threads[u].make_mut().set_status(St::Run);
+                }
+                woke = true;
+            }
+        }
+        woke
     }
 
     fn warpsync_release(&mut self, warp: u32, mask: u32, pc: u32) {
@@ -7963,7 +9539,7 @@ impl Machine {
             &self.k.code[pc as usize].op,
             &self.k.code[self.threads[i].pc as usize].op,
         ) {
-            (Op::Bsync { b }, Op::Bsync { b: c }) => b == c,
+            (Op::Bsync { b, .. }, Op::Bsync { b: c, .. }) => b == c,
             (Op::WarpSync { all: a, .. }, Op::WarpSync { all: b, .. }) => a == b,
             _ => false,
         };
@@ -8010,7 +9586,7 @@ impl Machine {
             // and a part released alone joins nothing of the rest (wellsync.rs
             // `bsync_groups`, MISS 30).
             let groups = match self.k.code[pc as usize].op {
-                Op::Bsync { b } => crate::wellsync::bsync_groups(self, b, &lanes),
+                Op::Bsync { b, .. } => crate::wellsync::bsync_groups(self, b, &lanes),
                 _ => None,
             }
             .unwrap_or_else(|| vec![lanes.clone()]);
@@ -8032,11 +9608,14 @@ impl Machine {
             self.join_lanes_sh(&lanes);
             self.note_convergence(warp, &lanes);
             // The released lanes have passed this convergence barrier.
-            if let Op::Bsync { b } = self.k.code[pc as usize].op {
+            if let Op::Bsync { b, .. } = self.k.code[pc as usize].op {
                 let done = lanes
                     .iter()
                     .fold(0u32, |m, &i| m | 1 << self.threads[i].lane);
                 self.write_convergence_mask(warp, b, MaskOp::Remove(done));
+                if self.warps[warp as usize].bmask[b as usize] == 0 {
+                    self.warps[warp as usize].make_mut().bopen &= !(1 << b);
+                }
             }
         }
     }
@@ -9219,6 +10798,43 @@ impl Machine {
                         "atomic with a result on multicast address {a:#x}: not modeled"
                     ));
                 }
+                // SASS: a generic ATOM with a predicate result performs only at a global address
+                // (P = true; ptxas's shared and local fallbacks follow it). At a shared-window
+                // address (S-SWIN) ATOM.E.ADD.F32.FTZ writes nothing and clears P (GB300,
+                // probes/atom_f32_space: the generic and shared::cluster adds keep the
+                // subnormals of their QSPC fallback's FADD). The other forms with a predicate
+                // result are not measured there, nor the f32 add without one (MISS 142).
+                if self.k.front != Front::Ptx
+                    && *space == Space::Generic
+                    && *op != AtomOp::CasSpin
+                    && locs.iter().any(|l| matches!(l, Loc::Shared { .. }))
+                {
+                    match (op, p) {
+                        (AtomOp::FAddFtz, Some(p)) => {
+                            // S-INIT: a returned value is undefined (every fallback writes
+                            // the register again).
+                            if let Some(d) = d {
+                                self.stale = Some(None);
+                                self.wr(t, *d, 0, 1);
+                                self.stale = None;
+                                self.num_clobber(t, *d, &[], pc);
+                            }
+                            self.wp(t, *p, false);
+                            return Ok(Flow::Next);
+                        }
+                        (AtomOp::FAddFtz, None) | (_, Some(_)) => {
+                            return Err(format!(
+                                "generic {op:?} atomic{} at shared-window address {a:#x}: not modeled",
+                                if p.is_some() {
+                                    " with a predicate result"
+                                } else {
+                                    " without a predicate result"
+                                }
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
                 let wide = *bytes == 8;
                 let x = if let Some(payload) = ptxv_ir::payload::from_operation(
                     self.k.front,
@@ -9301,6 +10917,21 @@ impl Machine {
                 let mut old_undef = false;
                 let mut returned_provenance = [None; 2];
                 for &loc in &locs {
+                    // ASSUME(N-FALU, N-ATOMIC): an f32 add rounds as FADD.FTZ (to nearest,
+                    // flush) in global memory; in shared memory as FADD (ptxas: LDS / FADD /
+                    // ATOMS.CAST.SPIN, which keeps subnormals; GB300, probes/atom_f32_space;
+                    // MISS 142).
+                    let request = if request.op
+                        == ptxv_memory_write::atomic_exec::Operation::AddF32Ftz
+                        && matches!(loc, Loc::Shared { .. })
+                    {
+                        AtomicRequest {
+                            op: ptxv_memory_write::atomic_exec::Operation::AddF32,
+                            ..request
+                        }
+                    } else {
+                        request
+                    };
                     let audit = crate::wellsync::AtomicAccess {
                         op: *op,
                         request,
@@ -9360,7 +10991,10 @@ impl Machine {
                     }
                     let o = decode(&old).expect("atomic read has a validated width");
                     let previous = self.num_capture_memory(loc, o as u32);
-                    let mut bf16_input = if matches!(op, AtomOp::AddBf16x2 | AtomOp::AddBf16) {
+                    let mut bf16_input = if matches!(
+                        op,
+                        AtomOp::AddBf16x2 | AtomOp::AddBf16 | AtomOp::AddF16x2 | AtomOp::AddF16
+                    ) {
                         self.capture_num_atom_bf16(
                             t,
                             v,
@@ -9415,7 +11049,12 @@ impl Machine {
                     }
                     self.red_access = false;
                     res = Some(outcome);
-                    let fadd = (*op == AtomOp::FAddFtz).then_some((o as u32, x as u32, n as u32));
+                    let fadd = (*op == AtomOp::FAddFtz).then_some((
+                        o as u32,
+                        x as u32,
+                        n as u32,
+                        !matches!(loc, Loc::Shared { .. }),
+                    ));
                     let fmax = matches!(op, AtomOp::MaxS | AtomOp::MinU)
                         && self.num_fmax_atom(
                             t,
@@ -9425,13 +11064,18 @@ impl Machine {
                             previous,
                             pc,
                         );
-                    if matches!(op, AtomOp::AddBf16x2 | AtomOp::AddBf16) {
-                        self.num_atom_bf16(
+                    if matches!(
+                        op,
+                        AtomOp::AddBf16x2 | AtomOp::AddBf16 | AtomOp::AddF16x2 | AtomOp::AddF16
+                    ) {
+                        let bf16 = matches!(op, AtomOp::AddBf16x2 | AtomOp::AddBf16);
+                        self.num_atom_half(
                             t,
                             loc,
                             *bytes,
                             n as u32,
                             if capture.is_some() { None } else { *d },
+                            bf16,
                             pc,
                             bf16_input,
                         );
@@ -9481,8 +11125,16 @@ impl Machine {
                     self.stale = None;
                 }
                 if let Some(p) = p {
-                    // Generic: the address resolved to global memory (performed).
+                    // Generic: the address resolved to global memory (performed; a shared-window
+                    // one returned above).
+                    // S-INIT: a CAS.SPIN's success predicate (`ATOMS.CAST.SPIN P, ...`) is the
+                    // compare of undefined old bytes, undefined like the register form's `Rd`
+                    // above (fixtures/s_init_cas_spin).
+                    if old_undef && *op == AtomOp::CasSpin {
+                        self.stale = Some(None);
+                    }
                     self.wp(t, *p, outcome.predicate);
+                    self.stale = None;
                 }
                 // A failed compare-and-swap only read, like a load: no new epoch (otherwise
                 // every failed attempt of a lane that polls alongside a succeeding one would
@@ -9559,6 +11211,7 @@ impl Machine {
                 self.pending.clear();
                 self.completed.clear();
                 self.remote_obs.clear();
+                self.remote_drained.clear();
                 return Ok(Flow::Stay);
             }
             Op::Trap { why } => {
@@ -9575,9 +11228,15 @@ impl Machine {
                 self.pending.clear();
                 self.completed.clear();
                 self.remote_obs.clear();
+                self.remote_drained.clear();
                 return Ok(Flow::Stay);
             }
-            Op::TmemAlloc { dst, ncols } => {
+            Op::TmemAlloc {
+                dst,
+                ncols,
+                pair: true,
+            } => return self.tmem_alloc_pair(t, dst, ncols, pc),
+            Op::TmemAlloc { dst, ncols, .. } => {
                 {
                     let c = self.threads[t].cta as u32;
                     self.rec(
@@ -9684,6 +11343,7 @@ impl Machine {
                 let mut vc = self.threads[t].vc.clone();
                 vc_tick(&mut vc, actor);
                 self.push_async(AsyncOp {
+                    seq: 0,
                     sh: vec![],
                     fifo: None,
                     actor,
@@ -9733,6 +11393,7 @@ impl Machine {
                 v,
                 bytes,
             } => {
+                self.needs_cluster_launch(t, "st.async")?;
                 let n = *bytes as usize;
                 let a = self.rd(t, addr)?;
                 check_aligned(Space::SharedCluster, a, n)?;
@@ -9800,6 +11461,9 @@ impl Machine {
                     .collect();
                 let vc = self.threads[t].vc.clone();
                 let vis = self.threads[t].vis.clone();
+                // ASSUME(N-EQUIV): the numerics shadow of the words, as for a plain store of the
+                // value (MISS 205: st.async wrote none, so the words kept their earlier nodes).
+                let origins = self.num_store_origins(t, v, n as u8, inst.guard.reg);
                 // ASSUME(S-REMOTE-INFLIGHT): into another CTA, in flight until delivered.
                 if cta != self.threads[t].cta && remote_inflight() {
                     let Loc::Shared { cta: mc, off: mo } =
@@ -9810,10 +11474,21 @@ impl Machine {
                     if mc != cta {
                         return Err("st.async with its mbarrier in another CTA than the data is not modeled".into());
                     }
+                    // MISS 184: its own async actor, as a SASS remote `ST.E`. Under the
+                    // issuer's clock, every later release of the issuer covered the write
+                    // before it landed (a reader acquiring one saw it ordered, whichever
+                    // landed first). Its mbarrier's release carries the actor's epoch, so a
+                    // waiter on that phase still sees the write; a drain joins it into the
+                    // issuer (`drain_remote`).
+                    let actor = self.async_actor(t)?;
+                    let mut vc = vc;
+                    vc_tick(&mut vc, actor);
                     let r = self.mbar_async_rel(t as u32, cta, vc.clone());
+                    // What each word leaves in the shadow when it lands (`complete_remote_op`).
+                    let snaps = self.num_store_snapshots(t, v, &data, &origins, pc);
                     self.push_remote(
                         t,
-                        t as u32,
+                        actor,
                         pc,
                         cta,
                         mo,
@@ -9823,12 +11498,17 @@ impl Machine {
                         vc,
                         vis,
                         vec![r],
+                        snaps,
                     );
                     self.tick(t);
                     return Ok(Flow::Next);
                 }
                 // ASSUME(E-ASYNC-STEP): the store and its complete_tx happen in one step.
                 self.access(t as u32, &vc, pc, loc, n, Some(&data));
+                self.num_st(t, v, loc, &data, &origins, pc);
+                if self.round16.is_some() {
+                    self.round16_st(t, v, n, &[loc]);
+                }
                 let Loc::Shared { cta: mc, off } = self.resolve(t, Space::SharedCluster, m, 8)?
                 else {
                     unreachable!()
@@ -9843,7 +11523,8 @@ impl Machine {
                     false,
                 );
                 self.mbar_atomic(t as u32, &vc, &vis, pc, mc, off)?;
-                self.rec_late(mc, off, &vc);
+                self.rec_tx(mc, off, -(n as i64), false);
+                self.rec_late(mc, off, t as u32, &vc);
                 let transition = self
                     .mbar_counter_transition(mc, off, TransactionDelta::Subtract(n as i64), 0)
                     .map_err(|fault| format!("mbarrier at {off:#x}: {fault:?}"))?;
@@ -9995,6 +11676,7 @@ impl Machine {
                 };
                 let (actor, vc, fifo) = self.pipe_issue(t, *pair);
                 self.push_async(AsyncOp {
+                    seq: 0,
                     sh: vec![],
                     fifo: Some(fifo),
                     actor,
@@ -10048,6 +11730,7 @@ impl Machine {
                 };
                 let (actor, vc, fifo) = self.pipe_issue(t, *pair);
                 self.push_async(AsyncOp {
+                    seq: 0,
                     sh: vec![],
                     fifo: Some(fifo),
                     actor,
@@ -10094,6 +11777,7 @@ impl Machine {
                     }
                     let (actor, vc, fifo) = self.pipe_issue(t, *pair);
                     self.push_async(AsyncOp {
+                        seq: 0,
                         sh: vec![],
                         fifo: Some(fifo),
                         actor,
@@ -10473,6 +12157,7 @@ impl Machine {
                 let cta = self.threads[t].cta;
                 let group = self.threads[t].bulk_group;
                 self.push_async(AsyncOp {
+                    seq: 0,
                     sh: vec![],
                     fifo: None,
                     actor,
@@ -11186,7 +12871,19 @@ impl Machine {
                     },
                     true,
                 );
+                self.mbar_reset_seen(cta, off);
                 self.mbars.remove(&(cta, off));
+                // ASSUME(S-MBAR-MEM): a later store or init not ordered after the inval could
+                // have reached the live object (MISS 241).
+                let dead = Epoch {
+                    actor: t as u32,
+                    clock: vc_get(&vc, t as u32),
+                    pc,
+                    strong: 0,
+                    sv: false,
+                    view: 0,
+                };
+                self.mbar_dead.insert((cta, off), dead);
                 self.tick(t);
             }
             Op::StMatrix { .. }
@@ -12686,7 +14383,7 @@ impl Machine {
                 match (sync, forced) {
                     (Some(m), Some((b, cell))) => {
                         data = b;
-                        self.sync_observe_cell(t, pc, cell, *m);
+                        self.sync_observe_cell(t, pc, cell, *m, Self::global_at(loc));
                     }
                     // E-POLL-ANY: a value-insensitive poll acquires nothing (it may only add
                     // races).
@@ -12815,66 +14512,7 @@ impl Machine {
                     None => self.mem_locs(t, *space, a, *bytes as usize, pc)?,
                 };
                 let mc = locs.len() != 1 || self.mc_object(a).is_some();
-                let data: Vec<u8> = if let Some(payload) = ptxv_ir::payload::from_operation(
-                    self.k.front,
-                    &inst.op,
-                    &MemoryPayloadReader {
-                        machine: self,
-                        thread: t,
-                    },
-                ) {
-                    payload?
-                } else if let Val::Reg(r @ Reg { file: File::V, .. }, n @ 2..) = v {
-                    // PTX `st.vN`: one virtual register per element.
-                    let w = (*bytes / *n) as usize;
-                    let mut d = Vec::with_capacity(*bytes as usize);
-                    for i in 0..*n as u16 {
-                        let x = self.rd(
-                            t,
-                            &Val::Reg(
-                                Reg {
-                                    file: r.file,
-                                    idx: r.idx + i,
-                                },
-                                1,
-                            ),
-                        )?;
-                        d.extend_from_slice(&x.to_le_bytes()[..w]);
-                    }
-                    d
-                } else if let (true, Val::Reg(r @ Reg { file: File::V, .. }, 1)) = (*bytes > 8, v) {
-                    // One virtual register for a store wider than 8 bytes: the SASS front's
-                    // `CCTL.E.RML2` (discard.global.L2) stores a never-written register over the
-                    // whole 128-byte line; its 8 bytes repeat (the data is undefined anyway).
-                    let x = self.rd(t, &Val::Reg(*r, 1))?.to_le_bytes();
-                    (0..*bytes as usize).map(|i| x[i % 8]).collect()
-                } else if *bytes > 8 && matches!(v, Val::Imm(0)) {
-                    // `STS.128 [R8], RZ`: every word is RZ (cuBLAS gemmSN_NN_kernel).
-                    vec![0; *bytes as usize]
-                } else if *bytes > 8 {
-                    // STS.128 / st.v4: one 32-bit register per word.
-                    let Val::Reg(r, _) = v else {
-                        return Err("store wider than 64 bits of a non-register".into());
-                    };
-                    let mut d = Vec::with_capacity(*bytes as usize);
-                    for i in 0..(*bytes / 4) as u16 {
-                        let w = self.rd(
-                            t,
-                            &Val::Reg(
-                                Reg {
-                                    file: r.file,
-                                    idx: r.idx + i,
-                                },
-                                1,
-                            ),
-                        )?;
-                        d.extend_from_slice(&(w as u32).to_le_bytes());
-                    }
-                    d
-                } else {
-                    let x = self.rd(t, v)?;
-                    (0..*bytes).map(|i| (x >> (8 * i)) as u8).collect()
-                };
+                let data = self.st_data(t, &inst.op, *bytes, v)?;
                 let vc = self.threads[t].vc.clone();
                 // ASSUME(E-HW-WEAK-FLAG) in the GB300 hardware model (two-level check), an
                 // aligned weak global store of at most 8 bytes after a sys-scope fence of its
@@ -12928,7 +14566,20 @@ impl Machine {
                         let mut vc = vc;
                         vc_tick(&mut vc, actor);
                         let vis = self.threads[t].vis.clone();
-                        self.push_remote(t, actor, pc, rc, NO_MBAR, 0, 0, words, vc, vis, vec![]);
+                        self.push_remote(
+                            t,
+                            actor,
+                            pc,
+                            rc,
+                            NO_MBAR,
+                            0,
+                            0,
+                            words,
+                            vc,
+                            vis,
+                            vec![],
+                            vec![],
+                        );
                         self.tick(t);
                         return Ok(Flow::Next);
                     }
@@ -12973,6 +14624,14 @@ impl Machine {
                 }
                 self.weak_pub = false;
                 self.mc_view = false;
+                // ASSUME(S-MBAR-MEM): a store over a live mbarrier (MISS 218).
+                if !mc {
+                    for &loc in &locs {
+                        if let Loc::Shared { cta, off } = loc {
+                            self.store_over_mbar(t, pc, cta, off, *bytes as u32);
+                        }
+                    }
+                }
                 if self.launch.nic.is_some() {
                     for &loc in &locs {
                         self.nic_store(t, pc, loc, &data, *sync)?; // nic.rs
@@ -13050,15 +14709,28 @@ impl Machine {
                 self.wr(t, *d, r as u64, 1);
                 self.num_clobber(t, *d, &[a, b], pc);
             }
-            // Generic addresses resolve to global memory or the parameter window here; the
-            // shared window (S-SWIN) is not modeled for QSPC.
-            Op::Qspc { p, addr } => {
+            // ASSUME(S-SWIN): QSPC.E.S (`isspacep.shared::cta`) holds for a shared-window
+            // address of the CTA's own rank, QSPC.E.D (`isspacep.shared::cluster`) for one of
+            // any CTA of its cluster, neither for a global or parameter address (GB300,
+            // probes/qspc_window). A window address of a rank outside the cluster or past the
+            // CTA's shared memory is not modeled. QSPC reads no memory.
+            Op::Qspc { p, addr, cluster } => {
                 let a = self.addr(t, addr)?;
-                if a >> 32 == SHARED_GENERIC_BASE >> 32 {
-                    return Err("QSPC of a shared-window address not modeled".into());
-                }
-                self.resolve(t, Space::Generic, a, 1)?;
-                self.wp(t, *p, false);
+                let v = if a >> 32 == SHARED_GENERIC_BASE >> 32 {
+                    let me = self.threads[t].cta;
+                    let target = self.rank_cta(me, a & 0xffff_ffff)?;
+                    let smem = self.launch.g(target as u32).smem_bytes as u64;
+                    if a & 0xff_ffff >= smem {
+                        return Err(format!(
+                            "QSPC of shared-window address {a:#x}, past the CTA's {smem} B of shared memory: not modeled"
+                        ));
+                    }
+                    *cluster || target == me
+                } else {
+                    self.resolve(t, Space::Generic, a, 1)?;
+                    false
+                };
+                self.wp(t, *p, v);
             }
             Op::Ld256 {
                 hi,
@@ -13299,9 +14971,11 @@ impl Machine {
                     }
                 }
             }
-            // ASSUME(E-CPASYNC): the global source is read at issue; the shared destination is
-            // written when a wait_group retires its group, by an async actor at the clock at
-            // issue (nothing the thread does after issuing orders the write: `cp_land`).
+            // ASSUME(E-CPASYNC): the global source's bytes are taken at issue, and the read is
+            // checked again when the copy lands (it may happen up to then); the shared
+            // destination is written when a wait_group retires its group, by an async actor at
+            // the clock at issue (nothing the thread does after issuing orders the load or the
+            // write: `cp_land`).
             Op::CpAsync {
                 dst,
                 src,
@@ -13400,10 +15074,24 @@ impl Machine {
                 };
                 let actor = self.async_actor(t)?;
                 let writes = std::mem::take(&mut self.threads[t].make_mut().cp_pending);
+                // The thread's prior copies: those that have landed (`Thread::cp_done`) and those
+                // of its earlier arrive operations still in flight, which land by this arrive's
+                // completion at the latest (`complete_cp_arrive`), at their operation's epoch 1.
+                let mut prior = self.threads[t].cp_done.clone();
+                for o in &self.pending {
+                    if o.issuer == t as u32 && matches!(o.kind, AsyncKind::CpArrive { .. }) {
+                        vc_join(&mut prior, &vc_single(o.actor, 1));
+                    }
+                }
                 let mut vc = self.threads[t].vc.clone();
-                vc_tick(&mut vc, actor);
+                // The actor's epoch 1 is its copies landing (`cp_land`, `Thread::cp_done`),
+                // epoch 2 its arrive-on: a later arrive-on of the thread releases the copies,
+                // not this arrive-on, which 8.9.1.1 does not order it after
+                // (fixtures/e_cpasync_arrive_order).
+                vc_raise(&mut vc, actor, 2);
                 let vis = self.threads[t].vis.clone();
                 self.push_async(AsyncOp {
+                    seq: 0,
                     sh: vec![],
                     fifo: None,
                     actor,
@@ -13415,6 +15103,7 @@ impl Machine {
                         mbar: off,
                         writes,
                         tx: *tx,
+                        prior,
                     },
                     vis,
                 });
@@ -13683,94 +15372,9 @@ impl Machine {
                 // probes/mbar_phase1; cuBLAS starts its "empty" barriers in phase 1, so the
                 // first parity-0 wait passes). Phase 0 then counts as completed at init.
                 let phase = if *encoded { (raw >> 63) as u32 } else { 0 };
-                let vc = self.threads[t].vc.clone();
-                let me = Epoch {
-                    actor: t as u32,
-                    clock: vc_get(&vc, t as u32),
-                    pc,
-                    strong: 0,
-                    sv: false,
-                    view: 0,
-                };
-                if let Some(old) = self.mbars.get(&(cta, off)).cloned() {
-                    for e in std::iter::once(old.init).chain(old.atomics.iter().copied()) {
-                        if e.actor != t as u32 && !e.hb(&vc) {
-                            self.mbar_race(e, me, off);
-                        }
-                    }
-                }
-                self.rec(
-                    Resource {
-                        space: ResourceSpace::Shared,
-                        owner: cta as u32,
-                        start: off as u64,
-                        end: off as u64 + 8,
-                    },
-                    true,
-                );
-                self.rec(
-                    Resource {
-                        space: ResourceSpace::MbarPhase,
-                        owner: cta as u32,
-                        start: off as u64,
-                        end: off as u64 + 8,
-                    },
-                    true,
-                );
-                self.rec_phase(cta, off, None, true);
-                self.rec_sync(
-                    Resource {
-                        space: ResourceSpace::MbarInitialization,
-                        owner: cta as u32,
-                        start: off as u64,
-                        end: off as u64 + 1,
-                    },
-                    true,
-                );
-                self.rec(
-                    Resource {
-                        space: ResourceSpace::MbarArrivalPhase,
-                        owner: cta as u32,
-                        start: (off as u64) << 20,
-                        end: ((off as u64) + 1) << 20,
-                    },
-                    true,
-                );
-                self.rec_rel(sync_key(2, cta as u64, off as u64, u64::MAX));
-                if phase == 1 {
-                    self.rec_rel(sync_key(2, cta as u64, off as u64, 0));
-                }
-                // The init counts as a release at CTA scope by the initializing thread
-                // (the phase a wait on the "previous" parity observes; S-MBAR-SCOPE).
-                let ini = MbRel {
-                    cta,
-                    scope: Scope::Cta,
-                    rel: vc.clone(),
-                    rel_scope: Scope::Cta,
-                    cover: Cover::All,
-                    asyncx: false,
-                };
-                let done = if phase == 1 {
-                    [vec![ini], vec![]]
-                } else {
-                    [vec![], vec![ini]]
-                };
-                self.mbars.insert(
-                    (cta, off),
-                    Mbar {
-                        expected: n,
-                        pending: n,
-                        tx: 0,
-                        phase,
-                        cur: vec![],
-                        done,
-                        cur_land: VC::new(),
-                        done_land: [VC::new(), VC::new()],
-                        init: me,
-                        atomics: vec![],
-                    },
-                );
+                self.mbar_init(t, pc, cta, off, n, phase);
                 if self.wlog.is_on() {
+                    let vc = self.threads[t].vc.clone();
                     crate::wellsync::mbar_write(self, t as u32, &vc, pc, cta, off, 8, true);
                 }
                 self.tick(t);
@@ -13841,6 +15445,7 @@ impl Machine {
                         vc,
                         vis,
                         rels,
+                        vec![],
                     );
                     self.tick(t);
                     return Ok(Flow::Next);
@@ -13855,7 +15460,12 @@ impl Machine {
                     false,
                 );
                 self.mbar_atomic(t as u32, &vc, &vis, pc, cta, off)?;
-                self.rec_late(cta, off, &vc);
+                let d = if *complete { -txv } else { txv };
+                self.rec_count(cta, off, arrivals, d);
+                if txv != 0 {
+                    self.rec_tx(cta, off, d, arrivals > 0);
+                }
+                self.rec_late(cta, off, t as u32, &vc);
                 let delta = if *complete {
                     TransactionDelta::Subtract(txv)
                 } else {
@@ -13931,6 +15541,9 @@ impl Machine {
                     let vc = self.threads[t].vc.clone();
                     let ph = self.mbars.get(&(cta, off)).map(|mb| mb.phase);
                     self.rec_mbar_query(cta, off, ph);
+                    if self.peeks.contains(&pc) && !self.bar_cfg.peekwait.contains(&pc) {
+                        self.rec_peek_counts(cta, off, ph);
+                    }
                     // Acquire the phase whose completion this poll observed (u64::MAX = init).
                     if let Some(mb) = self.mbars.get(&(cta, off)) {
                         let ph = mb.phase as i64;
@@ -13941,10 +15554,25 @@ impl Machine {
                             ph - 2
                         };
                         let k = if want < 0 { u64::MAX } else { want as u64 };
-                        self.rec_acq(sync_key(2, cta as u64, off as u64, k));
+                        // A peek run as a test (it returns false instead of blocking) was
+                        // enabled before the completion too: an observation (MISS 221).
+                        if self.peeks.contains(&pc) && !self.bar_cfg.peekwait.contains(&pc) {
+                            self.rec_obs(sync_key(2, cta as u64, off as u64, k));
+                        } else {
+                            // A phase after the first comes round again for a parity poll
+                            // (it also passes two phases earlier): parity ABA (MISS 230).
+                            let key = sync_key(2, cta as u64, off as u64, k);
+                            if k != u64::MAX && k >= 1 {
+                                self.rec_acq_aba(key);
+                            } else {
+                                self.rec_acq(key);
+                            }
+                        }
                         // ASSUME(S-REMOTE-INFLIGHT): the remote arrivals of phases <= want
                         // were delivered before this wait (`remote_obs`).
-                        if want >= 0 && !self.remote_obs.is_empty() {
+                        if want >= 0
+                            && !(self.remote_obs.is_empty() && self.remote_drained.is_empty())
+                        {
                             let s = self.mbar_seen.entry((cta, off)).or_insert(0);
                             *s = (*s).max(want as u64 + 1);
                         }
@@ -13969,6 +15597,7 @@ impl Machine {
                     if let Loc::Shared { cta, off } = self.resolve(t, Space::Shared, a, 8)? {
                         let ph = self.mbars.get(&(cta, off)).map(|mb| mb.phase);
                         self.rec_mbar_query(cta, off, ph);
+                        self.rec_peek_counts(cta, off, ph);
                     }
                     self.wp(t, *d, false);
                 }
@@ -13983,6 +15612,12 @@ impl Machine {
                     return Ok(Flow::Stay);
                 }
                 Err(e) => {
+                    // A poll of an mbarrier used before its init reads the object's word and its
+                    // (re)initialization key (`rec_mbar_query`), which the init writes; in the
+                    // sync-only footprints, and for any other error, it conflicts with
+                    // everything (`rec_fault`). Before, the synchronization reduction and DPOR
+                    // took the poll as independent of the init and ran it first only, so no
+                    // schedule initialized the mbarrier before it (MISS 279).
                     barrier_mark_wait_error(&mut self.threads[t].make_mut().wait_error, pc);
                     match e {
                         WaitQueryError::Uninitialized { cta, off }
@@ -14073,6 +15708,7 @@ impl Machine {
                     }
                 };
                 let (tm, cs) = if *dims == 0 && *src_smem {
+                    self.needs_cluster_launch(t, "cp.async.bulk.shared::cluster.shared::cta")?;
                     // UBLKCP.S.S: the source is this CTA's shared memory, `tma` 16-byte units
                     // (SASS) or bytes (PTX), as bulk_map. ASSUME(S-TMA)
                     let (mut tm, cs) = self.bulk_map_units(tma)?;
@@ -14118,6 +15754,7 @@ impl Machine {
                     vc_tick(&mut vc, actor);
                     let vis = self.threads[t].vis.clone();
                     self.push_async(AsyncOp {
+                        seq: 0,
                         sh: vec![],
                         fifo: None,
                         actor,
@@ -14471,6 +16108,23 @@ impl Machine {
     /// runs. An access after the whole target CTA exited is reported here; an access that
     /// merely *could* come after (no happens-before to any of the target's exits) is
     /// reported at terminal states (`exit_checks`).
+    /// The read of CTA `cta`'s exit key (space 4, index 1; the exit of its last thread writes
+    /// it) by an async completion whose `check_alive` of `cta` decides its outcome (a remote
+    /// tcgen05.commit's arrive, a TMA store's source, a TMA load's destination, source and
+    /// mbarrier CTA): DPOR orders the completion against that exit, as `dead_target` and
+    /// `complete_remote_op` do.
+    fn rec_exit_key(&mut self, cta: u16) {
+        self.rec(
+            Resource {
+                space: ResourceSpace::CtaExit,
+                owner: cta as u32,
+                start: 1,
+                end: 2,
+            },
+            false,
+        );
+    }
+
     fn check_alive(&self, target: u16, actor: u32) -> Result<(), String> {
         if self
             .cta_threads(target)
@@ -14486,13 +16140,25 @@ impl Machine {
 
     /// Is the CTA named by shared::cluster address `a` gone (all its threads exited)? Then the
     /// access is reported and dropped: it cannot affect the live CTAs, and stopping the
-    /// issuer would only add consequential deadlocks.
+    /// issuer would only add consequential deadlocks. The check reads the target's exit key
+    /// (space 4, index 1), which its last thread's exit writes: issuing to a CTA and that
+    /// CTA's exit do not commute (MISS 152: without the read, DPOR never explored the issue
+    /// before the exit, fixtures/e_stasync SA2).
     fn dead_target(&mut self, t: usize, a: u64, pc: u32) -> Result<bool, String> {
         let me = self.threads[t].cta;
         let target = self.rank_cta(me, a)?;
         if target == me {
             return Ok(false);
         }
+        self.rec(
+            Resource {
+                space: ResourceSpace::CtaExit,
+                owner: target as u32,
+                start: 1,
+                end: 2,
+            },
+            false,
+        );
         match self.check_alive(target, t as u32) {
             Ok(()) => Ok(false),
             Err(e) => {
@@ -14500,6 +16166,268 @@ impl Machine {
                 self.report("violation", format!("cluster-life:{pc}"), msg);
                 Ok(true)
             }
+        }
+    }
+
+    /// (Re-)initialize the mbarrier at (cta, off) with `n` arrivals and initial phase parity
+    /// `phase` by thread `t` at `pc` (`mbarrier.init`, `SYNCS.EXCH.64`, or an `STS.64` of the
+    /// state word over a live object, `store_over_mbar`). An init not ordered after the old
+    /// object's init and atomics races with them. The caller ticks the thread.
+    fn mbar_init(&mut self, t: usize, pc: u32, cta: u16, off: u32, n: u32, phase: u32) {
+        let vc = self.threads[t].vc.clone();
+        let me = Epoch {
+            actor: t as u32,
+            clock: vc_get(&vc, t as u32),
+            pc,
+            strong: 0,
+            sv: false,
+            view: 0,
+        };
+        if let Some(old) = self.mbars.get(&(cta, off)).cloned() {
+            for e in std::iter::once(old.init).chain(old.atomics.iter().copied()) {
+                if e.actor != t as u32 && !e.hb(&vc) {
+                    self.mbar_race(e, me, off);
+                }
+            }
+        } else {
+            // ASSUME(S-MBAR-MEM), MISS 241: no live object. An inval of an earlier object not
+            // ordered before this init races with it (in the other order the inval ends this
+            // object). A plain store over the bytes not ordered before it could have landed
+            // after it, on the live object: on SASS one of a state word is an init (a race of
+            // two inits), any other a store over a live mbarrier. The order the run took must
+            // not decide: the explorer runs plain stores eagerly (E-DRF) and the certificate
+            // runs one order.
+            // Shared-memory-only happens-before counts (S-MBAR-SCOPE), as for the store in
+            // `store_over_mbar` (MISS 241 follow-up: the inval ordered before this init only
+            // through it was a false race, fixtures/e_mbar_init_restrict).
+            let svc = self.sh_vc(t as u32, &vc, cta).unwrap_or_else(|| vc.clone());
+            if let Some(d) = self.mbar_dead.get(&(cta, off)).copied() {
+                if d.actor != t as u32 && !d.hb(&svc) {
+                    self.mbar_race(d, me, off);
+                }
+            }
+            // Every write the shadow keeps, not only the last: a strong write after a plain
+            // one keeps the plain one in `hw` (MISS 241 follow-up, fixtures/e_mbar_hidden_write).
+            let w = (0..8u32).find_map(|i| {
+                let sh = self.smem[cta as usize].sh.get((off + i) as usize);
+                sh.w.into_iter()
+                    .chain(sh.hw.iter().flat_map(|h| h.iter().copied()))
+                    .find(|e| e.actor != t as u32 && !e.hb(&svc))
+            });
+            if let Some(e) = w {
+                if self.k.front == Front::Sass && self.mbar_decode_mem(cta, off).is_some() {
+                    self.mbar_race(e, me, off);
+                } else {
+                    self.mbar_store_unordered(e, me, off, "init");
+                }
+            }
+        }
+        self.mbar_dead.remove(&(cta, off));
+        self.rec(
+            Resource {
+                space: ResourceSpace::Shared,
+                owner: cta as u32,
+                start: off as u64,
+                end: off as u64 + 8,
+            },
+            true,
+        );
+        self.rec(
+            Resource {
+                space: ResourceSpace::MbarPhase,
+                owner: cta as u32,
+                start: off as u64,
+                end: off as u64 + 8,
+            },
+            true,
+        );
+        self.rec_phase(cta, off, None, true);
+        self.rec_sync(
+            Resource {
+                space: ResourceSpace::MbarInitialization,
+                owner: cta as u32,
+                start: off as u64,
+                end: off as u64 + 1,
+            },
+            true,
+        );
+        self.rec(
+            Resource {
+                space: ResourceSpace::MbarArrivalPhase,
+                owner: cta as u32,
+                start: (off as u64) << 20,
+                end: ((off as u64) + 1) << 20,
+            },
+            true,
+        );
+        self.rec_rel(sync_key(2, cta as u64, off as u64, u64::MAX));
+        if phase == 1 {
+            self.rec_rel(sync_key(2, cta as u64, off as u64, 0));
+        }
+        // The init counts as a release at CTA scope by the initializing thread
+        // (the phase a wait on the "previous" parity observes; S-MBAR-SCOPE).
+        let ini = MbRel {
+            cta,
+            scope: Scope::Cta,
+            rel: vc.clone(),
+            rel_scope: Scope::Cta,
+            cover: Cover::All,
+            asyncx: false,
+        };
+        let done = if phase == 1 {
+            [vec![ini], vec![]]
+        } else {
+            [vec![], vec![ini]]
+        };
+        self.mbar_reset_seen(cta, off);
+        self.mbars.insert(
+            (cta, off),
+            Mbar {
+                expected: n,
+                pending: n,
+                tx: 0,
+                phase,
+                cur: vec![],
+                done,
+                cur_land: VC::new(),
+                done_land: [VC::new(), VC::new()],
+                init: me,
+                atomics: vec![],
+            },
+        );
+    }
+
+    /// ASSUME(S-MBAR-MEM): a plain store by thread `t` at `pc` of `n` bytes at shared offset
+    /// `off` of CTA `cta`, after it wrote memory, against the live mbarriers whose 8 bytes it
+    /// overlaps (MISS 218).
+    /// - SASS: an aligned 8-byte store of a state word over the whole object is the lowered
+    ///   `mbarrier.init` (ptxas: a per-thread-address init is `STS.64` of the word, plus
+    ///   `SYNCS.CCTL.IV` only when the PTX invalidated first), so it re-initializes the object
+    ///   as `MbarInit` does: a race with the old init and atomics it is not ordered after, the
+    ///   old waits forgotten (`mbar_reset_seen`), a fresh count and phase. Before, the old object
+    ///   stayed (`mbar_materialize` decodes a word only where none is live), and the SASS front
+    ///   missed the race / deadlock the PTX front reports (fixtures/e_mbar_sts_live good, CNT2).
+    ///   The other lanes of the same instruction (one warp, lockstep) writing the same word to
+    ///   an object nothing has used since are that one init: re-initializing per lane made each
+    ///   lane's init race with the previous lane's (fixtures/e_mbar_sts_live WARP).
+    /// - Any other store over a live mbarrier (PTX: every one; SASS: one that is not a state
+    ///   word over the whole object) is a contract violation: PTX requires `mbarrier.inval`
+    ///   before the memory of an mbarrier object is reused (from the ISA text as remembered, not
+    ///   checked against it offline). The object stays as it was; GB300's behavior for such a
+    ///   store is not measured.
+    fn store_over_mbar(&mut self, t: usize, pc: u32, cta: u16, off: u32, n: u32) {
+        if self.mbars.is_empty() && self.mbar_dead.is_empty() {
+            return;
+        }
+        let end = off.saturating_add(n);
+        // MISS 241: an invalidated object whose inval this store is not ordered after: in the
+        // other order the store reached the live object. On SASS an aligned 8-byte state word
+        // over the whole object is an init racing with the inval (`MbarInit` against the old
+        // atomics in that order); any other store is a store over a live mbarrier.
+        let dead: Vec<(u32, Epoch)> = self
+            .mbar_dead
+            .range((cta, off.saturating_sub(7))..(cta, end))
+            .map(|(&(_, o), &d)| (o, d))
+            .filter(|&(o, d)| o.saturating_add(8) > off && d.actor != t as u32)
+            .collect();
+        if !dead.is_empty() {
+            let vc = self.threads[t].vc.clone();
+            let svc = self.sh_vc(t as u32, &vc, cta).unwrap_or(vc);
+            let me = Epoch {
+                actor: t as u32,
+                clock: vc_get(&svc, t as u32),
+                pc,
+                strong: 0,
+                sv: false,
+                view: 0,
+            };
+            for (o, d) in dead {
+                if d.hb(&svc) || self.mbars.contains_key(&(cta, o)) {
+                    continue;
+                }
+                if self.k.front == Front::Sass
+                    && o == off
+                    && n == 8
+                    && self.mbar_decode_mem(cta, o).is_some()
+                {
+                    self.mbar_race(d, me, o);
+                } else {
+                    self.mbar_store_unordered(me, d, o, "inval");
+                }
+            }
+        }
+        let hits: Vec<u32> = self
+            .mbars
+            .range((cta, off.saturating_sub(7))..(cta, end))
+            .map(|(&(_, o), _)| o)
+            .filter(|&o| o.saturating_add(8) > off)
+            .collect();
+        for o in hits {
+            if self.k.front == Front::Sass && o == off && n == 8 {
+                if let Some(m) = self.mbar_decode_mem(cta, o) {
+                    // SASS lanes of one STS.64 writing the same word: one init (WARP).
+                    let old = &self.mbars[&(cta, o)];
+                    let same = old.atomics.is_empty()
+                        && old.init.pc == pc
+                        && old.init.actor != t as u32
+                        && (old.init.actor as usize) < self.threads.len()
+                        && self.threads[old.init.actor as usize].warp == self.threads[t].warp
+                        && (old.expected, old.pending, old.tx, old.phase)
+                            == (m.expected, m.expected, 0, m.phase);
+                    if !same {
+                        self.mbar_init(t, pc, cta, o, m.expected, m.phase);
+                        self.tick(t);
+                    }
+                    continue;
+                }
+            }
+            let init = self.mbars[&(cta, o)].init;
+            let what = if self.k.front == Front::Sass {
+                "a store that is not the object's state word (the lowered init) over a live mbarrier"
+            } else {
+                "a plain store over a live mbarrier"
+            };
+            let msg = format!(
+                "{what}: {} at {} writes bytes of the mbarrier object at smem {o:#x} (initialized by {} at {}) with no mbarrier.inval in between; PTX requires the object to be invalidated before its memory is reused (contract, S-MBAR-MEM)",
+                self.actor_name(t as u32),
+                self.k.describe(pc as usize),
+                self.actor_name(init.actor),
+                self.k.describe(init.pc as usize),
+            );
+            self.report_pcs("violation", format!("mbar-store:{pc}"), msg, vec![init.pc, pc]);
+        }
+    }
+
+    /// ASSUME(S-MBAR-MEM), MISS 241: plain store `s` over the mbarrier at smem `off` and the
+    /// object's `what` ("init" / "inval") `e` are not ordered, so in one order the store hits
+    /// the live object: the contract violation `store_over_mbar` reports for a live object, in
+    /// whichever order the run took.
+    fn mbar_store_unordered(&mut self, s: Epoch, e: Epoch, off: u32, what: &str) {
+        let msg = format!(
+            "a plain store over an mbarrier not ordered with its {what}: {} at {} writes bytes of the mbarrier object at smem {off:#x}, and the {what} by {} at {} is not ordered with it, so the store can land on the live object; PTX requires the object to be invalidated before its memory is reused (contract, S-MBAR-MEM)",
+            self.actor_name(s.actor),
+            self.k.describe(s.pc as usize),
+            self.actor_name(e.actor),
+            self.k.describe(e.pc as usize),
+        );
+        self.report_pcs("violation", format!("mbar-store:{}", s.pc), msg, vec![e.pc, s.pc]);
+    }
+
+    /// ASSUME(S-REMOTE-INFLIGHT): an mbarrier's phase numbering restarts when it is
+    /// invalidated or (re-)initialized (`mbarrier.inval` / `SYNCS.CCTL.IV`, `mbarrier.init` /
+    /// `SYNCS.EXCH.64`, or an `STS.64` of a state word: over a live object it re-initializes it,
+    /// `store_over_mbar`; after an inval the object is materialized fresh). The waits recorded on the old object (`mbar_seen`) cover the remote
+    /// deliveries that landed in the phases they observed, which are discharged here, and
+    /// nothing of the new object: kept, a wait on the old phase k counted for a delivery into
+    /// the new object's phase k, and the end check called it waited for (MISS 203). Deliveries
+    /// into the old object that no wait covered stay for the end check under their old phase;
+    /// one that is not ordered before the re-initialization is also a race with it
+    /// (`MbarInit` against the old object's atomics; C-PHASE: `mbarrier.inval` after every use).
+    fn mbar_reset_seen(&mut self, cta: u16, off: u32) {
+        if let Some(s) = self.mbar_seen.remove(&(cta, off)) {
+            let old = |e: &(u16, u32, u64, u32, u32, u32)| (e.0, e.1) == (cta, off) && s > e.2;
+            self.remote_obs.retain(|e| !old(e));
+            self.remote_drained.retain(|e| !old(e));
         }
     }
 
@@ -14594,6 +16522,11 @@ impl Machine {
             th.release(sync_key(4, cid as u64, g as u64, 0));
         }
         if !waiters.is_empty() {
+            // E-WARP-ORDER (PTX): the waiters run as one split per warp from here (the model's
+            // gathering only; the hardware label stays off, `note_gathered`).
+            if self.k.front == Front::Ptx {
+                self.gathered_by_release(waiters.iter().copied(), false);
+            }
             self.cluster_forget(cta, cid);
         }
     }
@@ -14822,6 +16755,13 @@ impl Machine {
             let ts: Vec<usize> = arrived.iter().map(|&a| a as usize).collect();
             crate::wellsync::released(self, &ts); // wellsync.rs
         }
+        // E-WARP-ORDER (PTX): the lanes of each warp this release gathers at one pc
+        // (`note_gathered`; on hardware only for an aligned barrier).
+        let aligned = arrived.first().is_some_and(|&a| {
+            self.k.code[self.threads[a as usize].pc as usize]
+                .op
+                .is_aligned_bar()
+        });
         for &a in &arrived {
             let th = self.threads[a as usize].make_mut();
             th.vc = j.clone();
@@ -14833,6 +16773,21 @@ impl Machine {
             let (w, pc) = (th.warp, th.pc);
             // Publishing a woken pc does not evaluate its guard or operands.
             self.rec_pc_state(w, pc, true, false);
+        }
+        if self.k.front == Front::Ptx {
+            self.gathered_by_release(arrived.iter().map(|&a| a as usize), aligned);
+        }
+    }
+
+    /// E-WARP-ORDER (PTX): after a barrier released `released`, the released lanes of each
+    /// warp (`note_gathered`).
+    fn gathered_by_release(&mut self, released: impl Iterator<Item = usize>, hw: bool) {
+        let mut by_warp: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for t in released {
+            by_warp.entry(self.threads[t].warp).or_default().push(t);
+        }
+        for (w, lanes) in by_warp {
+            self.note_gathered(w, &lanes, hw);
         }
     }
 
@@ -14853,6 +16808,25 @@ impl Machine {
         self.report("race", sig, msg);
     }
 
+    /// Sync-only footprint of an mbarrier access, initialized or not: a read of the object's
+    /// (re)initialization key (space 15), which init and inval write. The landings of a bulk
+    /// copy, a tcgen05.commit, a cp.async.mbarrier.arrive and a CLC response skip `mbar_atomic`
+    /// before the init, and read it here: without it the synchronization reduction took the
+    /// landing as independent of the init and never ran the init first (MISS 279, RDP2 finding
+    /// J, probes/uninit_mbar_landing TMA: default [deadlock, violation] against [deadlock, race,
+    /// violation]).
+    fn rec_mbar_init_key(&mut self, cta: u16, off: u32) {
+        self.rec_sync(
+            Resource {
+                space: ResourceSpace::MbarInitialization,
+                owner: cta as u32,
+                start: off as u64,
+                end: off as u64 + 1,
+            },
+            false,
+        );
+    }
+
     /// Atomic mbarrier access: must be ordered after the init (a plain write).
     fn mbar_atomic(
         &mut self,
@@ -14863,6 +16837,20 @@ impl Machine {
         cta: u16,
         off: u32,
     ) -> Result<(), String> {
+        // Every operation on the object reads its (re)initialization key, which init and inval
+        // write: the synchronization reduction (sync-only footprints, which drop space 0) took
+        // an inval and an update that reads neither a phase key nor the pending count it
+        // changes (expect_tx, SASS `SYNCS.ARRIVE.TRANS64.RED.A0TR`) as independent, and ran
+        // the update first only (MISS 241 follow-up, fixtures/e_mbar_inval_vis EXPTX).
+        self.rec_sync(
+            Resource {
+                space: ResourceSpace::MbarInitialization,
+                owner: cta as u32,
+                start: off as u64,
+                end: off as u64 + 1,
+            },
+            false,
+        );
         self.mbar_materialize(cta, off);
         let mb = self
             .mbars
@@ -14944,6 +16932,87 @@ impl Machine {
         }
     }
 
+    /// Footprint of a non-blocking test of mbarrier (cta, off) at phase `ph` (a try_wait /
+    /// test_wait whose false result the kernel uses, `Machine::peeks`), passed or failed: it
+    /// writes the count keys (space 16) of phases ph-2 to ph, which every arrival and
+    /// transaction decrement of those phases reads (`rec_count`, `rec_tx`). The test's result
+    /// depends on when the phase it reads completes, and an arrival that does not complete the
+    /// phase in one order does in another: with two pending, arrivals A and B (B's thread then
+    /// tests), the order A B lets B complete the phase before the test (true), and B test A
+    /// lets A complete it after (false). The phase key the test reads (space 12) is written by
+    /// the completing arrival only, so A and the test did not conflict where A came first, and
+    /// DPOR never ran the test before A (MISS 275, probes/dpor_peek_arrival: [clean] against
+    /// [nondeterministic]). A parity test also passes two phases after the one it tests, so the
+    /// keys of the two earlier phases are written too. The key of phase ph-2 is conservative and
+    /// untested: RDP2 found ph-1 and ph enough on all 20 of its peek_dist cases (it costs no
+    /// state on fixtures/r3_cute_mxf4 or nvf4 SASS either). A blocking wait needs none: it is
+    /// enabled only after the completion, which every reordering of the phase's arrivals keeps
+    /// before it. Space 16 is in the sync-only footprints, so the keys order the stateful
+    /// explorer's synchronization reduction too.
+    fn rec_peek_counts(&mut self, cta: u16, off: u32, ph: Option<u32>) {
+        let Some(ph) = ph else {
+            return;
+        };
+        for p in ph.saturating_sub(2)..=ph {
+            let key = ((off as u64) << 20) | (p as u64 & 0xf_ffff);
+            self.rec_mbar_count(cta, key, key + 1, true);
+        }
+    }
+
+    /// Footprint space 16 (`SPACE_MBAR_COUNT`), the pending count of the current phase: an
+    /// arrival transition into phase k reads key (off, k); one that makes several arrivals at
+    /// once (a count, or a remote operation carrying several lanes' arrivals) and takes the
+    /// phase's last pending arrivals (it completes the phase or overshoots) writes it. Single
+    /// arrivals into a phase commute (`mbar_publish_transition`), but a counted one does not
+    /// commute with them: with two pending, a count-2 arrival completes the phase alone, after
+    /// a count-1 arrival it overshoots (a fault), and the phase that the other arrival lands in
+    /// differs. An overshoot is also an over-arrival (`rec_late`).
+    fn rec_count(&mut self, cta: u16, off: u32, arrivals: u32, tx: i64) {
+        let Some(mb) = self.mbars.get(&(cta, off)) else {
+            return;
+        };
+        let key = barrier_phase_key(off, mb.phase);
+        let write = arrivals > 1 && arrivals >= mb.pending;
+        let over = arrivals > mb.pending;
+        let last = arrivals > 0 && arrivals >= mb.pending;
+        self.rec_mbar_count(cta, key, key + 1, write);
+        if last {
+            // The phase's last arrival writes its own tx increment's level among the phase's
+            // last-arrival keys (`rec_tx`, MISS 231).
+            let (lo, hi) = mbar_last_keys(key, tx.max(0) as u64, tx.max(0) as u64 + 1);
+            self.rec_mbar_count(cta, lo, hi, true);
+        }
+        if over {
+            self.rec(
+                Resource {
+                    space: ResourceSpace::MbarOverArrival,
+                    owner: cta as u32,
+                    start: key,
+                    end: key + 1,
+                },
+                true,
+            );
+            self.note_arv_over();
+        }
+    }
+
+    /// One access to footprint space 16 (`SPACE_MBAR_COUNT`, `ResourceSpace::MbarPendingCount`):
+    /// count keys, last-arrival keys (`MBAR_LAST_ARRIVAL`) and under keys (`MBAR_TX_UNDER`) of
+    /// `rec_count`, `rec_tx` and `rec_peek_counts`.
+    fn rec_mbar_count(&mut self, cta: u16, lo: u64, hi: u64, write: bool) {
+        self.rec(
+            Resource {
+                space: ResourceSpace::MbarPendingCount,
+                owner: cta as u32,
+                start: lo,
+                end: hi,
+            },
+            write,
+        );
+    }
+
+    /// Footprint space 25 (`SPACE_MBAR_OVER`): an arrival of more than the pending arrivals at
+    /// once writes the key of its phase (also done by `rec_count` where that runs).
     fn rec_overarrival(&mut self, cta: u16, off: u32, arrivals: u32) {
         let Some(mb) = self.mbars.get(&(cta, off)) else {
             return;
@@ -14963,6 +17032,88 @@ impl Machine {
         }
     }
 
+    /// Footprint of a transaction-count change `delta` of mbarrier (cta, off), before it
+    /// (`arrival`: the same update is also an arrival). The phase completes at the update after
+    /// which no arrival is pending and tx is 0, so two updates fail to commute where one order
+    /// completes the phase before the other update (which then lands in the next phase):
+    /// - a pure increment (expect_tx without an arrival, local or a landing remote one;
+    ///   cp.async.mbarrier.arrive's raise of the pending count) and the phase's last arrival:
+    ///   with tx 0, that arrival first completes the phase, and after it the increment no longer
+    ///   commutes with the decrements (next item), so the two stay dependent whatever the
+    ///   levels. The increment reads every last-arrival key of the phase (`mbar_last_keys`,
+    ///   `MBAR_LAST_ARRIVAL` in space 16, `SPACE_MBAR_COUNT`); the last arrival writes the key
+    ///   of its own tx increment (`rec_count`);
+    /// - a pure increment and a decrement (complete_tx of a thread, a TMA / bulk copy, st.async,
+    ///   a CLC response, the transaction unit of cp.async.mbarrier.arrive) once no arrival is
+    ///   pending: the decrement first can complete the phase. The increment then writes the
+    ///   phase's count key, which every decrement reads, as every arrival does (`rec_count`);
+    /// - a decrement that leaves a deficit d (tx -d, below 0) and the last arrival with tx
+    ///   increment i < d: the arrival first can complete the phase (tx was -i before it), and
+    ///   after the arrival the decrement would still take tx below 0 with no arrival pending,
+    ///   where it no longer commutes with the other decrements (last item). The decrement reads
+    ///   the last-arrival keys of the increments below d. With i >= d the two commute and stay
+    ///   so: the arrival alone does not complete the phase, and after it tx stays at 0 or above
+    ///   (a pipeline's copy landing before its producer's arrive.expect_tx covers it:
+    ///   fixtures/c_smm_nvf4 SASS needed 164508 states, more than 3 million with one
+    ///   last-arrival key for every level). A decrement that leaves tx at 0 or above commutes
+    ///   with the last arrival: whichever comes second completes the phase, if either. The
+    ///   deficit depends on the tx changes made before the decrement, which commute with it
+    ///   while an arrival is pending, so the rule holds only where the explored orders include
+    ///   each order of those changes that changes d: a decrement that takes tx below 0 with an
+    ///   arrival pending writes the phase's under key (`MBAR_TX_UNDER`), which every other tx
+    ///   change made with an arrival pending (an increment, a decrement, not part of an
+    ///   arrival) reads. MISS 273: with count 1 and the last arrival's increment 8, decrements
+    ///   of 4 and 8 leave d = 4 in the order 4, 8 (the 4 commutes with the arrival) and d = 12
+    ///   in the order 8, 4 (it does not), and DPOR ran only the first (probes/dpor_tx_level;
+    ///   probes/tx_level_po, the copy-before-arrive order of one warp, the default explorer
+    ///   too; probes/txfuzz). fixtures/c_smm_nvf4 SASS stays at 164508 states;
+    /// - a decrement that takes tx below 0 once no arrival is pending and another decrement:
+    ///   the other first can take tx to 0 and complete the phase (tx 4, decrements of 8 and 4:
+    ///   the 4 first completes it early, the 8 first leaves it incomplete for good). That
+    ///   decrement writes the count key, which every decrement reads (probes/dpor_tx_overdec,
+    ///   sync_tx_overdec_tma).
+    ///
+    /// While an arrival is pending, increments and decrements commute (neither order can complete
+    /// the phase before both), so the 64 increments and transaction units of a CTA's
+    /// cp.async.mbarrier.arrive gain no dependency (fixtures/s_ptx_cute_ops: writing the count key
+    /// on every increment reversed each pair: past 300 s, against 268 states). Otherwise
+    /// decrements commute with each other and with arrivals, and an arrival that carries an
+    /// increment commutes with both (the phase cannot complete before its own arrival), so a
+    /// pipeline whose producer's arrive.expect_tx precedes its copies gains no dependency. Space 16
+    /// is in the synchronization-only footprints too: these keys order the stateful explorer's
+    /// synchronization reduction (explore.rs `sync_ample`) as well as DPOR. MISS 231: tx changes
+    /// recorded nothing, and DPOR never ran a decrement before another producer's expect_tx
+    /// (probes/dpor_tx_commute*).
+    fn rec_tx(&mut self, cta: u16, off: u32, delta: i64, arrival: bool) {
+        let Some(mb) = self.mbars.get(&(cta, off)) else {
+            return;
+        };
+        let key = ((off as u64) << 20) | (mb.phase as u64 & 0xf_ffff);
+        // Saturating: an out-of-range tx change is a counter fault reported by the transition
+        // (overflow-checks are on); its keys are still recorded here.
+        let after = mb.tx.saturating_add(delta);
+        let under = delta < 0 && after < 0;
+        let deficit = 0i64.saturating_sub(after).max(0) as u64;
+        let pending = mb.pending;
+        // A change made with an arrival pending and not part of one: the under key orders it
+        // against the below-zero decrements (MISS 273).
+        if pending > 0 && !arrival && delta != 0 {
+            let u = key | MBAR_TX_UNDER;
+            self.rec_mbar_count(cta, u, u + 1, under);
+        }
+        if delta > 0 && !arrival && pending > 0 {
+            let (lo, hi) = mbar_last_keys(key, 0, u64::MAX);
+            self.rec_mbar_count(cta, lo, hi, false);
+            return;
+        }
+        let write = (delta > 0 && !arrival) || (under && pending == 0);
+        self.rec_mbar_count(cta, key, key + 1, write);
+        if under && pending > 0 {
+            let (lo, hi) = mbar_last_keys(key, 0, deficit);
+            self.rec_mbar_count(cta, lo, hi, false);
+        }
+    }
+
     /// Arrivals and transaction changes can change which releases share a phase. Even
     /// count-zero transaction operations can complete it or prevent its completion.
     fn rec_phase_membership(&mut self, cta: u16, off: u32, phase: u32, write: bool) {
@@ -14979,7 +17130,7 @@ impl Machine {
     }
 
     /// Footprint space 25 (`SPACE_MBAR_OVER`), over-arrivals: an update of mbarrier (cta, off)
-    /// (an arrival or a complete_tx) by an actor with clock `vc`, called before it changes the
+    /// (an arrival or a complete_tx) by `actor` with clock `vc`, called before it changes the
     /// mbarrier, reads the key of the phase k it lands in. If k follows a completion that the
     /// actor's clock does not cover (late: some update of phase k - 1 is not ordered before
     /// it), the update could have landed in phase k - 1 instead, before one of that phase's
@@ -14988,14 +17139,22 @@ impl Machine {
     /// every update is ordered after the completion before its phase and no key is written; an
     /// over-arrival (more arrivals than expected before a completion that orders them, from
     /// single arrivals, the lanes of one warp, or a count, which writes its own key in
-    /// `rec_overarrival`) does write one. The reductions take any write here as an over-arrival
-    /// (`Machine::arv_over`, dpor.rs `OVER_ARRIVAL`).
-    fn rec_late(&mut self, cta: u16, off: u32, vc: &VC) {
+    /// `rec_overarrival`, and in `rec_count`) does write one. The reductions take any write
+    /// here as an over-arrival (`Machine::arv_over`, dpor.rs `OVER_ARRIVAL`). Ordered here is
+    /// the order of events: the clock with every restricted happens-before the actor holds
+    /// (`order_vc_of`), the `Cover::Order` entries included. Since MISS 118 and 119 the clock
+    /// of the issuer of a cp.async.mbarrier.arrive or bulk copy reaches the waiters as an
+    /// order of events only, while the landed clocks keep the issuer's epoch: with the memory
+    /// clock alone every round of a producer with several issuing lanes looked late.
+    fn rec_late(&mut self, cta: u16, off: u32, actor: u32, vc: &VC) {
         let Some(mb) = self.mbars.get(&(cta, off)) else {
             return;
         };
         let k = mb.phase;
-        let late = k > 0 && !vc_covers(vc, &mb.done_land[((k - 1) % 2) as usize]);
+        let late = k > 0 && {
+            let prev = &mb.done_land[((k - 1) % 2) as usize];
+            !vc_covers(vc, prev) && !vc_covers(&self.order_vc_of(actor, vc), prev)
+        };
         let key = barrier_phase_key(off, k);
         self.rec(
             Resource {
@@ -15156,7 +17315,7 @@ impl Machine {
         }
         // S-VA-ALIAS: set by the units that access global memory (`access_view`).
         self.async_view = None;
-        let op = self.pending.remove(i);
+        let op = self.take_pending(i);
         // S-MBAR-SCOPE: its shared-memory accesses see its issuer's shared-memory-only
         // happens-before at issue (restored when the completion returns).
         let saved = std::mem::replace(&mut self.cur_sh, op.sh.clone());
@@ -15282,7 +17441,8 @@ impl Machine {
                 mbar,
                 writes,
                 tx,
-            } => self.complete_cp_arrive(&op, cta, mbar, writes, tx),
+                prior,
+            } => self.complete_cp_arrive(&op, cta, mbar, writes, tx, &prior),
             AsyncKind::Commit { cta, mbar } => {
                 self.rec(
                     Resource {
@@ -15295,15 +17455,18 @@ impl Machine {
                 );
                 self.mbar_materialize(cta, mbar);
                 if cta != self.threads[op.issuer as usize].cta {
+                    self.rec_exit_key(cta);
                     if let Err(e) = self.check_alive(cta, op.actor) {
                         self.report("violation", format!("cluster-life:{}", op.pc), e);
                         return;
                     }
                 }
+                self.rec_mbar_init_key(cta, mbar);
                 if self.mbars.contains_key(&(cta, mbar)) {
                     let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar);
                 }
-                self.rec_late(cta, mbar, &op.vc);
+                self.rec_count(cta, mbar, 1, 0);
+                self.rec_late(cta, mbar, op.actor, &op.vc);
                 if !self.mbars.contains_key(&(cta, mbar)) {
                     let msg = format!(
                         "tcgen05.commit at {} arrives on an uninitialized mbarrier at {mbar:#x}",
@@ -15351,8 +17514,39 @@ impl Machine {
         vc: VC,
         vis: VC,
         rels: Vec<MbRel>,
+        snaps: Vec<crate::num::ReadSnapshot>,
     ) {
         let w = self.threads[t].warp;
+        // DPOR (dpor.rs): issuing into the pipe writes its issue key (`SPACE_REMOTE_PIPE` id 2,
+        // keyed on the pipe, whichever op the word joins), so two splits' issues into one pipe
+        // are dependent and DPOR schedules both issue orders, which decide what a drain lands
+        // (the pipe prefix up to the drainer's op; MISS 222, probes/dpor_pipe_issue_order,
+        // probes/dpor_pipe_issue_order_sass). Landings write id 0, not this key: an issue
+        // behind the pipe's ops commutes with their landing. Not in sync-only footprints: two
+        // lanes' issues are steps of one warp, one entity of the synchronization reduction.
+        let k = remote_pipe(w, cta, mbar);
+        self.rec_full_only(
+            Resource {
+                space: ResourceSpace::RemotePipe,
+                owner: 2,
+                start: k,
+                end: k.saturating_add(1),
+            },
+            true,
+        );
+        // Each lane's part keeps its own actor, clock and what it releases (`RemoteLane`).
+        let lane = RemoteLane {
+            thread: t as u32,
+            actor,
+            tx,
+            n,
+            words: store,
+            rels,
+            vc: vc.clone(),
+            vis: vis.clone(),
+            sh: self.threads[t].vc_sh.clone(),
+            snaps,
+        };
         let threads = &self.threads;
         if let Some(o) = self.pending.iter_mut().find(|o| {
             o.pc == pc
@@ -15360,29 +17554,8 @@ impl Machine {
                 && matches!(o.kind, AsyncKind::Remote { cta: c, mbar: b, fresh: true, .. }
                     if c == cta && b == mbar)
         }) {
-            let me = vc_single(t as u32, vc_get(&vc, t as u32));
-            if let AsyncKind::Remote {
-                tx: ot,
-                n: on,
-                store: os,
-                rels: or,
-                land: ol,
-                ..
-            } = &mut o.kind
-            {
-                *ot += tx;
-                *on += n;
-                os.extend(store);
-                vc_join(ol, &me);
-                for r in rels {
-                    match or.iter_mut().find(|x| {
-                        (x.cta, x.scope, x.rel_scope, x.cover, x.asyncx)
-                            == (r.cta, r.scope, r.rel_scope, r.cover, r.asyncx)
-                    }) {
-                        Some(x) => vc_join(&mut x.rel, &r.rel),
-                        None => or.push(r),
-                    }
-                }
+            if let AsyncKind::Remote { lanes, .. } = &mut o.kind {
+                lanes.push(lane);
             }
             vc_join(&mut o.vc, &vc);
             vc_join(&mut o.vis, &vis);
@@ -15390,9 +17563,10 @@ impl Machine {
         }
         // ASSUME(S-REMOTE-INFLIGHT): one warp's remote operations on one mbarrier land in
         // issue order (PTX coherence: program-ordered morally strong RMWs on one location).
-        let land = vc_single(t as u32, vc_get(&vc, t as u32));
+        let sh = lane.sh.clone();
         self.push_async(AsyncOp {
-            sh: vec![],
+            seq: 0,
+            sh,
             fifo: Some(remote_pipe(w, cta, mbar)),
             actor,
             vc,
@@ -15401,15 +17575,54 @@ impl Machine {
             kind: AsyncKind::Remote {
                 cta,
                 mbar,
-                tx,
-                n,
-                store,
                 fresh: true,
-                rels,
-                land,
+                lanes: vec![lane],
             },
             vis,
         });
+    }
+
+    /// ASSUME(S-REMOTE-INFLIGHT): take lane `t`'s part out of the coalesced remote operation
+    /// `pending[k]` (which has other lanes too) for `t`'s drain to land; the other lanes' parts
+    /// stay pending in its place (same pipe position), under their first lane.
+    fn split_remote_lane(&mut self, k: usize, t: u32) -> AsyncOp {
+        let o = &mut self.pending[k];
+        let AsyncKind::Remote {
+            cta,
+            mbar,
+            fresh,
+            ref mut lanes,
+        } = o.kind
+        else {
+            unreachable!()
+        };
+        let li = lanes.iter().position(|l| l.thread == t).unwrap();
+        let lane = lanes.remove(li);
+        let first = &lanes[0];
+        o.issuer = first.thread;
+        o.actor = first.actor;
+        o.sh = first.sh.clone();
+        o.vc = vc_join_all(lanes.iter().map(|l| &l.vc));
+        o.vis = vc_join_all(lanes.iter().map(|l| &l.vis));
+        let part = AsyncOp {
+            seq: o.seq,
+            sh: lane.sh.clone(),
+            fifo: o.fifo,
+            actor: lane.actor,
+            vc: lane.vc.clone(),
+            vis: lane.vis.clone(),
+            issuer: t,
+            pc: o.pc,
+            kind: AsyncKind::Remote {
+                cta,
+                mbar,
+                fresh,
+                lanes: vec![lane],
+            },
+        };
+        self.pending
+            .sort_by_key(|o| (o.actor, vc_get(&o.vc, o.actor)));
+        part
     }
 
     /// ASSUME(S-REMOTE-INFLIGHT): deliver a remote arrival / st.async (`AsyncKind::Remote`).
@@ -15417,13 +17630,16 @@ impl Machine {
     /// CTA's last thread writes: the explorer orders deliveries against the target's exit,
     /// and deliveries to one CTA stay independent of each other.
     fn complete_remote(&mut self, op: &AsyncOp, drained: bool) {
-        // DPOR (dpor.rs): landing a remote op, as its own step or drained inside a thread's
-        // step (drain_remote, deliver_fifo_before), writes one key of its pipe (space 15), so
-        // a drain and the op's own landing always conflict, and a drain of a non-head op
-        // conflicts with the landing of the head before it. A store-less arrival that does
-        // not complete its phase records only reads otherwise. Not in the stateful explorer's
-        // synchronization-only footprints.
-        if self.fp.as_ref().is_some_and(|f| !f.sync_only) {
+        // DPOR (dpor.rs) and the synchronization reduction (explore.rs `sync_ample`): landing
+        // a remote op, as its own step or drained inside a thread's step (drain_remote,
+        // deliver_fifo_before), writes one key of its pipe (`SPACE_REMOTE_PIPE`), so a drain
+        // and the op's own landing always conflict, and a drain of a non-head op conflicts
+        // with the landing of the head before it. A store-less arrival that does not complete
+        // its phase records only reads otherwise. In the sync-only footprints too (MISS 232:
+        // without the key there, the reduction took an op's landing, an action of its warp's
+        // async unit, as independent of the drain by another lane of that warp, and expanded
+        // the landing alone; probes/sync_pipe_issue_order SASS was clean).
+        if self.fp.is_some() {
             let (id, k) = match op.fifo {
                 Some(q) => (0, q),
                 None => (
@@ -15431,15 +17647,15 @@ impl Machine {
                     ((op.actor as u64) << 32) | vc_get(&op.vc, op.actor) as u64,
                 ),
             };
-            self.rec_full_only(
-                Resource {
-                    space: ResourceSpace::MbarInitialization,
-                    owner: id,
-                    start: k,
-                    end: k.saturating_add(1),
-                },
-                true,
-            );
+            // Full and sync-only footprints, outside the action trace and slices (as before
+            // the effect cores).
+            let (space, owner, start, end) = ptxv_memory_write::effects::resource_range(Resource {
+                space: ResourceSpace::RemotePipe,
+                owner: id,
+                start: k,
+                end: k.saturating_add(1),
+            });
+            self.fp_with(|f| f.add(space, owner, start, end, true));
         }
         let saved = std::mem::replace(&mut self.cur_sh, op.sh.clone());
         self.complete_remote_op(op, drained);
@@ -15450,16 +17666,32 @@ impl Machine {
         let AsyncKind::Remote {
             cta,
             mbar,
-            tx,
-            n,
-            ref store,
-            ref rels,
-            ref land,
+            ref lanes,
             ..
         } = op.kind
         else {
             unreachable!()
         };
+        // The lanes land together: their transaction bytes and arrivals add up, what they
+        // release joins per kind of release, and each lane's own clock counts as landed.
+        let tx: i64 = lanes.iter().map(|l| l.tx).sum();
+        let n: u32 = lanes.iter().map(|l| l.n).sum();
+        let mut rels: Vec<MbRel> = Vec::new();
+        let mut land = VC::new();
+        for l in lanes {
+            vc_join(&mut land, &vc_single(l.thread, vc_get(&l.vc, l.thread)));
+            for r in &l.rels {
+                match rels.iter_mut().find(|x| {
+                    (x.cta, x.scope, x.rel_scope, x.cover, x.asyncx)
+                        == (r.cta, r.scope, r.rel_scope, r.cover, r.asyncx)
+                }) {
+                    Some(x) => vc_join(&mut x.rel, &r.rel),
+                    None => rels.push(r.clone()),
+                }
+            }
+        }
+        let (rels, land) = (&rels, &land);
+        let store = lanes.iter().any(|l| !l.words.is_empty());
         // ASSUME(E-REMOTE-FIFO)
         if self.launch.remote_fifo {
             self.deliver_fifo_before(op);
@@ -15482,15 +17714,46 @@ impl Machine {
             self.report(kind, format!("cluster-life:{}", op.pc), msg);
             return;
         }
-        for &(off, x) in store {
-            self.access(
-                op.actor,
-                &op.vc,
-                op.pc,
-                Loc::Shared { cta, off },
-                4,
-                Some(&x.to_le_bytes()),
-            );
+        for l in lanes {
+            let saved = std::mem::replace(&mut self.cur_sh, l.sh.clone());
+            for (k, &(off, x)) in l.words.iter().enumerate() {
+                self.access(
+                    l.actor,
+                    &l.vc,
+                    op.pc,
+                    Loc::Shared { cta, off },
+                    4,
+                    Some(&x.to_le_bytes()),
+                );
+                // ASSUME(N-EQUIV): an st.async word lands with the taint, node and 16-bit
+                // provenance of its value at issue (`num_store_snapshots`, MISS 205).
+                if let Some(snap) = l.snaps.get(k) {
+                    self.num_copy_snapshot(
+                        Loc::Shared { cta, off },
+                        &x.to_le_bytes(),
+                        Some(snap),
+                        op.pc,
+                    );
+                }
+            }
+            self.cur_sh = saved;
+        }
+        // ASSUME(S-REMOTE-INFLIGHT): each lane's words (their own async actor) are ordered
+        // before that lane's next cluster release, which would have drained them, whether they
+        // land in its drain or earlier (as their own step, or in an earlier operation of the
+        // warp's pipe that another lane's drain lands first): `drain_remote` joins
+        // `Thread::remote_landed` into the lane, so the verdict does not depend on whether the
+        // store was still in flight. Another lane's release orders none of them (the PTX model
+        // has no such edge).
+        for l in lanes
+            .iter()
+            .filter(|l| !l.words.is_empty() && l.actor != l.thread)
+        {
+            let c = vc_get(&l.vc, l.actor);
+            let th = self.threads[l.thread as usize].make_mut();
+            if vc_get(&th.remote_landed, l.actor) < c {
+                vc_join(&mut th.remote_landed, &vc_single(l.actor, c));
+            }
         }
         // A plain remote store (SASS `ST.E` into another CTA): no mbarrier.
         if mbar == NO_MBAR {
@@ -15509,40 +17772,42 @@ impl Machine {
             self.report(fault_kind(&e), format!("remote:{}", op.pc), e);
             return;
         }
+        self.rec_count(cta, mbar, n, tx);
+        if tx != 0 {
+            self.rec_tx(cta, mbar, tx, n > 0);
+        }
         self.rec_overarrival(cta, mbar, n);
         let Some(mb) = self.mbars.get(&(cta, mbar)) else {
             return;
         };
         let phase = mb.phase as u64;
+        // Landed outside a drain: each lane's part is its own obligation (S-CLUSTER-LIFE),
+        // discharged by that lane's next drain or the target's wait.
         if !drained {
-            let e = (
-                cta,
-                mbar,
-                phase,
-                op.pc,
-                op.issuer,
-                vc_get(&op.vc, op.issuer),
-            );
-            if let Err(k) = self.remote_obs.binary_search(&e) {
-                self.remote_obs.insert(k, e);
+            for l in lanes {
+                let e = (cta, mbar, phase, op.pc, l.thread, vc_get(&l.vc, l.thread));
+                if let Err(k) = self.remote_obs.binary_search(&e) {
+                    self.remote_obs.insert(k, e);
+                }
             }
         }
         // ASSUME(E-REMOTE-FIFO): earlier arrivals from this CTA to `cta` that already landed
         // as async steps landed before this one: observing this one's phase covers them.
-        if self.launch.remote_fifo && store.is_empty() {
+        if self.launch.remote_fifo && !store {
             self.fifo_transfer(op, cta, mbar, phase, drained);
         }
         // A landed remote update retains its issue-time publication metadata even if
         // its arrival count faults below.
         self.mbar_note_land(cta, mbar, rels.clone(), land);
         for i in 0..n.max(1) {
+            // The certificate's log (wellsync.rs) stashes each change before it happens.
             if i > 0 {
                 if let Err(error) = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar) {
                     self.report(fault_kind(&error), format!("remote:{}", op.pc), error);
                     return;
                 }
             }
-            self.rec_late(cta, mbar, &op.vc);
+            self.rec_late(cta, mbar, op.actor, &op.vc);
             let delta = TransactionDelta::Add(if i == 0 { tx } else { 0 });
             if let Err(fault) = self
                 .mbar_counter_transition(cta, mbar, delta, u32::from(n > 0))
@@ -15574,25 +17839,51 @@ impl Machine {
     /// `.release.cluster` arrive or store) orders them before it (SASS: the `CGAERRBAR` ptxas
     /// emits for those). ASSUME(S-REMOTE-INFLIGHT)
     fn drain_remote(&mut self, t: usize) {
-        while let Some(i) = self
-            .pending
-            .iter()
-            .position(|o| o.issuer == t as u32 && matches!(o.kind, AsyncKind::Remote { .. }))
-        {
-            let op = self.pending.remove(i);
-            self.complete_remote(&op, true);
-            // A plain remote store's own actor (SASS): delivered now, so ordered before the
-            // thread's later steps and releases.
-            if op.actor != t as u32 {
-                let c = vc_get(&op.vc, op.actor);
-                let th = self.threads[t].make_mut();
-                if vc_get(&th.vc, op.actor) < c {
-                    vc_join(&mut th.vc, &vc_single(op.actor, c));
-                }
-            }
+        // Its ops: those that carry a part of t's (one per instruction; another lane of the
+        // instruction may have issued the operation).
+        let tt = t as u32;
+        let mine = |o: &AsyncOp| {
+            matches!(o.kind, AsyncKind::Remote { ref lanes, .. }
+                if lanes.iter().any(|l| l.thread == tt))
+        };
+        while let Some(i) = self.pending.iter().position(mine) {
+            // ASSUME(S-REMOTE-INFLIGHT): t's op lands behind every op ahead of it in its
+            // in-order pipe (`AsyncOp::seq`), which another lane of the warp may have issued
+            // (MISS 184). Such an op lands first, as its own async step would: the release
+            // does not order it (not drained; only t's own words in it join t).
+            let k = self.pending[i]
+                .fifo
+                .and_then(|f| {
+                    self.pending
+                        .iter()
+                        .position(|o| o.fifo == Some(f) && o.seq == 0)
+                })
+                .unwrap_or(i);
+            // Of an operation that carries t's part, only that part lands: the other lanes'
+            // parts stay in flight in its place (t's release does not order them; PTX: another
+            // thread's st.async or arrival).
+            let several = matches!(self.pending[k].kind, AsyncKind::Remote { ref lanes, .. }
+                if lanes.len() > 1);
+            let op = if mine(&self.pending[k]) && several {
+                self.split_remote_lane(k, tt)
+            } else {
+                self.take_pending(k)
+            };
+            let drained = mine(&op);
+            self.complete_remote(&op, drained);
+        }
+        // Its remote stores' own actors (SASS `ST.E`, st.async words), delivered now or earlier
+        // (`Thread::remote_landed`, recorded at landing): ordered before this release and
+        // t's later steps.
+        if self.threads[t].remote_landed != VC::new() {
+            let th = self.threads[t].make_mut();
+            let l = std::mem::take(&mut th.remote_landed);
+            vc_join(&mut th.vc, &l);
         }
         // Delivered earlier as async steps: this release would have drained them, so they
-        // are ordered before it; the target must exit after it (`remote`, S-CLUSTER-LIFE).
+        // are ordered before it. Covered at the end by the target's wait on their phase, as
+        // before the release, or by the release happening before a target thread's exit
+        // (`remote_drained`, S-CLUSTER-LIFE).
         let mine: Vec<_> = self
             .remote_obs
             .iter()
@@ -15601,8 +17892,12 @@ impl Machine {
             .collect();
         if !mine.is_empty() {
             self.remote_obs.retain(|e| e.4 != t as u32);
-            for (cta, _, _, pc, _, _) in mine {
-                self.note_remote(cta, t as u32, pc);
+            let clock = vc_get(&self.threads[t].vc, t as u32);
+            for (cta, mbar, phase, pc, issuer, _) in mine {
+                let e = (cta, mbar, phase, pc, issuer, clock);
+                if let Err(k) = self.remote_drained.binary_search(&e) {
+                    self.remote_drained.insert(k, e);
+                }
             }
         }
     }
@@ -15644,17 +17939,16 @@ impl Machine {
     /// ASSUME(E-REMOTE-FIFO): before remote arrival `op` lands, deliver every pending remote
     /// arrival (not st.async) from the same source CTA to the same target CTA whose issue
     /// happens-before `op`'s issue, oldest first. They count as drained: `op` itself carries
-    /// the obligation to be observed before the target exits.
+    /// the obligation to be observed before the target exits. ASSUME(S-REMOTE-INFLIGHT): each
+    /// lands behind the ops ahead of it in its in-order pipe (`AsyncOp::seq`, MISS 154), which
+    /// another lane of the warp may have issued with no order to `op`: such a head lands
+    /// first, as its own async step would (not drained unless it qualifies itself), as in
+    /// `drain_remote`. So every op this removes is its pipe's head when removed.
     fn deliver_fifo_before(&mut self, op: &AsyncOp) {
-        let AsyncKind::Remote {
-            cta: tgt,
-            ref store,
-            ..
-        } = op.kind
-        else {
+        let AsyncKind::Remote { cta: tgt, .. } = op.kind else {
             return;
         };
-        if !store.is_empty() {
+        if remote_has_words(op) {
             return;
         }
         let src = self.threads[op.issuer as usize].cta;
@@ -15662,10 +17956,10 @@ impl Machine {
             let threads = &self.threads;
             let mut best: Option<(usize, u32)> = None;
             for (i, o) in self.pending.iter().enumerate() {
-                let AsyncKind::Remote { cta, ref store, .. } = o.kind else {
+                let AsyncKind::Remote { cta, .. } = o.kind else {
                     continue;
                 };
-                if cta != tgt || !store.is_empty() || threads[o.issuer as usize].cta != src {
+                if cta != tgt || remote_has_words(o) || threads[o.issuer as usize].cta != src {
                     continue;
                 }
                 let c = vc_get(&o.vc, o.issuer);
@@ -15679,8 +17973,24 @@ impl Machine {
             let Some((i, _)) = best else {
                 break;
             };
-            let a = self.pending.remove(i);
-            self.complete_remote(&a, true);
+            let k = self.pending[i]
+                .fifo
+                .and_then(|f| {
+                    self.pending
+                        .iter()
+                        .position(|o| o.fifo == Some(f) && o.seq == 0)
+                })
+                .unwrap_or(i);
+            let a = self.take_pending(k);
+            // The pipe shares the warp, so the source CTA, the target CTA and the mbarrier:
+            // a head ahead of `i` is drained exactly when it qualifies as `i` does.
+            let drained = match a.kind {
+                AsyncKind::Remote { .. } => {
+                    !remote_has_words(&a) && vc_get(&op.vc, a.issuer) >= vc_get(&a.vc, a.issuer)
+                }
+                _ => false,
+            };
+            self.complete_remote(&a, drained);
         }
     }
 
@@ -17169,6 +19479,12 @@ impl Machine {
         {
             outside = Some("MMA f16 result overflow".into());
         }
+        // An f32 step whose result leaves the f32 range: +-Inf on GB300 (block-scaled kinds,
+        // probes/mma_bs/ovf), not modeled further (MISS 144: until 2026-11-12 the RZ rounding
+        // saturated it to +-FLT_MAX and the run stayed clean).
+        if outside.is_none() && !f16_d && results.iter().any(|&w| f32::from_bits(w).is_infinite()) {
+            outside = Some("MMA f32 result overflow".into());
+        }
         for (ci, &cta) in ctas.iter().enumerate() {
             self.mma_d_write(cta, &lay, op, &results[ci * per..(ci + 1) * per]);
             // 8-bit operand and scale-factor provenance (N-HALF-LEAF): each product's factors
@@ -17803,6 +20119,7 @@ impl Machine {
     ) {
         let op = op.clone();
         if cta != self.threads[op.issuer as usize].cta {
+            self.rec_exit_key(cta);
             if let Err(e) = self.check_alive(cta, op.actor) {
                 self.report("violation", format!("cluster-life:{}", op.pc), e);
                 return;
@@ -18099,12 +20416,43 @@ impl Machine {
         mbar: u32,
         writes: Vec<CpPending>,
         tx: bool,
+        prior: &VC,
     ) {
         // The copies' writes run at their own issue clocks (`cp_land`): a cp.async is ordered
         // after its issuer's earlier instructions only (PTX ISA 8.9.1.1), not after what the
         // issuer did between the copy and this arrive (fixtures/e_cpasync_mbar_early). The
-        // arrive-on below, at the arrive's clock, carries their epoch to a waiter.
-        // ASSUME(E-CPASYNC-MBAR)
+        // arrive-on below releases their epoch and the epochs of the issuer's prior copies
+        // (`prior`, `mbar_note_async_own_with`): it is ordered with all of the thread's prior
+        // cp.async operations, not with any other instruction of the thread (8.9.1.1)
+        // (fixtures/e_cpasync_arrive_release; MISS 118: before, it released the issuer's clock
+        // at the arrive). `prior` holds the copies that had landed at the issue
+        // (fixtures/e_cpasync_arrive_prior) and those of the issuer's earlier arrive operations
+        // then in flight (fixtures/e_cpasync_arrive_inflight): the copies of those still pending
+        // land here, before this arrive-on, at their operation's epoch 1 (a try_wait that
+        // completes this phase makes every cp.async before this arrive visible), and their
+        // arrive-ons stay pending. Copies land at the actor's epoch 1, the epoch a later
+        // arrive-on releases; this arrive-on is its epoch 2 (`op.vc`), which that later one does
+        // not cover (fixtures/e_cpasync_arrive_order). ASSUME(E-CPASYNC-MBAR)
+        let issuer = op.issuer;
+        let earlier: Vec<usize> = (0..self.pending.len())
+            .filter(|&i| {
+                let o = &self.pending[i];
+                o.issuer == issuer
+                    && o.actor < op.actor
+                    && matches!(o.kind, AsyncKind::CpArrive { .. })
+            })
+            .collect();
+        for i in earlier {
+            let o = &mut self.pending[i];
+            let actor = o.actor;
+            let AsyncKind::CpArrive { writes: w, .. } = &mut o.kind else {
+                unreachable!()
+            };
+            let w = std::mem::take(w);
+            if !w.is_empty() {
+                self.cp_land(issuer as usize, actor, 1, w);
+            }
+        }
         self.cp_land(op.issuer as usize, op.actor, 1, writes);
         self.rec(
             Resource {
@@ -18116,10 +20464,16 @@ impl Machine {
             false,
         );
         self.mbar_materialize(cta, mbar);
+        self.rec_mbar_init_key(cta, mbar);
         if self.mbars.contains_key(&(cta, mbar)) {
             let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar);
         }
-        self.rec_late(cta, mbar, &op.vc);
+        if !tx {
+            self.rec_count(cta, mbar, 1, 0);
+        } else {
+            self.rec_tx(cta, mbar, -1, false);
+        }
+        self.rec_late(cta, mbar, op.actor, &op.vc);
         if !self.mbars.contains_key(&(cta, mbar)) {
             let msg = format!(
                 "cp.async.mbarrier.arrive at {} on an uninitialized mbarrier at {mbar:#x}",
@@ -18136,7 +20490,7 @@ impl Machine {
         if let Err(fault) = self
             .mbar_counter_transition(cta, mbar, delta, u32::from(!tx))
             .map(|transition| {
-                self.mbar_note_async(cta, mbar, op.issuer, op.actor, &op.vc);
+                self.mbar_note_async_own_with(cta, mbar, op.issuer, op.actor, &op.vc, prior);
                 self.mbar_publish_transition(cta, mbar, transition);
             })
         {
@@ -18168,6 +20522,7 @@ impl Machine {
     ) {
         let op = op.clone();
         if cta != self.threads[op.issuer as usize].cta {
+            self.rec_exit_key(cta);
             if let Err(e) = self.check_alive(cta, op.actor) {
                 self.report("violation", format!("cluster-life:{}", op.pc), e);
                 return;
@@ -18309,6 +20664,7 @@ impl Machine {
         }
         let mut src: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
         if let Some(c) = m.smem_src {
+            self.rec_exit_key(c);
             if let Err(e) = self.check_alive(c, op.actor) {
                 self.report("violation", format!("cluster-life:{}", op.pc), e);
                 return;
@@ -18399,6 +20755,7 @@ impl Machine {
         let bytes = (total as usize * es) as i64;
         let cta = mbar_cta;
         if cta != self.threads[op.issuer as usize].cta {
+            self.rec_exit_key(cta);
             if let Err(e) = self.check_alive(cta, op.actor) {
                 self.report("violation", format!("cluster-life:{}", op.pc), e);
                 return;
@@ -18415,6 +20772,7 @@ impl Machine {
         );
         self.mbar_materialize(cta, mbar);
         // complete_tx is an mbarrier operation: its init must happen-before the issue.
+        self.rec_mbar_init_key(cta, mbar);
         if self.mbars.contains_key(&(cta, mbar)) {
             let _ = self.mbar_atomic(op.actor, &op.vc, &op.vis, op.pc, cta, mbar);
         }
@@ -18427,11 +20785,15 @@ impl Machine {
                 self.report("violation", format!("tma-uninit:{}", op.pc), msg);
             }
             Some(_) => {
-                self.rec_late(cta, mbar, &op.vc);
+                self.rec_tx(cta, mbar, -bytes, false);
+                self.rec_late(cta, mbar, op.actor, &op.vc);
                 if let Err(fault) = self
                     .mbar_counter_transition(cta, mbar, TransactionDelta::Subtract(bytes), 0)
                     .map(|transition| {
-                        self.mbar_note_async(cta, mbar, op.issuer, op.actor, &op.vc);
+                        // The complete-tx releases this copy's own writes only, not its
+                        // issuer's earlier instructions (PTX ISA 8.9.1.1;
+                        // fixtures/e_bulk_ctx_release; MISS 119).
+                        self.mbar_note_async_own(cta, mbar, op.issuer, op.actor, &op.vc);
                         self.mbar_publish_transition(cta, mbar, transition);
                     })
                 {
@@ -18820,7 +21182,7 @@ pub fn elem_bytes(k: &Kernel, pc: u32) -> u8 {
             ..
         }) => 4,
         Some(Op::Atom {
-            op: AtomOp::AddBf16x2 | AtomOp::AddBf16,
+            op: AtomOp::AddBf16x2 | AtomOp::AddBf16 | AtomOp::AddF16x2 | AtomOp::AddF16,
             ..
         }) => 2,
         Some(Op::Atom { bytes, .. }) => *bytes,
@@ -18852,14 +21214,94 @@ fn multimem_st_lane(text: &str) -> Option<u8> {
 /// size is known (`elem_bytes`): each element is naturally aligned (S-ALIGN), so two elements
 /// of one size that share a byte are the same location. Otherwise true, as before the rule:
 /// the SASS front (an instruction's width is not the PTX element size: ptxas merges a vector's
-/// elements into one access), asynchronous units, the NIC, and instructions without a known
-/// element size.
+/// elements into one access), asynchronous units, and instructions without a known element
+/// size. The NIC's accesses: `overlap_with_nic`.
 pub fn same_location(k: &Kernel, nth: u32, strict: bool, a: (u32, u32), b: (u32, u32)) -> bool {
     if !strict || k.front != Front::Ptx || a.0 >= nth || b.0 >= nth {
         return true;
     }
     let (x, y) = (elem_bytes(k, a.1), elem_bytes(k, b.1));
     x == 0 || y == 0 || x == y
+}
+
+/// Complete overlap of two strong accesses (`overlap_with_nic`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlap {
+    /// One location (or not decided: the SASS front, the hardware model, asynchronous units,
+    /// an instruction without a known element size).
+    Complete,
+    /// Partial overlap: not morally strong, a mixed-size data race when unordered, no
+    /// observation (PTX ISA 9.5 sections 8.7, 8.7.2, 8.9.2).
+    Partial,
+    /// A CQE of the NIC read or written with another extent than its fields: not modeled.
+    Unmodeled,
+}
+
+/// ASSUME(S-SCOPE), complete overlap, `same_location` with the NIC's strong accesses decided
+/// too (MISS 194), on byte `at` (allocation, offset) of global memory. At the strict PTX level
+/// a NIC access is one location of its element's size (`NicState::elem`): an atomic's 8-byte
+/// word (S-NIC-ATOMIC), a lone flag write (S-NIC-FLAG), an RDMA write's naturally aligned 8-
+/// or 4-byte chunk (S-NIC-WORD), a CQE field (bytes 56-59, 60-61, 62 or 63; S-NIC-CQE). A
+/// thread's access of another element size, or another NIC access of another size, overlaps it
+/// partially; one that spans or splits a CQE field, or reads a CQE byte outside the fields, is
+/// not modeled (the model's CQE fields are its own choice; the NIC writes the 64 bytes at
+/// once). Two CQE writes of one CQE are one location. Until 2026-11-12 every pair with the NIC
+/// was one location: a 4-byte read of a NIC atomic's word synchronized with it and raced with
+/// nothing (probes/nic_overlap).
+#[allow(clippy::too_many_arguments)]
+pub fn overlap_with_nic(
+    k: &Kernel,
+    nth: u32,
+    strict: bool,
+    nic: Option<&crate::nic::NicState>,
+    async_base: u32,
+    a: (u32, u32),
+    b: (u32, u32),
+    at: Option<(usize, u64)>,
+) -> Overlap {
+    use crate::nic::NicElem;
+    let one = |x: bool| {
+        if x {
+            Overlap::Complete
+        } else {
+            Overlap::Partial
+        }
+    };
+    if !strict || k.front != Front::Ptx {
+        return Overlap::Complete;
+    }
+    let nic_of = |x: u32| nic.filter(|n| x >= async_base && n.has_acc(x));
+    let (na, nb) = (nic_of(a.0), nic_of(b.0));
+    let (Some((alloc, off)), true) = (at, na.is_some() || nb.is_some()) else {
+        return one(same_location(k, nth, strict, a, b));
+    };
+    // Two CQE writes of one CQE (its ring slot written again): the same 64 bytes.
+    if let (Some(x), Some(y)) = (na, nb) {
+        let (p, q) = (x.cqe_at(a.0, alloc, off), y.cqe_at(b.0, alloc, off));
+        if p.is_some() && p == q {
+            return Overlap::Complete;
+        }
+    }
+    // (element size, a CQE field) of each side; None: not decided.
+    let elem = |x: (u32, u32), n: Option<&crate::nic::NicState>| match n {
+        Some(n) => match n.elem(x.0, alloc, off) {
+            NicElem::Exact(_, w) => Some(Some((w, false))),
+            NicElem::Field(_, w) => Some(Some((w, true))),
+            NicElem::Unknown => Some(None),
+        },
+        None if x.0 < nth => match elem_bytes(k, x.1) {
+            0 => None,
+            w => Some(Some((w, false))),
+        },
+        None => None,
+    };
+    match (elem(a, na), elem(b, nb)) {
+        (None, _) | (_, None) => Overlap::Complete,
+        (Some(None), _) | (_, Some(None)) => Overlap::Unmodeled,
+        (Some(Some((x, _))), Some(Some((y, _)))) if x == y => Overlap::Complete,
+        (Some(Some((_, fx))), Some(Some((_, fy)))) if fx || fy => Overlap::Unmodeled,
+        _ => Overlap::Partial,
+    }
 }
 
 /// E-POLL-ANY: the key of a location in `VipLearn` and `Machine::vipr`: (allocation, offset)
@@ -18980,6 +21422,28 @@ fn alias_bracket(code: &[ptxv_ir::Inst], pc: usize) -> bool {
 /// The `mbar` of an `AsyncKind::Remote` that is a plain remote store (S-REMOTE-INFLIGHT).
 pub const NO_MBAR: u32 = u32::MAX;
 
+/// Does remote operation `o` (`AsyncKind::Remote`) write words (st.async, SASS `ST.E`)?
+fn remote_has_words(o: &AsyncOp) -> bool {
+    matches!(o.kind, AsyncKind::Remote { ref lanes, .. }
+        if lanes.iter().any(|l| !l.words.is_empty()))
+}
+
+/// Bit of mbarrier phase `key`'s under key (`rec_tx`, space 16), below `MBAR_LAST_ARRIVAL`
+/// and above every count key.
+const MBAR_TX_UNDER: u64 = 1 << 61;
+
+/// Index range of mbarrier phase `key`'s last-arrival keys (`rec_count` / `rec_tx`, space 16)
+/// for the tx increments `lo..hi` of the last arrival: `MBAR_LAST_ARRIVAL`, the phase key's low
+/// 41 bits, then the increment in 21 bits (a tx count has 20). A phase key beyond 41 bits (an
+/// offset of 2 MB or more) shares its keys with another, which only adds a dependency. The
+/// keys of one mbarrier's consecutive phases stay in order, so a step that runs many phases
+/// keeps its footprint sorted.
+fn mbar_last_keys(key: u64, lo: u64, hi: u64) -> (u64, u64) {
+    const LEVELS: u64 = 1 << 21;
+    let base = MBAR_LAST_ARRIVAL | ((key & ((1 << 41) - 1)) << 21);
+    (base + lo.min(LEVELS - 1), base + hi.min(LEVELS))
+}
+
 pub fn remote_pipe(w: u32, cta: u16, mbar: u32) -> u64 {
     1 << 63 | (w as u64) << 48 | (cta as u64) << 32 | mbar as u64
 }
@@ -19013,6 +21477,71 @@ fn coll_fp<T: std::hash::Hash>(x: &T) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     x.hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod lane_order_tests {
+    use super::*;
+
+    fn f32s(xs: &[f32]) -> Vec<u8> {
+        xs.iter().flat_map(|x| x.to_bits().to_le_bytes()).collect()
+    }
+
+    /// MISS 74: float adds are order-free only when every partial sum is exact.
+    #[test]
+    fn adds_exact_only_when_every_partial_sum_is() {
+        let ex = |op, init: &[u8], xs: &[Vec<u8>]| {
+            adds_exact(op, init, &xs.iter().map(|x| &x[..]).collect::<Vec<_>>())
+        };
+        let z = f32s(&[0.0]);
+        // Small integers and halves (probes/red_vec), negatives and zeros of both signs.
+        let xs: Vec<Vec<u8>> = [1.0f32, 2.5, -3.0, 0.5, -0.0, 7.0]
+            .iter()
+            .map(|&x| f32s(&[x]))
+            .collect();
+        assert!(ex(AtomOp::FAddFtz, &z, &xs));
+        // 2^24 + 1 + 1: the rounding depends on the order (fixtures/e_lane_order_ticket FADD3).
+        let xs = vec![f32s(&[16777216.0]), f32s(&[1.0]), f32s(&[1.0])];
+        assert!(!ex(AtomOp::FAddFtz, &z, &xs));
+        // The word's value counts: 2^23 + 0.5 + 0.5 needs 25 bits.
+        let xs = vec![f32s(&[0.5]), f32s(&[0.5])];
+        assert!(ex(AtomOp::FAddFtz, &z, &xs));
+        assert!(!ex(AtomOp::FAddFtz, &f32s(&[8388608.0]), &xs));
+        // A subnormal (flushed), an infinity, a NaN: not order-free.
+        for bad in [f32::from_bits(1), f32::INFINITY, f32::NAN] {
+            let xs = vec![f32s(&[1.0]), f32s(&[bad])];
+            assert!(!ex(AtomOp::FAddFtz, &z, &xs), "{bad:e}");
+        }
+        // A sum past the largest finite value.
+        let xs = vec![f32s(&[f32::MAX]), f32s(&[f32::MAX])];
+        assert!(!ex(AtomOp::FAddFtz, &z, &xs));
+        // Vectors: every element (the second's rounding depends on the order).
+        let xs = vec![
+            f32s(&[1.0, 16777216.0]),
+            f32s(&[1.0, 1.0]),
+            f32s(&[1.0, 1.0]),
+        ];
+        assert!(!ex(AtomOp::FAddFtz, &f32s(&[0.0, 0.0]), &xs));
+        let xs = vec![f32s(&[1.0, 3.0]), f32s(&[2.0, 1.0])];
+        assert!(ex(AtomOp::FAddFtz, &f32s(&[0.0, 0.0]), &xs));
+        // f64: 2^53 + 1 + 1 differs; bf16 (8 significand bits): 256 + 1 + 1 differs.
+        let d = |x: f64| x.to_bits().to_le_bytes().to_vec();
+        assert!(!ex(
+            AtomOp::FAdd64,
+            &d(0.0),
+            &[d(9007199254740992.0), d(1.0), d(1.0)]
+        ));
+        assert!(ex(
+            AtomOp::FAdd64,
+            &d(0.0),
+            &[d(16777216.0), d(1.0), d(1.0)]
+        ));
+        let b = |x: f32| ((x.to_bits() >> 16) as u16).to_le_bytes().to_vec();
+        assert!(!ex(AtomOp::AddBf16, &b(0.0), &[b(256.0), b(1.0), b(1.0)]));
+        assert!(ex(AtomOp::AddBf16, &b(0.0), &[b(64.0), b(1.0), b(1.0)]));
+        // Not a float add.
+        assert!(!ex(AtomOp::Inc, &z, &[f32s(&[1.0]), f32s(&[2.0])]));
+    }
 }
 
 #[cfg(test)]

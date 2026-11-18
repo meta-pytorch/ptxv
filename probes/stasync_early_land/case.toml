@@ -1,0 +1,41 @@
+name = "probe_stasync_early_land"
+description = """
+Probe (S-REMOTE-INFLIGHT) for a remote st.async that lands before its issuer's draining
+release (review repro of the MISS 184 follow-up). Rank 0 t0 st.async-stores x into rank 1 (M1),
+then fence.acq_rel.cluster and a .release.cluster remote arrive on M2; rank 1 waits on M2 and
+reads x. FENLD adds a step break between the store and the fence. The model's verdict: PTX
+contract (S-MBAR-SCOPE), SASS clean. run.sh prints the stateful, unreduced stateful, DPOR and
+--certify verdicts and exits 1 while they disagree (before the fix: FENLD PTX stateful and DPOR
+[contract, race], --certify [contract]). Fixture: fixtures/e_stasync_early_land.
+"""
+ptx = "kernel.ptx"
+entry = "stasync_early_land"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "FEN"
+summary = "st.async; fence.acq_rel.cluster; remote .release.cluster arrive on M2; peer waits M2 and reads x"
+expect = ["contract"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "FENLD"
+summary = "FEN with a volatile shared load between the st.async and the fence (ends the step): the store can land before the fence"
+marker = "@BRK"
+find = "// (step break)"
+replace = "ld.volatile.shared.u32 %r16, [%r8];"
+expect = ["contract"]
+expect_sass = ["clean"]

@@ -19,9 +19,12 @@
 //! the per-access deduplication of findings) over every explored transition, shared by all
 //! copies of the machine, so a complete exploration has seen them all. A race with any other
 //! kind of read side (a write-write race, an atomic, an acquiring load, an asynchronous unit)
-//! has no entry and stays `race`. A tensormap proxy fence's read (`Op::TmapFence`) is a racing
-//! read whose value is the snapshot later TMA ops compare against; the probe leaves the
-//! snapshot undefined (exec.rs), so a TMA op that relies on it reports a stale map.
+//! has no entry and stays `race`, as does a mixed-size data race (its two operations overlap
+//! partially at the strict PTX level, the NIC's accesses included; PTX ISA 9.5 section 8.7.2:
+//! the memory model's axioms do not apply to a program with one; MISS 226). A tensormap proxy
+//! fence's read (`Op::TmapFence`) is a racing read whose value is the snapshot later TMA ops
+//! compare against; the probe leaves the snapshot undefined (exec.rs), so a TMA op that relies
+//! on it reports a stale map.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

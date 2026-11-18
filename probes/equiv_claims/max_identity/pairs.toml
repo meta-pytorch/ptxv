@@ -1,0 +1,27 @@
+title = "FMNMX of -inf (+inf for min) against FMNMX of a repeated operand (MISS 197)"
+value = "equal"
+
+[[pairs]]
+name = "max.f32(a, -inf) vs max.f32(a, a)"
+equiv = ["eq_maxinf_maxaa_ptx.toml", "eq_maxinf_maxaa_sass.toml"]
+sets = [["maxinf_f", "maxaa_f"], ["maxinf_n", "maxaa_n"]]
+
+[[pairs]]
+name = "max.f32(a, -inf) vs max.f32(a, a) with a loaded twice"
+equiv = ["eq_maxinf_maxaav_ptx.toml", "eq_maxinf_maxaav_sass.toml"]
+sets = [["maxinf_f", "maxaav_f"], ["maxinf_n", "maxaav_n"]]
+
+[[pairs]]
+name = "min.f32(a, +inf) vs min.f32(a, a)"
+equiv = ["eq_mininf_minaa_ptx.toml", "eq_mininf_minaa_sass.toml"]
+sets = [["mininf_f", "minaa_f"], ["mininf_n", "minaa_n"]]
+
+[[pairs]]
+name = "min.f32(a, +inf) vs min.f32(a, a) with a loaded twice"
+equiv = ["eq_mininf_minaav_ptx.toml", "eq_mininf_minaav_sass.toml"]
+sets = [["mininf_f", "minaav_f"], ["mininf_n", "minaav_n"]]
+
+[[pairs]]
+name = "max.f32(max.f32(a, -inf), b) vs max.f32(a, b)"
+equiv = ["eq_maxinfb_maxab_ptx.toml", "eq_maxinfb_maxab_sass.toml"]
+sets = [["maxinfb_f", "maxab_f"], ["maxinfb_n", "maxab_n"]]

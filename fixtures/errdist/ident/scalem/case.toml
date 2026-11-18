@@ -1,0 +1,32 @@
+name = "ident_scalem"
+description = """MISS 147: entry scale_mufu of ../ex2ovf.ptx (see its header), y = RN(x 2^-64) ex2(x 0) with a MUFU inside the slice, captured x ~ N(0, 1)."""
+ptx = "../ex2ovf.ptx"
+entry = "scale_mufu"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "normal"
+seed = 7
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

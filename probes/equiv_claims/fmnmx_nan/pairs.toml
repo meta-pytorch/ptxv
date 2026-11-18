@@ -1,0 +1,22 @@
+title = "max.f32 against max.NaN.f32 (FMNMX against FMNMX.NAN, MISS 202)"
+value = "equal"
+
+[[pairs]]
+name = "max.f32(a, b) vs max.NaN.f32(a, b)"
+equiv = ["eq_fmax_fmaxnan_ptx.toml", "eq_fmax_fmaxnan_sass.toml"]
+sets = [["fmax_f", "fmaxnan_f"], ["fmax_n", "fmaxnan_n"]]
+
+[[pairs]]
+name = "max.f32(a, b) vs max.NaN.f32(a, b), segment mode"
+equiv = ["eq_fmax_fmaxnan_seg_ptx.toml", "eq_fmax_fmaxnan_seg_sass.toml"]
+sets = [["fmax_f", "fmaxnan_f"], ["fmax_n", "fmaxnan_n"]]
+
+[[pairs]]
+name = "max.f32(s, b) vs max.NaN.f32(s, b), s = sqrt.approx(a) (NaN for finite a < 0)"
+equiv = ["eq_sfmax_sfmaxnan_ptx.toml", "eq_sfmax_sfmaxnan_sass.toml"]
+sets = [["sfmax_p", "sfmaxnan_p"], ["sfmax_q", "sfmaxnan_q"]]
+
+[[pairs]]
+name = "max.f32(s, b) vs max.NaN.f32(s, b), s = sqrt.approx(a), segment mode"
+equiv = ["eq_sfmax_sfmaxnan_seg_ptx.toml", "eq_sfmax_sfmaxnan_seg_sass.toml"]
+sets = [["sfmax_p", "sfmaxnan_p"], ["sfmax_q", "sfmaxnan_q"]]

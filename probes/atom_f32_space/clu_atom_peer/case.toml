@@ -1,0 +1,61 @@
+name = "probe_atom_f32_space_clu_atom_peer"
+description = """
+Probe (N-ATOMIC, MISS 142; probes/atom_f32_space/gen.py): atom.shared::cluster.add.f32 %f4, [%r6], %f2 (shared memory; each CTA adds into the other CTA's word),
+base[i] + x[i] into word i. expected/ is GB300's output (ptxas 13.0 -arch=sm_103a,
+`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "clu_atom_peer"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out", "old"]
+
+[[buffers]]
+name = "base"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "base.bin"
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "out0.bin"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "old"
+dtype = "u32"
+shape = [64]
+init = "file"
+file = "old0.bin"
+expect = "expected/old.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "base"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "old"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

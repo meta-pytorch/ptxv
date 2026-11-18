@@ -1,0 +1,125 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPREAD, E-HW-SB-QUEUE): an STTM whose register read waits behind a busy TMEM store
+// pipe (eight 32-column stores before it), then a TMEM load into the same registers with no
+// wait (the queued write-after-read ptxas relies on). Thread t: column 0..15 <- v(t, i), column
+// 16..31 <- v(t, i) ^ 0x5a5a5a5a; the load of column 16 lands in the registers column 0's store
+// reads. out[t] = (column 0, the loaded registers).
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry sttm_busy(.param .u64 pout, .param .u32 seed) .maxnreg 96
+{ .reg .b64 %rd<8>; .reg .b32 %r<260>; .reg .pred %p<3>;
+  .shared .align 16 .b32 taddr;
+  ld.param.u64 %rd2, [pout]; cvta.to.global.u64 %rd2, %rd2; ld.param.u32 %r250, [seed];
+  mov.u32 %r100, %tid.x; mov.u32 %r101, taddr;
+  shr.u32 %r102, %r100, 5; setp.eq.u32 %p1, %r102, 0;
+  @%p1 tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r101], 512;
+  @%p1 tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+  tcgen05.fence::before_thread_sync; bar.sync 0; tcgen05.fence::after_thread_sync;
+  ld.shared.u32 %r103, [taddr];
+  shl.b32 %r104, %r102, 21; add.u32 %r105, %r103, %r104; add.u32 %r106, %r105, 16;
+  mul.lo.u32 %r251, %r100, %r250;
+  add.u32 %r0, %r251, 1;
+  xor.b32 %r16, %r0, 0x5a5a5a5a;
+  add.u32 %r1, %r251, 16843010;
+  xor.b32 %r17, %r1, 0x5a5a5a5a;
+  add.u32 %r2, %r251, 33686019;
+  xor.b32 %r18, %r2, 0x5a5a5a5a;
+  add.u32 %r3, %r251, 50529028;
+  xor.b32 %r19, %r3, 0x5a5a5a5a;
+  add.u32 %r4, %r251, 67372037;
+  xor.b32 %r20, %r4, 0x5a5a5a5a;
+  add.u32 %r5, %r251, 84215046;
+  xor.b32 %r21, %r5, 0x5a5a5a5a;
+  add.u32 %r6, %r251, 101058055;
+  xor.b32 %r22, %r6, 0x5a5a5a5a;
+  add.u32 %r7, %r251, 117901064;
+  xor.b32 %r23, %r7, 0x5a5a5a5a;
+  add.u32 %r8, %r251, 134744073;
+  xor.b32 %r24, %r8, 0x5a5a5a5a;
+  add.u32 %r9, %r251, 151587082;
+  xor.b32 %r25, %r9, 0x5a5a5a5a;
+  add.u32 %r10, %r251, 168430091;
+  xor.b32 %r26, %r10, 0x5a5a5a5a;
+  add.u32 %r11, %r251, 185273100;
+  xor.b32 %r27, %r11, 0x5a5a5a5a;
+  add.u32 %r12, %r251, 202116109;
+  xor.b32 %r28, %r12, 0x5a5a5a5a;
+  add.u32 %r13, %r251, 218959118;
+  xor.b32 %r29, %r13, 0x5a5a5a5a;
+  add.u32 %r14, %r251, 235802127;
+  xor.b32 %r30, %r14, 0x5a5a5a5a;
+  add.u32 %r15, %r251, 252645136;
+  xor.b32 %r31, %r15, 0x5a5a5a5a;
+  add.u32 %r200, %r251, 3;
+  add.u32 %r201, %r251, 10;
+  add.u32 %r202, %r251, 17;
+  add.u32 %r203, %r251, 24;
+  add.u32 %r204, %r251, 31;
+  add.u32 %r205, %r251, 38;
+  add.u32 %r206, %r251, 45;
+  add.u32 %r207, %r251, 52;
+  add.u32 %r208, %r251, 59;
+  add.u32 %r209, %r251, 66;
+  add.u32 %r210, %r251, 73;
+  add.u32 %r211, %r251, 80;
+  add.u32 %r212, %r251, 87;
+  add.u32 %r213, %r251, 94;
+  add.u32 %r214, %r251, 101;
+  add.u32 %r215, %r251, 108;
+  add.u32 %r216, %r251, 115;
+  add.u32 %r217, %r251, 122;
+  add.u32 %r218, %r251, 129;
+  add.u32 %r219, %r251, 136;
+  add.u32 %r220, %r251, 143;
+  add.u32 %r221, %r251, 150;
+  add.u32 %r222, %r251, 157;
+  add.u32 %r223, %r251, 164;
+  add.u32 %r224, %r251, 171;
+  add.u32 %r225, %r251, 178;
+  add.u32 %r226, %r251, 185;
+  add.u32 %r227, %r251, 192;
+  add.u32 %r228, %r251, 199;
+  add.u32 %r229, %r251, 206;
+  add.u32 %r230, %r251, 213;
+  add.u32 %r231, %r251, 220;
+  tcgen05.st.sync.aligned.32x32b.x16.b32 [%r106], {%r16,%r17,%r18,%r19,%r20,%r21,%r22,%r23,%r24,%r25,%r26,%r27,%r28,%r29,%r30,%r31};
+  tcgen05.wait::st.sync.aligned;
+  add.u32 %r110, %r105, 64;
+  tcgen05.st.sync.aligned.32x32b.x32.b32 [%r110], {%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231};  // @BUSY0
+  add.u32 %r111, %r105, 96;
+  tcgen05.st.sync.aligned.32x32b.x32.b32 [%r111], {%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231};  // @BUSY1
+  add.u32 %r112, %r105, 128;
+  tcgen05.st.sync.aligned.32x32b.x32.b32 [%r112], {%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231};  // @BUSY2
+  add.u32 %r113, %r105, 160;
+  tcgen05.st.sync.aligned.32x32b.x32.b32 [%r113], {%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231};  // @BUSY3
+  add.u32 %r114, %r105, 192;
+  tcgen05.st.sync.aligned.32x32b.x32.b32 [%r114], {%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231};  // @BUSY4
+  add.u32 %r115, %r105, 224;
+  tcgen05.st.sync.aligned.32x32b.x32.b32 [%r115], {%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231};  // @BUSY5
+  add.u32 %r116, %r105, 256;
+  tcgen05.st.sync.aligned.32x32b.x32.b32 [%r116], {%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231};  // @BUSY6
+  add.u32 %r117, %r105, 288;
+  tcgen05.st.sync.aligned.32x32b.x32.b32 [%r117], {%r200,%r201,%r202,%r203,%r204,%r205,%r206,%r207,%r208,%r209,%r210,%r211,%r212,%r213,%r214,%r215,%r216,%r217,%r218,%r219,%r220,%r221,%r222,%r223,%r224,%r225,%r226,%r227,%r228,%r229,%r230,%r231};  // @BUSY7
+  tcgen05.st.sync.aligned.32x32b.x16.b32 [%r105], {%r0,%r1,%r2,%r3,%r4,%r5,%r6,%r7,%r8,%r9,%r10,%r11,%r12,%r13,%r14,%r15};  // @ST
+  tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r0,%r1,%r2,%r3,%r4,%r5,%r6,%r7,%r8,%r9,%r10,%r11,%r12,%r13,%r14,%r15}, [%r106];  // @LD
+  tcgen05.wait::ld.sync.aligned;
+  tcgen05.wait::st.sync.aligned;
+  tcgen05.ld.sync.aligned.32x32b.x16.b32 {%r40,%r41,%r42,%r43,%r44,%r45,%r46,%r47,%r48,%r49,%r50,%r51,%r52,%r53,%r54,%r55}, [%r105];
+  tcgen05.wait::ld.sync.aligned;
+  mul.wide.u32 %rd3, %r100, 128; add.s64 %rd5, %rd2, %rd3;
+  st.global.v4.u32 [%rd5+0], {%r40,%r41,%r42,%r43};
+  st.global.v4.u32 [%rd5+16], {%r44,%r45,%r46,%r47};
+  st.global.v4.u32 [%rd5+32], {%r48,%r49,%r50,%r51};
+  st.global.v4.u32 [%rd5+48], {%r52,%r53,%r54,%r55};
+  st.global.v4.u32 [%rd5+64], {%r0,%r1,%r2,%r3};
+  st.global.v4.u32 [%rd5+80], {%r4,%r5,%r6,%r7};
+  st.global.v4.u32 [%rd5+96], {%r8,%r9,%r10,%r11};
+  st.global.v4.u32 [%rd5+112], {%r12,%r13,%r14,%r15};
+  tcgen05.fence::before_thread_sync; bar.sync 0; tcgen05.fence::after_thread_sync;
+  @%p1 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r103, 512;
+  ret; }

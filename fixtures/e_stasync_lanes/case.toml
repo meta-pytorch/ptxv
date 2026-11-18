@@ -1,0 +1,118 @@
+name = "e_stasync_lanes"
+description = """
+S-REMOTE-INFLIGHT: a lane's drain lands only its own part of a coalesced st.async operation
+(one pending operation per warp instruction and mbarrier). Lanes 0 and 1 of rank 0 run one
+st.async (x, y into rank 1; complete_tx on M1); one lane alone fences and releases M2; rank 1
+acquires M2, then test_waits M1 and reads a word. Under the PTX memory model the other lane's
+st.async is unordered with that release, so it can still be in flight: the test_wait sees M1
+either way, and a read of the other lane's word races. Until the split, the drain landed the
+whole operation (the other lane's word and bytes too) before the release: D1 / D1R0 (lane 1
+drains) were clean in every explorer from 2026-11-12 (per-lane actors), and D0 / D0R1 (lane 0,
+the operation's first lane, drains) were clean before that too. DPOR is not cross-checked here:
+it misses non-blocking poll outcomes (a separate known gap)."""
+ptx = "kernel.ptx"
+entry = "e_stasync_lanes"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "D1R0"
+summary = "lane 1 drains; rank 1 test_waits M1 and reads lane 0's x"
+expect = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "D1"
+summary = "lane 1 drains; rank 1 test_waits M1, no read"
+expect = ["nondeterministic"]
+edits = [
+    { marker = "@READ", replace = "<delete>" },
+    { marker = "@SUM", replace = "<delete>" },
+]
+
+[[variants]]
+id = "D1R1"
+summary = "lane 1 drains; rank 1 test_waits M1 and reads lane 1's own y (ordered)"
+expect = ["nondeterministic"]
+marker = "@READ"
+find = "[%r8+0]"
+replace = "[%r8+4]"
+
+[[variants]]
+id = "D0R1"
+summary = "lane 0 (the operation's first lane) drains; rank 1 test_waits M1 and reads lane 1's y"
+expect = ["nondeterministic", "race", "violation"]
+edits = [
+    { marker = "@DR", find = "%r1, 1;", replace = "%r1, 0;" },
+    { marker = "@READ", find = "[%r8+0]", replace = "[%r8+4]" },
+]
+
+[[variants]]
+id = "D0"
+summary = "lane 0 drains; rank 1 test_waits M1, no read"
+expect = ["nondeterministic"]
+edits = [
+    { marker = "@DR", find = "%r1, 1;", replace = "%r1, 0;" },
+    { marker = "@READ", replace = "<delete>" },
+    { marker = "@SUM", replace = "<delete>" },
+]
+
+[[variants]]
+id = "D0X"
+summary = "lane 0 drains; rank 1 waits on M2 only and exits, no final cluster barrier: lane 1's word can outlive rank 1"
+expect = ["violation"]
+edits = [
+    { marker = "@DR", find = "%r1, 1;", replace = "%r1, 0;" },
+    { marker = "@READ", replace = "<delete>" },
+    { marker = "@SUM", replace = "<delete>" },
+    { marker = "@TW1", replace = "<delete>" },
+    { marker = "@TW2", find = "selp.u32 %r15, 1, 0, %p6;", replace = "mov.u32 %r15, 0;" },
+    { marker = "@W1A", replace = "<delete>" },
+    { marker = "@W1B", replace = "<delete>" },
+    { marker = "@W1C", replace = "<delete>" },
+    { marker = "@EB1", replace = "<delete>" },
+    { marker = "@EB2", replace = "<delete>" },
+]
+
+[[variants]]
+id = "D0XW"
+summary = "D0X, but rank 1 waits on M1 (both words landed) before exiting: clean"
+expect = ["clean"]
+edits = [
+    { marker = "@DR", find = "%r1, 1;", replace = "%r1, 0;" },
+    { marker = "@READ", replace = "<delete>" },
+    { marker = "@SUM", replace = "<delete>" },
+    { marker = "@TW1", replace = "<delete>" },
+    { marker = "@TW2", find = "selp.u32 %r15, 1, 0, %p6;", replace = "mov.u32 %r15, 0;" },
+    { marker = "@EB1", replace = "<delete>" },
+    { marker = "@EB2", replace = "<delete>" },
+]
+
+[[variants]]
+id = "D0XB"
+summary = "D0X with bar.warp.sync of lanes 0 and 1 after the st.async: lane 1's issue is ordered before rank 1's exit, its word is not"
+expect = ["violation"]
+edits = [
+    { marker = "@STA", find = "[%r9];", replace = "[%r9]; bar.warp.sync 3;" },
+    { marker = "@DR", find = "%r1, 1;", replace = "%r1, 0;" },
+    { marker = "@READ", replace = "<delete>" },
+    { marker = "@SUM", replace = "<delete>" },
+    { marker = "@TW1", replace = "<delete>" },
+    { marker = "@TW2", find = "selp.u32 %r15, 1, 0, %p6;", replace = "mov.u32 %r15, 0;" },
+    { marker = "@W1A", replace = "<delete>" },
+    { marker = "@W1B", replace = "<delete>" },
+    { marker = "@W1C", replace = "<delete>" },
+    { marker = "@EB1", replace = "<delete>" },
+    { marker = "@EB2", replace = "<delete>" },
+]

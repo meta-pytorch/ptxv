@@ -88,6 +88,15 @@ static void CUPTIAPI cb(void *u, CUpti_CallbackDomain d, CUpti_CallbackId id, co
     static int n;
     char path[4096];
     int idx = __atomic_fetch_add(&n, 1, __ATOMIC_RELAXED);
+    if (idx == 0) {
+        // This process's first module starts a fresh handles.jsonl: the .cubin index restarts
+        // at 0, so records left by an earlier run in the same directory would name the wrong
+        // images. (Truncating in the constructor let every child process that inherits
+        // LD_PRELOAD, a compiler or `true` loading no module, empty its parent's records.)
+        snprintf(path, sizeof path, "%s/handles.jsonl", out_dir(dbuf, sizeof dbuf));
+        FILE *h = fopen(path, "w");
+        if (h) fclose(h);
+    }
     snprintf(path, sizeof path, "%s/%d.cubin", out_dir(dbuf, sizeof dbuf), idx);
     FILE *f = fopen(path, "wb");
     if (!f) return;
@@ -97,12 +106,6 @@ static void CUPTIAPI cb(void *u, CUpti_CallbackDomain d, CUpti_CallbackId id, co
 }
 
 __attribute__((constructor)) static void init(void) {
-    // A fresh handles.jsonl per process: the .cubin index restarts at 0, so records left by
-    // an earlier run in the same directory would name the wrong images.
-    char dbuf[4096], path[4096];
-    snprintf(path, sizeof path, "%s/handles.jsonl", out_dir(dbuf, sizeof dbuf));
-    FILE *f = fopen(path, "w");
-    if (f) fclose(f);
     CUpti_SubscriberHandle s;
     if (cuptiSubscribe(&s, (CUpti_CallbackFunc)cb, 0) == CUPTI_SUCCESS) {
         cuptiEnableCallback(1, s, CUPTI_CB_DOMAIN_RESOURCE, CUPTI_CBID_RESOURCE_MODULE_LOADED);

@@ -1,0 +1,10 @@
+# MISS 143 (gen.py): out[i] = (+0 + a[i]) + b[i], both FTZ against out[i] = (+0 + a[i]) + b[i], both bulk (no flush); input set s.
+max_states = 200000
+reference = { case = "ftz2_ab_s", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "blk2_ab_s"
+variant = "good"
+front = "sass"
+certify = true
+expect = "L2"

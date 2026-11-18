@@ -23,6 +23,8 @@ buffer = "out"
 id = "good"
 summary = "st; wait::st; ld; wait::ld; dealloc"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "LDNW"
@@ -33,7 +35,7 @@ edits = [{ marker = "@LATE", find = "// (late wait slot)", replace = "tcgen05.wa
 expect = ["race"]
 # SASS: ptxas waits on the LDTM's scoreboard before the dealloc anyway (the SASS front follows
 # the scoreboards, MISS 103): ordered as compiled.
-expect_sass = ["clean"]
+expect_sass = ["contract"]
 
 [[variants]]
 id = "STNW"
@@ -42,3 +44,5 @@ marker = "@WAITST"
 replace = "<delete>"
 edits = [{ marker = "@LD", replace = "<delete>" }, { marker = "@WAITLD", replace = "<delete>" }, { marker = "@OUT", replace = "<delete>" }]
 expect = ["race"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "race"]

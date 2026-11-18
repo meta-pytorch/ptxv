@@ -62,6 +62,8 @@ buffer = "out"
 id = "good"
 summary = "six gathers, one mbarrier"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "misaligned"
@@ -70,4 +72,6 @@ marker = "@ALIGN"
 find = "-8;"
 replace = "-7;"
 expect = ["deadlock", "fault"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "deadlock", "fault"]
 hw_note = "GB300: illegal instruction (also columns 3 and 100 of 2-byte elements, and 4 of 2-byte with the 128B map)"

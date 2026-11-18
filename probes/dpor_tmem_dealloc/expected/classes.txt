@@ -1,0 +1,17 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# NOFREEWAIT PTX: DPOR also runs the dealloc before the STTM and reports its tmem-unalloc
+# violation; the stateful search reports the race in one order only (E-DRF), as the fixture's
+# racy controls note. NOFREEWAIT SASS: the E-HW-SB-QUEUE scoreboard contract
+# (sb-unmeasured:), as fixtures/e_fa4_warp_roles ctl_nofreewait.
+good       ptx  stateful [clean]
+good       ptx  dpor     [clean]
+good       ptx  certify  [clean]
+good       sass stateful [clean]
+good       sass dpor     [clean]
+good       sass certify  [clean]
+NOFREEWAIT ptx  stateful [race]
+NOFREEWAIT ptx  dpor     [race,violation]
+NOFREEWAIT ptx  certify  [race]
+NOFREEWAIT sass stateful [contract,race,violation]
+NOFREEWAIT sass dpor     [contract,race,violation]
+NOFREEWAIT sass certify  [contract,race,violation]

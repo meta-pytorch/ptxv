@@ -1,0 +1,66 @@
+name = "probe_half_add"
+description = """
+Probe (N-F16X2, N-BF16X2) for f16 / bf16 adds and the half atomic adds on GB300 (kernel.ptx,
+gen.py, check.py): add.rn .f16x2 / .bf16x2 and .f16 / .bf16 on selected halves (SASS HFMA2 a,
+1, 1, b and HADD2 / HADD2.BF16_V2 with .H0_H0 / .H1_H1), atom.global / atom (generic) /
+red.global .add.noftz .f16x2 / .bf16x2 (ATOMG / ATOM / REDG .E.ADD.F16x2.RN / .BF16x2.RN) and
+the generic scalar atom.add.noftz.f16 / .bf16 (ptxas: LD.E of the word, then a HADD2 + PRMT +
+ATOM.E.CAS loop), on edge, tie, overflow, subnormal, signed-zero and NaN lane pairs.
+expected/ is GB300's output (ptxas 13.0 cubin, `ptxv hw-worker probes/half_add <cubin> --runs 1
+--dump`); results.txt has the counts."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+ptxas_toolkit = "13.0"
+entry = "half_add"
+grid = [16, 1, 1]
+block = [256, 1, 1]
+outputs = ["out", "m"]
+
+[[buffers]]
+name = "inh"
+dtype = "u32"
+shape = [4096, 2]
+init = "file"
+file = "inh.bin"
+
+[[buffers]]
+name = "inb"
+dtype = "u32"
+shape = [4096, 2]
+init = "file"
+file = "inb.bin"
+
+[[buffers]]
+name = "m"
+dtype = "u32"
+shape = [8, 4096]
+init = "file"
+file = "m.bin"
+expect = "expected/m.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [12, 4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "inh"
+
+[[params]]
+kind = "ptr"
+buffer = "inb"
+
+[[params]]
+kind = "ptr"
+buffer = "m"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,54 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CLOCK (MISS 78) hang-guard exemption: a poll whose 2000-cycle clock64 timeout traps. clock.rs
+// `leads_to_trap` exempted any clock branch with a side that reaches a trap, whatever the
+// bound: the model assumed the timeout never fires. Now only a proven bound of 2^31 clock
+// units or more is exempt. Thread 0 sleeps 200 us before it sets
+// the flag (E-NANOSLEEP: a no-op in the model), so on GB300 the reader's 2000-cycle bound
+// passes first and the kernel traps.
+//   good: timeout 2000 cycles, then trap.
+//   LONG: timeout 2^40 cycles (about 10 min at 2 GHz): a real hang guard.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_hang(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra READER;
+    nanosleep.u32 200000;
+    mov.u32 %r2, 7;
+    st.global.u32 [%rd1+4], %r2;
+    mov.u32 %r3, 1;
+    st.release.gpu.global.u32 [%rd1+8], %r3;
+    bra DONE;
+READER:
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    mov.u64 %rd2, %clock64;
+POLL:
+    ld.acquire.gpu.global.u32 %r4, [%rd1+8];
+    setp.ne.u32 %p3, %r4, 0;
+    @%p3 bra READ;
+    mov.u64 %rd3, %clock64;
+    sub.s64 %rd4, %rd3, %rd2;
+    setp.gt.s64 %p4, %rd4, 2000;         // @BOUND
+    @%p4 bra TIMEOUT;
+    bra POLL;
+TIMEOUT:
+    trap;
+READ:
+    ld.global.u32 %r5, [%rd1+4];
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

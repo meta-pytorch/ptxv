@@ -1,0 +1,12 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# unreduced: every reduction off, the reference. PTX: the reduced explorers may lose the
+# nondeterministic class past the race (E-DRF). SASS: no race (ptxas makes the stores relaxed
+# .cta strong accesses, S-SMEM-STRONG); the early completion still shows as nondeterministic.
+good  ptx  unreduced [deadlock,nondeterministic,race]
+good  ptx  stateful  [deadlock,race]
+good  ptx  dpor      [deadlock,race]
+good  ptx  certify   [deadlock,race]
+good  sass unreduced [deadlock,nondeterministic]
+good  sass stateful  [deadlock,nondeterministic]
+good  sass dpor      [deadlock,nondeterministic]
+good  sass certify   [deadlock,nondeterministic]

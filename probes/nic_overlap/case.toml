@@ -1,0 +1,193 @@
+name = "nic_overlap"
+description = """
+MISS 194 repro: complete overlap with the NIC's strong accesses (S-SCOPE; S-NIC-ATOMIC, S-NIC-WORD,
+S-NIC-CQE). One GPU, a loopback QP: CTA 0 t0 posts an RDMA write of src into dst and a fetch-add of
+1 on the 8-byte sig, then polls the completion. Accesses of another width than the NIC's element
+(the atomic's 8-byte word, an RDMA write's 8- or 4-byte chunk, a CQE field) are not one location
+with it: PTX ISA 9.5 sections 8.2.1, 8.7, 8.7.2 (a mixed-size data race; no observation, 8.9.2).
+run.sh prints expected/verdicts.csv next to ptxv's verdicts."""
+ptx = "kernel.ptx"
+entry = "ibgda"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[nic_qps]]
+name = "qp0"
+device = 0
+peer = 0
+qpn = 0x42
+sq = "sq"
+sq_wqes = 2
+cq = "cq"
+cq_cqes = 2
+db = "uar"
+
+[[nic_mrs]]
+key = 0x100
+buffer = "src"
+
+[[nic_mrs]]
+key = 0x101
+buffer = "sink"
+
+[[nic_mrs]]
+key = 0x200
+buffer = "dst"
+
+[[nic_mrs]]
+key = 0x201
+buffer = "sig"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "cq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+values = [[63, 241], [127, 241]]
+device = 0
+
+[[buffers]]
+name = "uar"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dbr"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sink"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dst"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sig"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "sq"
+
+[[params]]
+kind = "ptr"
+buffer = "cq"
+
+[[params]]
+kind = "ptr"
+buffer = "uar"
+
+[[params]]
+kind = "ptr"
+buffer = "dbr"
+
+[[params]]
+kind = "ptr"
+buffer = "sink"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "sig"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "R (CTA 0) polls the 8-byte sig with ld.acquire.sys.u64 until 1, then reads dst: one location with the fetch-add, synchronizes: clean"
+expect = ["clean"]
+
+[[variants]]
+id = "PART"
+summary = "R (CTA 0) polls the low 4 bytes of the 8-byte sig with ld.acquire.sys.u32: not one location with the NIC's 8-byte fetch-add (8.2.1, 8.7), a mixed-size data race (8.7.2) and no observation (8.9.2)"
+marker = "@SIGPOLL"
+find = "ld.acquire.sys.global.u64 %rd41, [%rd2];"
+replace = "ld.acquire.sys.global.u32 %r31, [%rd2]; cvt.u64.u32 %rd41, %r31;"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "PART_OTHERCTA"
+summary = "PART read by CTA 1 (no early read)"
+marker = "@SIGPOLL"
+find = "ld.acquire.sys.global.u64 %rd41, [%rd2];"
+replace = "ld.acquire.sys.global.u32 %r31, [%rd2]; cvt.u64.u32 %rd41, %r31;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "WORDPART"
+summary = "a thread of CTA 1, unordered with the NIC, polls dst+4 (4 bytes) of the 8-byte word the RDMA write lands as one strong .sys write (S-NIC-WORD) with ld.relaxed.sys.u32 until it holds src[1]: a mixed-size data race (8.7, 8.7.2)"
+marker = "@SIGPOLL"
+find = "ld.acquire.sys.global.u64 %rd41, [%rd2];"
+replace = "ld.relaxed.sys.global.u32 %r31, [%rd1+4]; setp.ne.u32 %p10, %r31, 257; @%p10 bra SIGPOLL; mov.u32 %r31, 1; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "WORDFULL"
+summary = "control: the same poll at the word's width (ld.relaxed.sys.u64 [dst]): morally strong with the NIC's word write: no race"
+marker = "@SIGPOLL"
+find = "ld.acquire.sys.global.u64 %rd41, [%rd2];"
+replace = "ld.relaxed.sys.global.u64 %rd43, [%rd1]; setp.ne.u64 %p10, %rd43, 1103806595328; @%p10 bra SIGPOLL; mov.u32 %r31, 1; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "CQEPART"
+summary = "a thread of CTA 1, unordered with the NIC, reads bytes 60-63 of the second CQE with ld.relaxed.sys.u32; the model's CQE write publishes fields at bytes 56-59, 60-61, 62 and 63 (S-NIC-CQE), so the read spans three fields: whether it is one location with the NIC's write is not modeled (unmodeled)"
+marker = "@SIGPOLL"
+find = "ld.acquire.sys.global.u64 %rd41, [%rd2];"
+replace = "ld.param.u64 %rd44, [cq]; ld.relaxed.sys.global.u32 %r31, [%rd44+124]; and.b32 %r31, %r31, 0; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["unmodeled"]
+expect_sass = ["clean"]

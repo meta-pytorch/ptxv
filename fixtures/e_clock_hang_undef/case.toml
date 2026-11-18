@@ -1,0 +1,74 @@
+name = "e_clock_hang_undef"
+description = """
+E-CLOCK hang guard whose start read does not reach the compare on every path. The reader skips
+`mov.u64 %rd10, %clock64` when x != 0 (x = 1000 loaded from memory) and then polls with a
+2^32 timeout against %rd10, undefined on that path (on hardware whatever the register held:
+the first poll may trap). The start's only definition is not a definition on every path, so
+the slice proof (which re-executes the read) does not stand for the run: the guard is a clock
+choice and the trap is explored. DEF: the start read on every path, a 2^32 bound: exempt.
+DL: the start read on every path (so the reads dominate each other), but the deadline
+(start + 2^40) computed only when x == 0 and compared as now > deadline: with x != 0 the
+deadline is undefined (on hardware whatever the register held), no slice: a clock choice."""
+ptx = "kernel.ptx"
+entry = "e_clock_hang_undef"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [1]
+init = "file"
+file = "in.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "start read skipped when x != 0: no slice, a clock choice"
+# PTX: the compare reads the undefined start (S-INIT violation) as well.
+expect = ["nondeterministic", "trap", "violation"]
+expect_sass = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "DEF"
+summary = "start read on every path: exempt"
+marker = "@SKIP"
+replace = "<delete>"
+expect = ["clean"]
+
+[[variants]]
+id = "DL"
+summary = "deadline computed only when x == 0: undefined on the x != 0 path, a clock choice"
+marker = "@SKIP"
+find = "@%p7 bra POLL;"
+replace = "mov.u64 %rd10, %clock64;\n    @%p7 bra POLL;"
+expect = ["nondeterministic", "trap", "violation"]
+
+[[variants.edits]]
+marker = "@START"
+find = "mov.u64 %rd10, %clock64;"
+replace = "add.u64 %rd11, %rd10, 0x10000000000;"
+
+[[variants.edits]]
+marker = "@SUB"
+find = "sub.u64 %rd13, %rd12, %rd10;"
+replace = "// no difference"
+
+[[variants.edits]]
+marker = "@CMP"
+find = "setp.gt.u64 %p4, %rd13, 0x100000000;"
+replace = "setp.gt.u64 %p4, %rd12, %rd11;"

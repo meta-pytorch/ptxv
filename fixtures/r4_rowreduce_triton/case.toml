@@ -65,10 +65,16 @@ value = 0
 id = "good"
 summary = "as compiled by Triton"
 expect = ["clean"]
+# SASS strict: an E-HW-SB-QUEUE contract (sb-hwq:): `LDS R3` with no write scoreboard, read after
+# a wait on a later SHFL's only, is cleared by the GB300-measured shared-memory queue
+# (probes/shared_queue COVER, MISS 106); clean at gb300.
+expect_sass = ["contract"]
 
 [[variants]]
 id = "nosb"
 summary = "SASS: SHFL.BFLY R10 (the row sum's second butterfly step) at 0x220 gets no write scoreboard (wr SBn -> none)"
 patch = [{ at = "@0x220", wbar = 7 }]
 expect = ["violation"]
+# SASS strict: plus good's E-HW-SB-QUEUE contract (MISS 106: the LDS covered by a later SHFL).
+expect_sass = ["contract", "violation"]
 hw_note = "the consumer's wait no longer covers the variable-latency result: it reads the register before it is written"

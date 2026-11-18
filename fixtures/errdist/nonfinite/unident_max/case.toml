@@ -1,0 +1,52 @@
+name = "unident_max"
+description = """entry unident_max of ../unident.ptx (the same slice under a maximum: no exact value for any
+output, whichever child the maximum passes on)."""
+ptx = "../unident.ptx"
+entry = "unident_max"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "v"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "v"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

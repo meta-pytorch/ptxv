@@ -28,6 +28,7 @@ use ptxv_ir::Scope;
 
 use crate::exec::Loc;
 use crate::machine::*;
+use crate::num::NicAtomicNum;
 
 /// Resolved configuration (from the case's `nic_qps` / `nic_mrs` / `domains`).
 #[derive(Clone, Debug)]
@@ -204,12 +205,56 @@ pub struct NicState {
     pub names: Vec<(u32, String)>,
     /// Remote locations NIC atomics wrote: (allocation, offset).
     pub atomics: Vec<(usize, u64)>,
+    /// The strong accesses of the NIC actors, sorted by actor (MISS 194: what decides
+    /// complete overlap with them, `NicState::elem`).
+    pub acc: Vec<NicAcc>,
+}
+
+/// The kind of a strong access of the NIC (`NicAcc`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NicAccKind {
+    /// An atomic's aligned 8-byte word (S-NIC-ATOMIC).
+    Atomic,
+    /// A lone naturally aligned 4- or 8-byte RDMA write (S-NIC-FLAG).
+    Flag,
+    /// Other RDMA write data (S-NIC-WORD): naturally aligned 8-byte chunks, 4-byte ones at the
+    /// edges, plain bytes at unaligned edges.
+    Words,
+    /// A 64-byte CQE (S-NIC-CQE), whose fields the model publishes at bytes 56-59, 60-61, 62
+    /// and 63.
+    Cqe,
+}
+
+/// One strong access of a NIC actor: its allocation range and the address of its first byte
+/// (S-NIC-WORD's chunks are naturally aligned in the address space).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NicAcc {
+    pub actor: u32,
+    pub alloc: u32,
+    pub off: u64,
+    pub n: u64,
+    pub addr: u64,
+    pub kind: NicAccKind,
+}
+
+/// The element of a NIC strong access that covers a byte (`NicState::elem`): what complete
+/// overlap with a thread's access is decided against (S-SCOPE, MISS 194).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NicElem {
+    /// One location of this many bytes at this allocation offset: an atomic's word, a flag
+    /// write, an RDMA write's chunk.
+    Exact(u64, u8),
+    /// A CQE field (offset, size): an access of another extent is not modeled.
+    Field(u64, u8),
+    /// No element the model decides: a CQE byte outside its fields, or no recorded access.
+    Unknown,
 }
 
 impl Hash for NicState {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.qps.hash(h);
         self.atomics.hash(h);
+        self.acc.hash(h);
     }
 }
 
@@ -230,7 +275,68 @@ impl NicState {
                 .collect(),
             names: vec![],
             atomics: vec![],
+            acc: vec![],
         }
+    }
+
+    /// Records a strong access of a NIC actor (`acc` stays sorted by actor).
+    pub fn note_acc(&mut self, a: NicAcc) {
+        let i = self.acc.partition_point(|x| x.actor <= a.actor);
+        self.acc.insert(i, a);
+    }
+
+    /// Is `actor` a NIC actor with a recorded strong access?
+    pub fn has_acc(&self, actor: u32) -> bool {
+        self.acc
+            .get(self.acc.partition_point(|x| x.actor < actor))
+            .is_some_and(|x| x.actor == actor)
+    }
+
+    /// MISS 194: the element of NIC actor `actor`'s strong access that covers byte `off` of
+    /// allocation `alloc`. S-NIC-WORD's chunks follow `complete_nic`: the naturally aligned
+    /// 8-byte word holding the byte when the write covers all of it, else the 4-byte one, else
+    /// the byte (a plain write).
+    pub fn elem(&self, actor: u32, alloc: usize, off: u64) -> NicElem {
+        let lo = self.acc.partition_point(|x| x.actor < actor);
+        for x in self.acc[lo..].iter().take_while(|x| x.actor == actor) {
+            if x.alloc as usize != alloc || off < x.off || off >= x.off + x.n {
+                continue;
+            }
+            return match x.kind {
+                NicAccKind::Atomic | NicAccKind::Flag => NicElem::Exact(x.off, x.n as u8),
+                NicAccKind::Words => {
+                    let (a, end) = (x.addr + (off - x.off), x.addr + x.n);
+                    let (w8, w4) = (a & !7, a & !3);
+                    if w8 >= x.addr && w8 + 8 <= end {
+                        NicElem::Exact(off - (a - w8), 8)
+                    } else if w4 >= x.addr && w4 + 4 <= end {
+                        NicElem::Exact(off - (a - w4), 4)
+                    } else {
+                        NicElem::Exact(off, 1)
+                    }
+                }
+                NicAccKind::Cqe => match off - x.off {
+                    56..=59 => NicElem::Field(x.off + 56, 4),
+                    60 | 61 => NicElem::Field(x.off + 60, 2),
+                    62 => NicElem::Field(x.off + 62, 1),
+                    63 => NicElem::Field(x.off + 63, 1),
+                    _ => NicElem::Unknown,
+                },
+            };
+        }
+        NicElem::Unknown
+    }
+
+    /// The first byte of the CQE when NIC actor `actor`'s strong access that covers byte `off` of
+    /// allocation `alloc` is a CQE write.
+    pub fn cqe_at(&self, actor: u32, alloc: usize, off: u64) -> Option<u64> {
+        let lo = self.acc.partition_point(|x| x.actor < actor);
+        self.acc[lo..]
+            .iter()
+            .take_while(|x| x.actor == actor)
+            .find(|x| x.alloc as usize == alloc && off >= x.off && off < x.off + x.n)
+            .filter(|x| x.kind == NicAccKind::Cqe)
+            .map(|x| x.off)
     }
 }
 
@@ -423,6 +529,7 @@ impl Machine {
         vc_join(&mut vc, &self.nic.as_ref().unwrap().qps[q].last);
         vc_tick(&mut vc, w.actor);
         self.pending.push(AsyncOp {
+            seq: 0,
             sh: vec![],
             fifo: None,
             actor: w.actor,
@@ -628,22 +735,32 @@ impl Machine {
                             vec![e.pc, pc],
                         );
                     }
-                    let data = self.access(
-                        actor,
-                        &vc,
-                        pc,
-                        Loc::Global {
-                            alloc: src.0,
-                            off: src.1,
-                        },
-                        n as usize,
-                        None,
-                    );
+                    let from = Loc::Global {
+                        alloc: src.0,
+                        off: src.1,
+                    };
+                    let data = self.access(actor, &vc, pc, from, n as usize, None);
+                    // N-NUM-TRACK: the write moves the source words' numerics nodes and taint
+                    // (MISS 224: the destination kept the nodes of what it held before).
+                    let snapshot = self.num_read_snapshot(Some(from), &data, pc);
                     let loc = Loc::Global {
                         alloc: dst.0,
                         off: dst.1,
                     };
-                    if ds == 3 && (n == 4 || n == 8) && (raddr + roff).is_multiple_of(n) {
+                    let flag = ds == 3 && (n == 4 || n == 8) && (raddr + roff).is_multiple_of(n);
+                    self.nic.as_mut().unwrap().note_acc(NicAcc {
+                        actor,
+                        alloc: dst.0 as u32,
+                        off: dst.1,
+                        n,
+                        addr: raddr + roff,
+                        kind: if flag {
+                            NicAccKind::Flag
+                        } else {
+                            NicAccKind::Words
+                        },
+                    });
+                    if flag {
                         // ASSUME(S-NIC-FLAG): a lone naturally aligned 4- or 8-byte RDMA write
                         // (mscclpp's IBGDA signal token) lands as one strong .sys write that
                         // releases the QP's earlier WQEs, like a fetch-add signal.
@@ -687,6 +804,7 @@ impl Machine {
                         }
                         self.nic_sync_clear(dst.0, dst.1, n);
                     }
+                    self.num_copy_snapshot(loc, &data, snapshot.as_ref(), pc);
                     roff += n;
                 }
             }
@@ -727,11 +845,34 @@ impl Machine {
                 // what they wrote; the 64-bit value is little-endian in memory (probes/ibgda
                 // P0: fetch-adds of 1 leave 1, 2, 3 as little-endian words).
                 self.nic_atomic_mixed(dst.0, dst.1, &vc, pc, &who);
+                self.nic.as_mut().unwrap().note_acc(NicAcc {
+                    actor,
+                    alloc: dst.0 as u32,
+                    off: dst.1,
+                    n: 8,
+                    addr: raddr,
+                    kind: NicAccKind::Atomic,
+                });
                 let loc = Loc::Global {
                     alloc: dst.0,
                     off: dst.1,
                 };
                 let old = self.access_x(actor, &vc, pc, loc, 8, None, STRONG_SYS);
+                // N-NUM-TRACK: the fetched value carries the old word's numerics nodes to the
+                // local buffer (MISS 224); what may differ in the exact computation is read
+                // before the write, for the word's own nodes (MISS 257, `num_nic_atomic`).
+                let snapshot = self.num_read_snapshot(Some(loc), &old, pc);
+                let word = |k: u64| Loc::Global {
+                    alloc: dst.0,
+                    off: dst.1 + k,
+                };
+                let field = |k: u64| Loc::Global {
+                    alloc: sa,
+                    off: so + k,
+                };
+                let old_inexact = [0, 4].map(|k| self.num_mem_inexact(word(k), 4));
+                let operand_inexact = self.num_mem_inexact(field(32), 8);
+                let compare_inexact = opcode == OP_ATOMIC_CS && self.num_mem_inexact(field(40), 8);
                 let o = u64::from_le_bytes(old[..8].try_into().unwrap());
                 let n = if opcode == OP_ATOMIC_FA {
                     o.wrapping_add(swap_add)
@@ -741,6 +882,16 @@ impl Machine {
                     o
                 };
                 self.access_x(actor, &vc, pc, loc, 8, Some(&n.to_le_bytes()), STRONG_SYS);
+                let a = NicAtomicNum {
+                    old: o,
+                    new: n,
+                    add: (opcode == OP_ATOMIC_FA).then_some(swap_add),
+                    swapped: opcode == OP_ATOMIC_CS && o == compare,
+                    old_inexact,
+                    operand_inexact,
+                    compare_inexact,
+                };
+                self.num_nic_atomic(loc, &a, snapshot.as_ref());
                 self.nic_publish(dst.0, dst.1, actor, &vc, true);
                 let ns = self.nic.as_mut().unwrap();
                 if !ns.atomics.contains(&(dst.0, dst.1)) {
@@ -748,17 +899,12 @@ impl Machine {
                     ns.atomics.sort_unstable();
                 }
                 // The fetched value returns to the local buffer.
-                self.access(
-                    actor,
-                    &vc,
-                    pc,
-                    Loc::Global {
-                        alloc: sink.0,
-                        off: sink.1,
-                    },
-                    8,
-                    Some(&old),
-                );
+                let to = Loc::Global {
+                    alloc: sink.0,
+                    off: sink.1,
+                };
+                self.access(actor, &vc, pc, to, 8, Some(&old));
+                self.num_copy_snapshot(to, &old, snapshot.as_ref(), pc);
                 self.nic_sync_clear(sink.0, sink.1, 8);
             }
             OP_RDMA_WRITE_IMM => {
@@ -790,7 +936,22 @@ impl Machine {
                 alloc: qc.cq.0,
                 off,
             };
+            self.nic.as_mut().unwrap().note_acc(NicAcc {
+                actor,
+                alloc: qc.cq.0 as u32,
+                off,
+                n: 64,
+                addr: off,
+                kind: NicAccKind::Cqe,
+            });
             self.access_x(actor, &vc, pc, loc, 64, Some(&cqe), STRONG_SYS);
+            // N-NUM-TRACK: the CQE words hold no tracked value (MISS 224).
+            for k in (0..64).step_by(4) {
+                self.num_forget(Loc::Global {
+                    alloc: qc.cq.0,
+                    off: off + k,
+                });
+            }
             for k in [56u64, 60, 62, 63] {
                 self.nic_publish(qc.cq.0, off + k, actor, &vc, false);
             }
@@ -809,7 +970,9 @@ impl Machine {
         }
     }
 
-    /// The NIC's strong write at (alloc, off) as a synchronization source releasing `vc`.
+    /// The NIC's strong write at (alloc, off) as a synchronization source releasing `vc`. A NIC
+    /// atomic (`rmw`) continues the release sequence of the write it reads as a GPU
+    /// read-modify-write does (`sync_publish`).
     fn nic_publish(&mut self, alloc: usize, off: u64, actor: u32, vc: &VC, rmw: bool) {
         let key = (1u8, alloc as u32, off);
         let mut rel = vc.clone();
@@ -817,9 +980,40 @@ impl Machine {
         let mut cont_join = VC::new();
         if rmw {
             if let Some(old) = self.syncs.get(&key) {
-                vc_join(&mut rel, &old.rel);
-                cont = old.cont.clone();
-                cont_join = old.cont_join.clone();
+                // ASSUME(S-NIC-ATOMIC), ASSUME(S-SCOPE): the NIC atomic, a strong system-scope
+                // read-modify-write by its WQE's actor (on the GPU of the thread that rang the
+                // doorbell, in no CTA or cluster: `nic_apart`, MISS 193), continues the release
+                // sequence of the write it reads only when the two are morally strong (PTX ISA 9.5
+                // section 8.9.2): the write's scope includes the NIC (`.sys`, or `.gpu` on the
+                // doorbell thread's GPU), and at the strict PTX level the write is one location
+                // with the atomic's 8-byte word (`overlap_with_nic`, MISS 194). The write's own
+                // release pattern and those it continued keep their first operations' threads and
+                // scopes (section 8.9.4, `SyncCell::cont`), as `sync_publish` keeps them. Under the
+                // hardware ordering every strong pair is morally strong and every release is at
+                // system scope (E-HW-L1). Until 2026-11-12 the NIC atomic continued every write's
+                // sequence and joined the write's own release into its own, at system scope.
+                if self.launch.hw_order
+                    || self.scopes_mutual(old.writer, strong_code(old.scope), actor, STRONG_SYS)
+                        && self.overlap_at(old.writer, old.pc, actor, u32::MAX, Some((alloc, off)))
+                            != crate::exec::Overlap::Partial
+                {
+                    if self.launch.hw_order {
+                        vc_join(&mut rel, &old.rel);
+                        for c in &old.cont {
+                            vc_join(&mut rel, &c.rel);
+                        }
+                    } else {
+                        cont = old.cont.clone();
+                        cont_join = old.cont_join.clone();
+                        SyncCell::add_cont(
+                            &mut cont,
+                            &mut cont_join,
+                            old.writer,
+                            &old.rel,
+                            old.rel_scope,
+                        );
+                    }
+                }
             }
         }
         self.syncs.insert(
@@ -918,5 +1112,91 @@ impl Machine {
                 vec![e.pc, pc],
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod elem_tests {
+    use super::*;
+
+    fn acc(actor: u32, off: u64, n: u64, addr: u64, kind: NicAccKind) -> NicAcc {
+        NicAcc {
+            actor,
+            alloc: 0,
+            off,
+            n,
+            addr,
+            kind,
+        }
+    }
+
+    /// MISS 194: `NicState::elem` of RDMA write data names the chunk `complete_nic` writes the
+    /// byte with (naturally aligned 8 bytes, else 4, else a plain byte), for every start
+    /// address and length up to 40 bytes.
+    #[test]
+    fn words_elem_matches_the_chunks() {
+        for base in 0..16u64 {
+            for n in 1..40u64 {
+                let mut ns = NicState::default();
+                // The allocation offset differs from the address: chunks follow the address.
+                ns.note_acc(acc(7, 100 + base, n, 0x1000 + base, NicAccKind::Words));
+                let mut k = 0u64;
+                while k < n {
+                    let a = 0x1000 + base + k;
+                    let w = if a.is_multiple_of(8) && n - k >= 8 {
+                        8
+                    } else if a.is_multiple_of(4) && n - k >= 4 {
+                        4
+                    } else {
+                        1
+                    };
+                    for i in 0..w {
+                        assert_eq!(
+                            ns.elem(7, 0, 100 + base + k + i),
+                            NicElem::Exact(100 + base + k, w as u8),
+                            "base {base} n {n} byte {}",
+                            k + i
+                        );
+                    }
+                    k += w;
+                }
+                assert_eq!(ns.elem(7, 0, 100 + base + n), NicElem::Unknown);
+                assert_eq!(ns.elem(7, 1, 100 + base), NicElem::Unknown);
+                assert_eq!(ns.elem(8, 0, 100 + base), NicElem::Unknown);
+            }
+        }
+    }
+
+    /// A CQE's elements are its fields at bytes 56-59, 60-61, 62 and 63; other bytes are not
+    /// decided. Records stay sorted by actor; an atomic and a flag are one element.
+    #[test]
+    fn cqe_fields_and_records() {
+        let mut ns = NicState::default();
+        ns.note_acc(acc(9, 64, 64, 64, NicAccKind::Cqe));
+        ns.note_acc(acc(3, 8, 8, 0x2008, NicAccKind::Atomic));
+        ns.note_acc(acc(9, 256, 4, 0x3000, NicAccKind::Flag));
+        assert_eq!(
+            ns.acc.iter().map(|x| x.actor).collect::<Vec<_>>(),
+            [3, 9, 9]
+        );
+        assert!(ns.has_acc(3) && ns.has_acc(9) && !ns.has_acc(4));
+        for (b, e) in [
+            (56, NicElem::Field(120, 4)),
+            (59, NicElem::Field(120, 4)),
+            (60, NicElem::Field(124, 2)),
+            (61, NicElem::Field(124, 2)),
+            (62, NicElem::Field(126, 1)),
+            (63, NicElem::Field(127, 1)),
+            (0, NicElem::Unknown),
+            (55, NicElem::Unknown),
+        ] {
+            assert_eq!(ns.elem(9, 0, 64 + b), e, "CQE byte {b}");
+        }
+        assert_eq!(ns.cqe_at(9, 0, 64), Some(64));
+        assert_eq!(ns.cqe_at(9, 0, 127), Some(64));
+        assert_eq!(ns.cqe_at(9, 0, 256), None);
+        assert_eq!(ns.cqe_at(3, 0, 8), None);
+        assert_eq!(ns.elem(3, 0, 12), NicElem::Exact(8, 8));
+        assert_eq!(ns.elem(9, 0, 258), NicElem::Exact(256, 4));
     }
 }

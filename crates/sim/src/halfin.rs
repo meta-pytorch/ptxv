@@ -385,6 +385,12 @@ impl Machine {
         if !ns.half.is_on() {
             return;
         }
+        let srcs = self.half_store_srcs(t, v, bytes);
+        self.half_mem_set(hkey(loc), &srcs);
+    }
+
+    /// The provenance of each byte a store of `v` (`bytes` bytes) writes (`half_on_st`).
+    pub(crate) fn half_store_srcs(&self, t: usize, v: &Val, bytes: u8) -> Vec<Option<Src>> {
         let n = bytes as usize;
         let mut srcs: Vec<Option<Src>> = Vec::with_capacity(n);
         match v {
@@ -417,7 +423,7 @@ impl Machine {
             }
             _ => srcs = vec![None; n],
         }
-        self.half_mem_set(hkey(loc), &srcs);
+        srcs
     }
 
     /// LDSM: register `r` of thread `t` gets its two halves from shared memory at `locs`.

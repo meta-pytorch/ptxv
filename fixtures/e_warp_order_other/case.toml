@@ -1,0 +1,42 @@
+name = "e_warp_order_other"
+description = """
+E-WARP-ORDER, what only the other order reaches (soundness audit repro; grid 1, block 32):
+lane 0 stores data (plain) then a flag (st.release); lane 1, on later instructions of the
+converged warp, reads the flag (ld.acquire) and then the data. In program order the acquire
+reads 1 and orders the data read; in the other order, which the PTX model allows without
+bar.warp.sync, it reads 0 and the data read races with lane 0's store (good), or lane 1 traps
+(TRAP). The PTX front reports the strong pair nondeterministic but explores only program order,
+so neither the race nor the trap is found: the launch check's verdict is incomplete, with a
+note naming the pair (it was complete). SASS: the converged warp's program order, clean."""
+ptx = "kernel.ptx"
+entry = "e_warp_order_other"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "flag 0 skips nothing: the data read races in the other order"
+marker = "@OTHER"
+replace = "<delete>"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "TRAP"
+summary = "flag 0 traps"
+marker = "@OTHER"
+find = "@%p3 bra OTHER;"
+replace = "@%p3 trap;"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

@@ -1,0 +1,60 @@
+name = "probe_atom_f32_space_shm_red"
+description = """
+Probe (N-ATOMIC, MISS 142; probes/atom_f32_space/gen.py): red.shared.add.f32 [%r4], %f2 (shared memory),
+base[i] + x[i] into word i. expected/ is GB300's output (ptxas 13.0 -arch=sm_103a,
+`ptxv hw-worker`)."""
+ptx = "kernel.ptx"
+entry = "shm_red"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "old"]
+
+[[buffers]]
+name = "base"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "base.bin"
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "out0.bin"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "old"
+dtype = "u32"
+shape = [32]
+init = "file"
+file = "old0.bin"
+expect = "expected/old.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "base"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "old"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

@@ -1,0 +1,71 @@
+name = "c_scatter_add_f16"
+description = """
+Forum post 76 (MISS 174, 175): ATen's fp16 scatter_add_ kernel on GB300, captured by
+tools/capture.py (torch 2.12.0a0+git808dd93, CUDA 13.1 build): `x.scatter_add_(0, idx, src)` with
+x = ones(6,8,f16) (96 bytes: word-rounded), idx = randint(0,6,4,8,i64), src = ones(4,8,f16), seed 0;
+one launch, grid [1, 1, 1] block [128, 1, 1]; kernel.cubin slimmed to the kernel
+(tools/cubin_slim.py). SASS: ATOM.E.ADD.F16x2.RN on the containing word with +0 in the
+neighbouring half, and the emulated 16-bit add (LD.E + HADD2 + PRMT + ATOM.E.CAS loop). clean:
+the CAS loops are no polls (E-SPIN), their seed loads relaxed (E-CAS-SEED; before: a race);
+the output equals the captured GPU output (sums of ones: schedule-independent).
+Regenerate: CUDA_VISIBLE_DEVICES=<gpu> $PTXV_PYTHON tools/capture.py --op 'x.scatter_add_(0, idx, src)' --inputs 'x=ones(6,8,f16),idx=randint(0,6,4,8,i64),src=ones(4,8,f16)' --out DIR"""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "_ZN2at6native34_scatter_gather_elementwise_kernelILi128ELi8EZNS0_36_cuda_scatter_gather_internal_kernelILb1EN3c104HalfElEclINS0_9ReduceAddEEEvRNS_14TensorIteratorElllRKT_EUliE_EEviT1_"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+dynamic_smem = 0
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "f16"
+shape = [6, 8]
+init = "file"
+file = "data/out.bin"
+expect = "expected/out.bin"
+
+[[buffers]]
+name = "idx"
+dtype = "i64"
+shape = [4, 8]
+init = "file"
+file = "data/idx.bin"
+
+[[buffers]]
+name = "src"
+dtype = "f16"
+shape = [4, 8]
+init = "file"
+file = "data/src.bin"
+
+[[params]]
+kind = "u32"
+value = 32
+
+[[params]]
+kind = "bytes"
+hex = "0200000008000000010000000300000004000000010000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000020000000800000000000000100000004000000060000000000000000bbdb432c14fe718908949b8d88305004bbdb432c14fe718d08949b8d88305006bbdb432c14fe718f08949b8d8830500abbdb432c14fe718308a49b8d8830500cbbdb432c14fe718608a49b8d88305000bbeb432c14fe718908a49b8d88305002bbeb432c14fe718b08a49b8d88305006bbeb432c14fe718f08a49b8d88305008bbeb432c14fe718208b49b8d8830500abbeb432c14fe718508b49b8d8830500ebbeb432c14fe718808b49b8d88305002bbfb432c14fe718b08b49b8d88305004bbfb432c14fe718e08b49b8d88305008bbfb432c14fe718108c49b8d8830500abbfb432c14fe718408c49b8d8830500ebbfb432c14fe718008c49b8d88305000bc0b432c14fe718908c49b8fbff00000002802ff7ff0000060000000000000060e66fd6ffff00000000802ff7ff0000080000000000000030000000000000000004802ff7ff0000"
+
+[[params.fields]]
+offset = 608
+kind = "ptr"
+buffer = "idx"
+byte_offset = 0
+
+[[params.fields]]
+offset = 632
+kind = "ptr"
+buffer = "out"
+byte_offset = 0
+
+[[params.fields]]
+offset = 656
+kind = "ptr"
+buffer = "src"
+byte_offset = 0
+
+[[variants]]
+id = "good"
+summary = "as captured"
+expect = ["unmodeled"]

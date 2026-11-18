@@ -1,0 +1,22 @@
+name = "mbar_peek_streak"
+description = "RMK277 F1 (MISS 277 follow-up): warp 0 peeks an mbarrier warp 1 initializes later (mbar-uninit, the thread stays); the deterministic runs must get past it to warp 1 (DetSched kept a warp for DET_STREAK = 4096 steps, the no-progress stop came at 64). The exhaustive verdict loses the race (MISS 283), so this is a probe, not a fixture."
+ptx = "kernel.ptx"
+entry = "mbar_peek_streak"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "see description"
+expect = ["violation", "race"]

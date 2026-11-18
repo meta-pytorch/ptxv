@@ -766,3 +766,5 @@ byte_offset = 0
 id = "good"
 summary = "legal readers (offset 0x60, never written): clean in a closed world; stale with l1_coresident (reader next to notify CTA 0) and with l1_havoc"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]

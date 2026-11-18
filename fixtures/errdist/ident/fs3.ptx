@@ -1,0 +1,64 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 138 (the third review's miss A): a directed-rounding step that the identification's
+// probes cross (its result takes three or more values on them), with a large addend in the
+// same slice. Thread i: t = x_i * 2^-10 (exact), s = RM(t + C) - C = floor(t) (C = 1.5 * 2^23,
+// |t| < 2^22), y_i = RM(s + u_i). For u_i in [2^23, 1.5 * 2^23) the sum is an integer below
+// 2^24, so y = u + floor(x / 1024) exactly; the output's ulp (1) is the step. Until MISS 138
+// the slice was identified as y = u (within 2.8e-6 relative on the probes, inside the 2^-11
+// acceptance bound): Tier 1 0.900 against 0 (the step as part of the function) or 0.5048 (the
+// step as rounding error, GB300 200 inputs).
+.visible .entry rE_fs3(.param .u64 px, .param .u64 pu, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pu];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    mul.rn.f32 %f3, %f1, 0f3A800000;
+    add.rm.f32 %f4, %f3, 0f4B400000;
+    sub.rn.f32 %f7, %f4, 0f4B400000;
+    add.rm.f32 %f5, %f7, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}
+
+// MISS 138, the same step on the large term's own argument: t = u * 2^-13 (exact),
+// s = RM(t + C) - C = floor(t) (C = 1.5 * 2^23), y = RM(s + u). For u in [2^23, 2^24) the sum is
+// an integer below 2^24, so y = u + floor(u / 8192) exactly. y = u is within 1.2e-4 relative
+// (inside the 2^-11 acceptance bound) and reads u, while the fitted y = c u (c about
+// 1 + 2^-13) is within a rounding.
+.visible .entry samearg(.param .u64 pu, .param .u64 py)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd2, [pu];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f2, [%rd6];
+    mul.rn.f32 %f3, %f2, 0f39000000;
+    add.rm.f32 %f4, %f3, 0f4B400000;
+    sub.rn.f32 %f7, %f4, 0f4B400000;
+    add.rm.f32 %f5, %f7, %f2;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}

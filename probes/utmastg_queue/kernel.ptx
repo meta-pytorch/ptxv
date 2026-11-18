@@ -1,0 +1,60 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPREAD, E-HW-SB-QUEUE): a TMA store (UTMASTG) reads its uniform-register operands in
+// issue order with a later TMA store's read scoreboard. Thread 0 stores two 8 x 32 f32 boxes
+// from shared memory (rows rowp and rowp + 8 of D), then advances the row coordinates by 16
+// (one pass: cnt = 0). ptxas issues `UTMASTG.2D [UR12], [UR6]` (rd=SB1) at 0x420, `UTMASTG.2D
+// [UR16], [UR6]` (rd=SB2) at 0x460, and `UIADD3 UR14, UR14, 0x10` (the first store's row) at
+// 0x470 waiting on SB1 and SB2. The BUSY variants queue 24 stores ahead (rows 32..39).
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry utmastg_queue(.param .align 64 .b8 tmap[128], .param .u32 rowp, .param .u32 cnt)
+.maxntid 128, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<4>;
+    .reg .f32   %f<2>;
+    .shared .align 1024 .b8 tile[12288];
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r1, tile;
+    mov.u32         %r2, %r0;
+LOOP:
+    cvt.rn.f32.u32  %f0, %r2;
+    shl.b32         %r3, %r2, 2;
+    add.u32         %r4, %r1, %r3;
+    st.shared.f32   [%r4], %f0;
+    add.u32         %r2, %r2, 128;
+    setp.lt.u32     %p1, %r2, 3072;
+    @%p1 bra        LOOP;
+    fence.proxy.async.shared::cta;
+    bar.sync        0;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    mov.b64         %rd0, tmap;
+    cvta.param.u64  %rd1, %rd0;
+    ld.param.u32    %r10, [rowp];
+    mov.u32         %r6, 0;
+    add.u32         %r11, %r1, 4096;
+    add.u32         %r12, %r1, 8192;
+    add.u32         %r13, %r10, 8;
+    add.u32         %r14, %r10, 16;
+    mov.u32 %r15, 0;                         // @BUSY
+    ld.param.u32 %r16, [cnt];
+SLOOP:
+    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r10}], [%r1];
+    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r13}], [%r11];
+    add.u32 %r10, %r10, 16;
+    add.u32 %r13, %r13, 16;
+    add.u32 %r15, %r15, 1;
+    setp.lt.u32 %p2, %r15, %r16;
+    @%p2 bra SLOOP;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+DONE:
+    ret;
+}

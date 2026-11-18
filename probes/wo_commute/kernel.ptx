@@ -1,0 +1,46 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-WARP-ORDER (MISS 220), an observer between two warp atomics: lanes 31 and 1 of the
+// converged warp 0 run two dead-result atom.relaxed.gpu.add on one word at consecutive
+// instructions (lane 31 adds 1 first in program order, lane 1 adds 2 second). They are two
+// threads, so either add may take effect first. Thread 32 (warp 1) reads the word once and
+// traps on 2, the value only lane 1's add first leaves. The adds commute (the word ends at 3
+// in either order), but the value an observer reads between them depends on their order.
+// Variants: SWAP (lane 1's add first in program order: the model reaches the trap), SAME (both
+// add 1, trap on 5: equal operands leave the same values in either order), RED / RED_SAME (the
+// same with red, no result). out[0] = 7 unless thread 32 trapped.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry wo_commute(.param .u64 c_p, .param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [c_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra OBS;
+    setp.eq.u32 %p2, %r1, 31;
+    setp.eq.u32 %p3, %r1, 1;
+    @%p2 atom.relaxed.gpu.global.add.u32 %r2, [%rd1], 1;   // @A
+    @%p3 atom.relaxed.gpu.global.add.u32 %r3, [%rd1], 2;   // @B
+    bra DONE;
+OBS:
+    setp.ne.u32 %p4, %r1, 32;
+    @%p4 bra DONE;
+    ld.relaxed.gpu.global.u32 %r4, [%rd1];
+    setp.eq.u32 %p5, %r4, 2;                                // @CMP
+    @%p5 trap;
+    mov.u32 %r5, 7;
+    st.global.u32 [%rd2], %r5;
+DONE:
+    ret;
+}

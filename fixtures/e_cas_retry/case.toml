@@ -1,0 +1,61 @@
+name = "e_cas_retry"
+description = """
+Forum post 76 (MISS 174, 175): a compare-and-swap retry loop seeded by a plain load of the word
+(kernel.ptx; ptxas 13.0: LDG.E, BSSY, then IADD3 / ATOMG.E.CAS / ISETP.NE / MOV / @P0 BRA), the
+shape of ptxas's 16-bit atomic emulation. Four threads (2 CTAs x 2) add t + 1 to w[0]; each also
+red.adds 1 to w[1]. SASS: the loop is a lock-free read-modify-write, not a poll (E-SPIN), and
+its seed load, whose value only becomes the first compare, is relaxed (E-CAS-SEED): clean. The
+PTX front keeps the PTX memory model: `ld.global` racing with the other threads' atom.cas is a
+race. Variants: the seed value also stored (`seedused`) or loaded from another word
+(`seedaddr`) keep the plain load: race on both fronts. The loop-shape negatives (a compare not
+refreshed from the returned value, an exit on a value) are `spin::cas_tests`. expected/ is
+GB300's output."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+ptxas_toolkit = "13.0"
+entry = "e_cas_retry"
+grid = [2, 1, 1]
+block = [2, 1, 1]
+outputs = ["w"]
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+expect = "expected/w.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["race", "unmodeled"]
+expect_sass = ["unmodeled"]
+
+[[variants]]
+id = "seedused"
+summary = "the seed value is also stored to out[t]"
+marker = "@use"
+find = "mov.u32         %r10, 0;"
+replace = "mov.u32         %r10, %r5;"
+expect = ["race", "unmodeled"]
+
+[[variants]]
+id = "seedaddr"
+summary = "the seed is loaded from w[1] (which the other threads red.add), not from the CAS's word"
+marker = "@seed"
+find = "[%rd1];"
+replace = "[%rd1+4];"
+expect = ["race", "unmodeled"]

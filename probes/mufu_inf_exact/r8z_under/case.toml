@@ -1,0 +1,72 @@
+name = "r8z_under"
+description = """
+MISS 258 repro: out[32 k + t] = chain_k(x_t), chains lg2, rsqrt, rcp, lg2f, rsqrtf, rcpf, max(lg2f,-1000), min(rsqrtf,1000), min(rcpf,1000), ex2f(lg2f), rcpf(rsqrtf), max(lg2,-1000), add(lg2f,1000).
+x_t = ((a + b) + c) + e. (a, b, c, e) = (1e8, -1, -1e8, 1) for t < 16: GB300 x = 1, exact x = 0;
+controls x = 2, 0.5, 3, 1.5 for t >= 16. lg2, rsqrt and rcp of the exact 0 are -inf, +inf and a pole.
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "r8z_under"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/a.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/b.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/c.bin"
+
+[[buffers]]
+name = "e"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/e.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [416]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "e"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

@@ -323,6 +323,8 @@ pub fn run(case: &Case, out: &Option<PathBuf>, step: Option<usize>) -> Result<()
                 cubin.to_str().unwrap(),
                 "--runs",
                 "3",
+                "--image-fnv",
+                &crate::image_fnv(&cubin)?,
             ])
             .args([
                 "--input",

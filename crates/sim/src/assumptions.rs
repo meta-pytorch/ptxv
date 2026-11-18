@@ -83,6 +83,18 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "E-CAS-SEED",
+        kind: "code",
+        status: "argued",
+        title: "the plain load seeding a CAS retry loop's first compare, used nowhere else, is modelled as relaxed",
+        applies: |k| {
+            k.front == ptxv_ir::Front::Sass
+                && ptxv_ir::casloop::cas_retry_loops(&k.code)
+                    .iter()
+                    .any(|c| ptxv_ir::casloop::seeded_load(&k.code, c).is_some())
+        },
+    },
+    Assumption {
         id: "E-DEAD-REG",
         kind: "code",
         status: "argued",
@@ -671,6 +683,34 @@ pub const REGISTRY: &[Assumption] = &[
         applies: never,
     },
     Assumption {
+        id: "E-HW-BSYNC-YIELD",
+        kind: "code",
+        status: "validated",
+        title: "GB300 profile: a BSYNC that is no reconvergence point (no .RECONVERGENT, or a region that can yield: G1) holds its lanes until a lane it waits for yields or blocks",
+        // Added to a verdict when the launch sets `hw_bsync_yield` (the GB300 profile) and the
+        // kernel has such a BSYNC.
+        applies: never,
+    },
+    Assumption {
+        id: "E-HW-STS-LOWEST",
+        kind: "code",
+        status: "validated",
+        title: "GB300 profile: one shared store's lanes take effect in phases of 32 / (bytes / 4) lanes, so the lowest active lane of the last phase leaves its bytes",
+        // Added to a verdict when the launch sets `hw_sts_lowest` (the GB300 profile) and the
+        // kernel has a shared store.
+        applies: never,
+    },
+    Assumption {
+        id: "E-HW-STG-LOWEST",
+        kind: "code",
+        status: "validated",
+        title: "GB300 profile: the lanes of one 32-bit global store (STG) on one word leave the lowest active lane's bytes",
+        // Added to a verdict when the launch sets `hw_stg_lowest` (the GB300 profile), has no
+        // multicast objects and the kernel has a 32-bit global store other than
+        // `STG.E.MMIO.SYS`.
+        applies: never,
+    },
+    Assumption {
         id: "E-SETMAXNREG",
         kind: "code",
         status: "argued",
@@ -804,6 +844,14 @@ pub const REGISTRY: &[Assumption] = &[
         applies: never,
     },
     Assumption {
+        id: "E-HW-SB-QUEUE",
+        kind: "code",
+        status: "argued",
+        title: "GB300 profile: scoreboard queue rules backed only by GB300 measurements or captures (REDUX and FRND within a width complete in issue order; an earlier 32-bit F2I by a later F2I.S64, F2I.S64.F64.TRUNC by F2I.F64.TRUNC, I2F.F64.S16 by I2F.F64; memory-queue reads covered by a later read scoreboard, guarded-off STG included; LDS results by a later SHFL; a conflicted LDSM.16.M88.4 by a later LDS / SHFL.BFLY and an LDS by a later LDSM.16.M88.4 / MT88.4, 2 to 8 stall cycles apart; operand-read order across memory-queue opcodes; a memory write covering, and a load writing after, another opcode's earlier memory-queue reads; TMA store and tcgen05 operand reads in issue order); discharges the strict scoreboard findings only these rules clear (sb-hwq:). The broader orders no probe measured are sb-unmeasured: contracts at every level",
+        // Added to a verdict by the GB300 profile when it discharged an `sb-hwq:` finding.
+        applies: never,
+    },
+    Assumption {
         id: "S-GPROXY",
         kind: "code",
         status: "argued",
@@ -887,10 +935,15 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-PAIR",
         kind: "code",
         status: "validated",
-        title: "cta_group::2: per-CTA alloc; pair MMA splits M by rows and N in halves, each CTA's own scale factors; pair tcgen05.cp: each CTA's smem to its own TMEM",
+        title: "cta_group::2: the paired alloc is one rendezvous allocation in both CTAs, dealloc / relinquish per CTA; pair MMA splits M by rows and N in halves, each CTA's own scale factors; pair tcgen05.cp: each CTA's smem to its own TMEM",
         applies: |k| {
             any(k, |o| {
-                matches!(o, Op::Mma { pair: true, .. } | Op::TcCp { pair: true, .. })
+                matches!(
+                    o,
+                    Op::Mma { pair: true, .. }
+                        | Op::TcCp { pair: true, .. }
+                        | Op::TmemAlloc { pair: true, .. }
+                )
             })
         },
     },
@@ -1161,7 +1214,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "E-BSYNC",
         kind: "exec",
         status: "argued",
-        title: "BSYNC is a warp rendezvous of the lanes its BSSY recorded, ordering their memory",
+        title: "BSYNC.RECONVERGENT is a warp rendezvous of the lanes its BSSY recorded, ordering their memory, where no lane of its region can yield or wait in a collective first; other BSYNCs are not (MISS 81)",
         applies: |k| any(k, |o| matches!(o, Op::Bsync { .. })),
     },
     Assumption {
@@ -1420,6 +1473,23 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "N-F16X2",
+        kind: "code",
+        status: "validated",
+        title: "f16 atomic adds (f16x2 lanes, f16 by CAS loop): per lane one RNE rounding, no flush, NaN 0x7fff (probes/half_add)",
+        applies: |k| {
+            any(k, |o| {
+                matches!(
+                    o,
+                    Op::Atom {
+                        op: ptxv_ir::AtomOp::AddF16x2 | ptxv_ir::AtomOp::AddF16,
+                        ..
+                    }
+                )
+            })
+        },
+    },
+    Assumption {
         id: "N-QMUL4",
         kind: "code",
         status: "validated",
@@ -1542,6 +1612,14 @@ pub const REGISTRY: &[Assumption] = &[
         status: "argued",
         title: "equivalence: one tainted-clean run covers every input; canonical DAGs round alike",
         // Applies to `ptxv equiv` results, not to check verdicts.
+        applies: |_| false,
+    },
+    Assumption {
+        id: "N-ERRDIST-NONFINITE",
+        kind: "code",
+        status: "enforced",
+        title: "errdist compares a NaN / Inf output against its reference: RN of a finite exact value, or in a pair the other kernel's output (MISS 66)",
+        // Applies to `ptxv errdist` estimates, not to check verdicts.
         applies: |_| false,
     },
     Assumption {
@@ -1751,7 +1829,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "N-ATOMIC",
         kind: "code",
         status: "argued",
-        title: "fp32 atomic add = one RN FTZ add; atomic adds commute up to their order",
+        title: "fp32 atomic add = one RN add, FTZ in global memory; atomic adds commute up to their order",
         applies: |k| {
             any(k, |o| {
                 matches!(
@@ -1994,7 +2072,7 @@ pub const REGISTRY: &[Assumption] = &[
         id: "H-PROFILE",
         kind: "process",
         status: "argued",
-        title: "two-level verdicts: a hardware profile turns on only probe-backed assumptions; the strict (contract) verdict is always reported next to the profile's SASS verdict",
+        title: "two-level verdicts: a hardware profile turns on only hardware-measured assumptions (probes; captured outputs where no probe exists yet, named per item); the strict (contract) verdict is always reported next to the profile's SASS verdict",
         applies: never,
     },
     Assumption {
@@ -2110,6 +2188,41 @@ pub fn for_machine(m: &crate::machine::Machine) -> Vec<String> {
     }
     if m.launch.hw_split_ur && !m.ur_window.is_empty() {
         v.push("E-HW-SPLIT-UR".into());
+    }
+    if m.launch.hw_sts_lowest
+        && m.k.code.iter().any(|i| {
+            matches!(
+                i.op,
+                Op::St {
+                    space: ptxv_ir::Space::Shared,
+                    ..
+                }
+            )
+        })
+    {
+        v.push("E-HW-STS-LOWEST".into());
+    }
+    if m.launch.hw_stg_lowest
+        && m.launch.mcast.is_empty()
+        && m.k.code.iter().any(|i| {
+            matches!(
+                i.op,
+                Op::St {
+                    space: ptxv_ir::Space::Global,
+                    bytes: 4,
+                    ..
+                }
+            ) && !i.text.contains(".MMIO")
+        })
+    {
+        v.push("E-HW-STG-LOWEST".into());
+    }
+    if m.launch.hw_bsync_yield
+        && m.k.code.iter().any(
+            |i| matches!(i.op, ptxv_ir::Op::Bsync { form, .. } if !crate::exec::bsync_holds(form)),
+        )
+    {
+        v.push("E-HW-BSYNC-YIELD".into());
     }
     let mc = !m.launch.mcast.is_empty();
     if mc {

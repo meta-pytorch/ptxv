@@ -284,3 +284,49 @@ fn compare_zero_sign_is_not_bitwise() {
     assert!(md.contains("L0 bitwise: fails at 1024 outputs"), "{md}");
     assert!(md.contains("L0~0 up to the sign of zero: holds"), "{md}");
 }
+
+/// MISS 145 (fixtures/c_equiv_atomic_ftz, set s): a flushing red.add.f32 against a bulk add of
+/// the same values into +0. The proven bound is 0 u sum|terms| plus the flush term 3.526e-38, and
+/// GB300's outputs differ by up to 1.165e-38 within it; the headline, report.json's
+/// per_output_bound and report.md give the absolute term, rounded up (3.6e-38). Before, the
+/// headline said "|C - R| <= 0 * sum|terms|", a bound the captured outputs exceed, and then
+/// "+ 3.5e-38", below the proven term.
+#[test]
+fn compare_headline_carries_the_absolute_term() {
+    let (text, j, md) = compare(
+        "fixtures/c_equiv_atomic_ftz/ftz1_ref_s",
+        "fixtures/c_equiv_atomic_ftz/blk1_cand_s",
+    );
+    assert!(
+        text.contains(
+            "PROVEN L2 (same function) for every input, |C - R| <= 0 * sum|terms| + 3.6e-38"
+        ),
+        "{text}"
+    );
+    let b = &j["equivalence"]["per_output_bound"];
+    let a = b["max_abs_extra"].as_f64().unwrap_or(0.0);
+    assert!(a > 3.52e-38 && a < 3.53e-38, "{j}");
+    assert!(md.contains("abs_extra at most 3.6e-38"), "{md}");
+}
+
+/// MISS 189 (E-LAUNCH-ORDER): a side whose two launches have an unknown order that hangs in the
+/// list's order (probes/miss189_order_hang: wait_flag spins on a flag that set_flag, the next
+/// launch, sets) is not certified clean: as `ptxv check`, its execution verdict carries the
+/// list order's deadlock, and the report blocks on it. Before, both sides were certified clean.
+#[test]
+fn compare_list_order_deadlock_blocks() {
+    let (_, j, _) = compare("probes/miss189_order_hang", "probes/miss189_order_hang");
+    for s in ["reference", "candidate"] {
+        let chk = &j[s]["side"]["check"];
+        assert_eq!(chk["verdict"], serde_json::json!(["deadlock"]), "{j}");
+        assert_eq!(chk["certified"], false, "{j}");
+    }
+    let blockers = j["blockers"].as_array().unwrap();
+    assert!(
+        blockers.iter().any(|b| {
+            let b = b.as_str().unwrap();
+            b.contains("deadlock") && b.contains("under the list's order")
+        }),
+        "{j}"
+    );
+}

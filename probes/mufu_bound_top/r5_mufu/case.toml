@@ -1,0 +1,50 @@
+name = "r5_mufu"
+description = """
+num probe for MISS 206 (MUFU bounds at |hw| (1 + 2^-20) overflow at the 16 largest finite
+magnitudes) and MISS 207 (PTX .ftz approx results carry bound 0). x[t]: 16 subnormals
+2^-128 + k 2^-149 (k = 1..16), 8 subnormals just below 2^-126, 128 - 2^-17, 128 - 2^-16, 127.99,
+127.5, 2^-126, 2^-127, 2^-128, 1. out[32 g + t]: g0 rcp.approx.ftz.f32, g1 rcp.approx.f32,
+g2 ex2.approx.ftz.f32, g3 ex2.approx.f32 of x[t]."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "r5_mufu"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

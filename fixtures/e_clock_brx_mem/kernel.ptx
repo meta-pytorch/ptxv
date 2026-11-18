@@ -1,0 +1,46 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CLOCK MISS 77 follow-up: the clock-derived brx index goes through a shared-memory round trip
+// (each thread stores %clock to its own slot and loads it back, volatile so ptxas keeps it).
+// clock_effects uses the register-only clock taint, and mem_branches covers guards only, not
+// an indexed branch: T1 (a write-write race on out[0]) is never run.
+//   good: index from the reloaded clock.
+//   REG: index from the clock register (e_clock_brx: unmodeled).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_brx_mem(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 4 .b32 sm[64];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r10, sm;
+    shl.b32 %r2, %r1, 2;
+    add.u32 %r3, %r10, %r2;
+    mov.u32 %r5, %clock;
+    st.volatile.shared.u32 [%r3], %r5;
+    ld.volatile.shared.u32 %r9, [%r3];
+    and.b32 %r6, %r9, 1;                 // @IDX
+$L_brx_0: .branchtargets
+        T0,
+        T1;
+    brx.idx %r6, $L_brx_0;
+T0:
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    mov.u32 %r7, 1;
+    st.global.u32 [%rd3], %r7;
+    bra.uni J;
+T1:
+    st.global.u32 [%rd1], %r1;
+J:
+    ret;
+}

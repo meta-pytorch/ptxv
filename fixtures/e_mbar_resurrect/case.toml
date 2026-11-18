@@ -1,0 +1,54 @@
+name = "e_mbar_resurrect"
+description = "RMK4 A8: a use of an mbarrier after its inval, when its init was an STS.64 state word on SASS"
+ptx = "kernel.ptx"
+entry = "e_mbar_resurrect"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "per-thread init (STS.64), inval, bar.sync, t32 arrives: the arrival reaches no object"
+expect = ["violation"]
+
+[[variants]]
+id = "UNIF"
+summary = "control: uniform init (SYNCS.EXCH.64)"
+marker = "@INIT"
+find = "[%r22]"
+replace = "[%r2]"
+expect = ["violation"]
+
+[[variants]]
+id = "WAIT"
+summary = "t32 test_wait instead of the arrival"
+marker = "@USE"
+find = "mbarrier.arrive.shared::cta.b64 %rd6, [%r2];"
+replace = "mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 0;"
+expect = ["violation"]
+
+[[variants]]
+id = "INV2"
+summary = "t32 invalidates again (double inval)"
+marker = "@USE"
+find = "mbarrier.arrive.shared::cta.b64 %rd6, [%r2];"
+replace = "mbarrier.inval.shared::cta.b64 [%r2];"
+expect = ["violation"]
+
+[[variants]]
+id = "STORE"
+summary = "control: t32 reuses the bytes with a plain store after the inval and a bar.sync: clean"
+marker = "@USE"
+find = "mbarrier.arrive.shared::cta.b64 %rd6, [%r2];"
+replace = "mov.b64 %rd7, 5; st.shared.u64 [%r2], %rd7;"
+expect = ["clean"]

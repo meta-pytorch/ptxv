@@ -3,14 +3,20 @@ description = """
 E-HW-BSYNC-COLLECTIVE (kernel.cu): lanes 0-15 do MUFU work while lanes 16-31 block at a
 full-warp __syncwarp in the else branch; lanes 0-15 reach a __syncwarp only after the join. ptxas
 joins the branches with `BSSY B0` / `BSYNC B0` (mask: all 32 lanes) and lowers each __syncwarp
-to `BRA.DIV` with a `WARPSYNC.COLLECTIVE` slow path, so lanes 0-15 wait at the BSYNC while lanes
-16-31 wait at a WARPSYNC.COLLECTIVE. The model's BSYNC waits for every lane of its mask: a
-deadlock on the SASS front (strict). GB300 passes the BSYNC, the two collectives then combine,
+to `BRA.DIV` with a `WARPSYNC.COLLECTIVE` slow path, so lanes 0-15 reach the BSYNC while lanes
+16-31 wait at a WARPSYNC.COLLECTIVE. GB300 passes the BSYNC, the two collectives then combine,
 and the kernel completes (expected/out.bin, 1000 of 1000 runs; the timestamp probe
-probes/bsync_coll shows the order). The GB300 profile (sass_gb300) releases the BSYNC and
-reproduces the output, also its second __syncwarp, where lanes 16-31 wait in a collective until
-lanes 1-15 have exited (an EXIT re-checks collective groups, E-COLLECTIVE). The shape of
-recsys_tbe's split_embedding_backward warp-per-row loop.
+probes/bsync_coll shows the order). Until MISS 81 the model's BSYNC waited for every lane of its
+mask (a deadlock on the SASS front, strict) and only the GB300 profile released it
+(E-HW-BSYNC-COLLECTIVE). The join's BSYNC has no .RECONVERGENT, so it is no reconvergence point
+(E-BSYNC, MISS 81): the strict SASS front completes with GB300's output, also through the
+second __syncwarp, where lanes 16-31 wait in a collective until lanes 1-15 have exited (an EXIT
+re-checks collective groups, E-COLLECTIVE). The shape of recsys_tbe's split_embedding_backward
+warp-per-row loop. RECONV (gap G1): the join's BSSY / BSYNC patched to the .RECONVERGENT form;
+GB300 passes that BSYNC beside the collective too (10,000 of 10,000 runs, bitwise), and the
+lifter's region walk, which meets the WARPSYNC.COLLECTIVE in BRA.DIV's slow path, takes it as
+the plain form (strict deadlock before; the profile released it through
+E-HW-BSYNC-COLLECTIVE).
 Binary-only: kernel.cubin is kernel.cu through nvcc 13.0 (-arch=sm_103a -cubin -O3)."""
 cubin = "kernel.cubin"
 arch = "sm_103a"
@@ -47,5 +53,12 @@ value = 3
 
 [[variants]]
 id = "good"
-summary = "strict SASS model: the BSYNC waits for the lanes parked at the WARPSYNC.COLLECTIVE"
-expect = ["deadlock"]
+summary = "the plain BSYNC lets lanes 0-15 pass while lanes 16-31 wait at the WARPSYNC.COLLECTIVE (MISS 81)"
+expect = ["clean"]
+
+[[variants]]
+id = "RECONV"
+summary = "good with the join's BSSY at 0xa0 and BSYNC at 0x320 set to the .RECONVERGENT form (bits 72-73 = 2): a BSYNC.RECONVERGENT beside lanes waiting at a WARPSYNC.COLLECTIVE (gap G1)"
+hw_note = "GB300 10,000/10,000 runs complete, bitwise equal to good: the BSYNC.RECONVERGENT passes while lanes 16-31 wait at the WARPSYNC.COLLECTIVE (strict deadlock before gap G1 was closed; the profile released it through E-HW-BSYNC-COLLECTIVE)"
+expect = ["clean"]
+patch = [{ at = "@0xa0", bits = [[72, 2, 2]], expect = "BSSY.RECONVERGENT B0, `(.L_x_0)" }, { at = "@0x320", bits = [[72, 2, 2]], expect = "BSYNC.RECONVERGENT B0" }]

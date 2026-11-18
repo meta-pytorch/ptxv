@@ -1199,6 +1199,36 @@ def q(s):
     return json.dumps(s)
 
 
+def launch_cluster(r):
+    """Whether launch record `r` (probes/launchcap) is a cluster launch: a shape other than
+    1 x 1 x 1, or `cluster_attr`: the launch gave the cluster dimension attribute (MISS 259), or
+    the kernel requires a cluster shape (the RequiredCluster function attributes, MISS 281). A
+    cluster launch even at 1 x 1 x 1, where st.async runs (written without `cluster`, its case
+    faulted, MISS 209, or was checked without the cluster that ran)."""
+    return r["cluster"] != [1, 1, 1] or bool(r.get("cluster_attr"))
+
+
+def cluster_note(r):
+    """Launch record `r`'s cluster in the kernel description: its shape where it is a cluster
+    launch, and the kernel's required cluster shape where the launch attribute gave another one
+    (`required_cluster`: launchcap takes the attribute's, so the case does; MISS 281)."""
+    s = f" cluster {r['cluster']}" if launch_cluster(r) else ""
+    if r.get("required_cluster"):
+        s += f" (the kernel requires {r['required_cluster']}; the launch attribute is taken)"
+    return s
+
+
+def cluster_toml(r):
+    """The `cluster` and `preferred_cluster` lines of launch record `r`. S-CGA-SHAPE: a
+    preferred cluster needs the explicit regular one, even 1 x 1 x 1."""
+    s = f"cluster = {r['cluster']}\n" if launch_cluster(r) or r.get("preferred_cluster") else ""
+    # cudaLaunchAttributePreferredClusterDimension (cuBLAS "2x2f" kernels): each group of
+    # CTAs runs as one cluster of this shape or as clusters of `cluster`.
+    if r.get("preferred_cluster"):
+        s += f"preferred_cluster = {r['preferred_cluster']}\n"
+    return s
+
+
 def toml_tmap(prefix, ci, o, g, raw, extra=""):
     b, bo = buf_ref(ci, o)
     return (
@@ -1241,7 +1271,7 @@ def toml_params(params, key):
 name = A.name or os.path.basename(out.rstrip("/"))
 kern_lines = "\n".join(
     f"  {i}: {r['name'][:110]} grid {r['grid']} block {r['block']}"
-    + (f" cluster {r['cluster']}" if r["cluster"] != [1, 1, 1] else "")
+    + cluster_note(r)
     + (f" preferred {r['preferred_cluster']}" if r.get("preferred_cluster") else "")
     + (" pdl" if r.get("pdl") else "")
     for i, (r, _) in enumerate(launches)
@@ -1295,19 +1325,7 @@ description = """{desc}"""
 grid = {r0["grid"]}
 block = {r0["block"]}
 """
-    # S-CGA-SHAPE: a preferred cluster needs the explicit regular one, even 1 x 1 x 1.
-    + (
-        f"cluster = {r0['cluster']}\n"
-        if r0["cluster"] != [1, 1, 1] or r0.get("preferred_cluster")
-        else ""
-    )
-    # cudaLaunchAttributePreferredClusterDimension (cuBLAS "2x2f" kernels): each group of
-    # CTAs runs as one cluster of this shape or as clusters of `cluster` (S-CGA-SHAPE).
-    + (
-        f"preferred_cluster = {r0['preferred_cluster']}\n"
-        if r0.get("preferred_cluster")
-        else ""
-    )
+    + cluster_toml(r0)
     + f"""dynamic_smem = {r0["smem"]}
 outputs = {json.dumps([b["name"] for b in buffers if b.get("is_out")])}
 """
@@ -1333,10 +1351,7 @@ for b in buffers:
 toml += toml_params(launches[0][1], "params")
 for li, (r, params) in enumerate(launches[1:], 1):
     s = f"[[launches]]\nentry = {q(r['name'])}\ngrid = {r['grid']}\nblock = {r['block']}\n"
-    if r["cluster"] != [1, 1, 1] or r.get("preferred_cluster"):
-        s += f"cluster = {r['cluster']}\n"
-    if r.get("preferred_cluster"):
-        s += f"preferred_cluster = {r['preferred_cluster']}\n"
+    s += cluster_toml(r)
     s += f"dynamic_smem = {r['smem']}\n"
     s += _order.toml_launch(lorder, li, bool(r.get("pdl")))
     if not use_ptx and r["_cubin_file"] != r0["_cubin_file"]:

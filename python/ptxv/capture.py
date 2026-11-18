@@ -397,7 +397,8 @@ class Capture:
         self.launches: list[Launch] = []
         self.names: dict[str, TensorInfo] = {}
         self.blocks: list[tuple[int, int, str]] = []  # (addr, size, "pre" | "during")
-        # index in blocks -> (alloc time_us, free time_us | None) of "during" blocks
+        # index in blocks -> (alloc time_us, free time_us | None) of "during" blocks, and
+        # (None, free time_us) of "pre" blocks freed inside the region
         self.block_life: dict[int, tuple[int | None, int | None]] = {}
         self.modules: list[str] = []
         self.warnings: list[str] = []
@@ -476,6 +477,9 @@ class Capture:
         if self._history and t is not None:
             try:
                 snap = t.cuda.memory._snapshot()
+                # Blocks live at entry: a free inside the region ends them (the memory may hold
+                # tensors of the region next; a block live throughout would join them).
+                pre = {a: i for i, (a, _, k) in enumerate(self.blocks) if k == "pre"}
                 for tr in snap.get("device_traces", []):
                     live: dict[int, int] = {}  # addr -> index in self.block_life
                     for e in tr:
@@ -489,6 +493,8 @@ class Capture:
                                 self.block_life[i][0],
                                 e.get("time_us"),
                             )
+                        elif e.get("action") == "free_requested" and e["addr"] in pre:
+                            self.block_life[pre.pop(e["addr"])] = (None, e.get("time_us"))
             finally:
                 t.cuda.memory._record_memory_history(enabled=None)
         tensors = dict(_frame_tensors(self._frame)) if self.frame_locals else {}

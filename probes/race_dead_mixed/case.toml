@@ -1,0 +1,81 @@
+name = "race_dead_mixed"
+description = """
+MISS 226 repro: E-RACE-DEAD drops a mixed-size data race whose loaded value reaches nothing,
+but PTX ISA 9.5 section 8.7.2 says the memory model's axioms do not apply to a program with one.
+CTA 0 writes a 4-byte word; CTA 1 reads one byte of it (good: strong, PLAIN: weak) and masks it
+to 0. Controls: LIVE, SAME, UNIFORM, UNIFORM_PLAIN."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "a ld.relaxed.gpu.u8 of the st.relaxed.gpu.u32 word, masked to 0: a mixed-size data race (8.7.1, 8.7.2) with a dead loaded value: race (until the fix: race-dead, clean). SASS: ptxas 13.0 drops the masked load and stores 0: clean"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "PLAIN"
+summary = "the same read weak (ld.global.u8), masked: a data race of operations that overlap partially, a mixed-size data race: race (until the fix: race-dead, clean). SASS: ptxas 13.0 drops the masked load: clean"
+marker = "@READ"
+find = "ld.relaxed.gpu.global.u8 %r1, [%rd1];"
+replace = "ld.global.u8 %r1, [%rd1];"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "LIVE"
+summary = "control: the byte decides a predicate (always false: the byte is 0 or 1), so its value is used: a race. SASS: overlap not decided, the strong pair is morally strong: clean"
+marker = "@MASK"
+find = "and.b32         %r1, %r1, 0;"
+replace = "setp.eq.u32 %p1, %r1, 7; selp.u32 %r1, 1, 0, %p1;"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SAME"
+summary = "control: the whole word read with ld.relaxed.gpu.u32 (one location, .gpu scopes on one GPU: morally strong), masked: no race, clean (SASS: ptxas 13.0 drops the masked load)"
+marker = "@READ"
+find = "ld.relaxed.gpu.global.u8 %r1, [%rd1];"
+replace = "ld.relaxed.gpu.global.u32 %r1, [%rd1];"
+expect = ["clean"]
+
+[[variants]]
+id = "UNIFORM"
+summary = "control: the whole word read with ld.relaxed.cta.u32 (one location, but the .cta scope leaves out the writer: not morally strong), masked: a uniform-size data race with a dead value: race-dead, clean, as before the fix (SASS: ptxas 13.0 drops the masked load)"
+marker = "@READ"
+find = "ld.relaxed.gpu.global.u8 %r1, [%rd1];"
+replace = "ld.relaxed.cta.global.u32 %r1, [%rd1];"
+expect = ["clean"]
+
+[[variants]]
+id = "UNIFORM_PLAIN"
+summary = "control: the whole word read weak (ld.global.u32), masked: a uniform-size data race with a dead value: race-dead, clean, as before the fix (SASS: ptxas 13.0 drops the masked load)"
+marker = "@READ"
+find = "ld.relaxed.gpu.global.u8 %r1, [%rd1];"
+replace = "ld.global.u32 %r1, [%rd1];"
+expect = ["clean"]

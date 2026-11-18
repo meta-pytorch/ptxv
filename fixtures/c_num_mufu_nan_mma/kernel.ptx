@@ -1,0 +1,40 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 258: sqrt.approx.ftz of x (lane 0: a negative subnormal, GB300 -0, no real true
+// value; other lanes 1.0) as bf16 into every A element a lane holds; mma.sync m16n8k16 with B = bf16
+// ones (an input), C = 0. D rows 0 and 8 (lanes 0..3, out[0..16)) sum lane 0's four -0 terms.
+.visible .entry num_mufu_nan_mma(.param .u64 px, .param .u64 pb, .param .u64 pout)
+{
+    .reg .b32 %r<16>;
+    .reg .f32 %f<32>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [px];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [pb];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [pout];
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd4, %r0, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    sqrt.approx.ftz.f32 %f2, %f1;
+    cvt.rn.bf16x2.f32 %r1, %f2, %f2;
+    mul.wide.u32 %rd6, %r0, 8;
+    add.s64 %rd7, %rd2, %rd6;
+    ld.global.b32 %r2, [%rd7];
+    ld.global.b32 %r3, [%rd7+4];
+    mov.f32 %f3, 0f00000000;
+    mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%f4, %f5, %f6, %f7}, {%r1, %r1, %r1, %r1}, {%r2, %r3}, {%f3, %f3, %f3, %f3};
+    mul.wide.u32 %rd8, %r0, 16;
+    add.s64 %rd9, %rd3, %rd8;
+    st.global.v4.f32 [%rd9], {%f4, %f5, %f6, %f7};
+    ret;
+}

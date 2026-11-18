@@ -1,0 +1,109 @@
+name = "e_mbar_inval_vis"
+description = """
+A plain store over an mbarrier's memory, or a re-initialization, unordered with the inval or the
+first init of the object (MISS 241, MISS 242). Thread 0 initializes `a` (count 1) uniformly,
+bar.sync; then thread IVT invalidates `a` and thread STT stores zero over it, unordered. Either
+order is possible; when the store lands first it is a store over a live object (contract
+violation, MISS 218). good / SWAP (inval and store by the other thread): violation. PREU: no
+inval and no bar.sync: the first init unordered with the store: violation. REINIT: STT
+re-initializes `a` through a per-thread address (SASS: STS.64 of the state word), unordered
+with the inval: race. REINITU: the re-init through a uniform address (SASS: SYNCS.EXCH.64),
+unordered with the inval: race (MISS 242); REINITUS with the threads swapped (the certificate's
+run takes the inval first, so the init must check it). ORD: the store ordered after the inval by a
+bar.sync (legal reuse): clean. ARRV / ARRVS: an arrival unordered with the inval (an arrival
+after it reaches no object: violation; ARRVS's two orders give different outputs, which needs
+the inval to be a scheduling point). Before 2026-11-12 the explorer's reductions and the certificate
+ran the stores (and, on SASS, the inval) in the order that reports nothing."""
+ptx = "kernel.ptx"
+entry = "e_mbar_inval_vis"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "TWAIT"
+summary = "t0 invals, t32 runs mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 0; on a, unordered with the inval"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 0;"
+expect = ["violation"]
+
+[[variants]]
+id = "TWAITS"
+summary = "t32 invals, t0 runs mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 0; on a, unordered with the inval"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 0;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "TRYW"
+summary = "t0 invals, t32 runs mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r2], 0; on a, unordered with the inval"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r2], 0;"
+expect = ["violation"]
+
+[[variants]]
+id = "TRYWS"
+summary = "t32 invals, t0 runs mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r2], 0; on a, unordered with the inval"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mbarrier.try_wait.parity.shared::cta.b64 %p6, [%r2], 0;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "EXPTX"
+summary = "t0 invals, t32 runs mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%r2], 16; on a, unordered with the inval"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%r2], 16;"
+expect = ["violation"]
+
+[[variants]]
+id = "EXPTXS"
+summary = "t32 invals, t0 runs mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%r2], 16; on a, unordered with the inval"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%r2], 16;" }]
+expect = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "ARRTX"
+summary = "t0 invals, t32 runs mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 0; on a, unordered with the inval"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 0;"
+expect = ["violation"]
+
+[[variants]]
+id = "ARRTXS"
+summary = "t32 invals, t0 runs mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 0; on a, unordered with the inval"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r2], 0;" }]
+expect = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "INV2"
+summary = "t0 invals, t32 runs mbarrier.inval.shared::cta.b64 [%r2]; on a, unordered with the inval"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "mbarrier.inval.shared::cta.b64 [%r2];"
+expect = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "INV2S"
+summary = "t32 invals, t0 runs mbarrier.inval.shared::cta.b64 [%r2]; on a, unordered with the inval"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mbarrier.inval.shared::cta.b64 [%r2];" }]
+expect = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "TWAITU"
+summary = "t0 invals, t32 test_waits on a and stores its result to out, unordered (SASS PHASECHK with a used predicate)"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 0; selp.u32 %r30, 5, 6, %p6; st.global.u32 [%rd1], %r30;"
+expect = ["violation"]

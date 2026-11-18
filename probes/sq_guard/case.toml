@@ -1,0 +1,105 @@
+name = "probe_sq_guard"
+description = """
+Probe (E-HW-SB-QUEUE; RVS2 P1) on the layout of probes/shared_queue: guarded-off covers and the
+level merge. C_SHFL_OFF: an LDS with no write scoreboard, a later `@!PT SHFL` with SB1, the LDS's
+reader waiting on SB1 only; C_LDS_OFF / C_LDS_ON: a later `@!PT LDS` / LDS as the cover (the
+strict LDS-by-LDS rule); *_NOWAIT: no wait (positive controls). MERGE_FALSEV (static): the LDS,
+a SHFL with SB1 (a gb300-only cover), a later LDS with SB2 (the strict cover), the reader waiting
+on SB2 only: the strict rules prove it safe, so no level reports it (the levels are compared per
+(producer, consumer, register)). GB300 (results.txt): C_SHFL_OFF, C_LDS_OFF, C_LDS_ON 0 / 1000,
+the NOWAIT controls 1000 / 1000."""
+ptx = "kernel.ptx"
+entry = "shared_queue"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2654435761
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+expect_sass = ["contract"]
+
+# RVS2: a guarded-off (@!PT) later op's write scoreboard as the only cover of an earlier
+# unscoreboarded 32-way-conflicted LDS. Layout of probes/shared_queue COVER.
+[[variants]]
+id = "C_SHFL_OFF"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f000707ff89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "@!PT SHFL.BFLY PT, R7, R7, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "C_SHFL_OFF_NOWAIT"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f000707ff89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "@!PT SHFL.BFLY PT, R7, R7, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "C_LDS_OFF"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x00000000020af984], [64, 41, 0x800]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "@!PT LDS R10, [R2]" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "C_LDS_ON"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x00000000020a7984], [64, 41, 0x800]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "LDS R10, [R2]" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "C_LDS_NOWAIT"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x00000000020a7984], [64, 41, 0x800]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "LDS R10, [R2]" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+# RVS2 merge precision: LDS (no SB), SHFL (SB1, a gb300-only cover), LDS (SB2, the strict cover),
+# reader waits on SB2 only. Strict: clean (LDS by a later LDS). gb300/broad: the first LDS moved
+# onto the SHFL's SB1 (first match) and not onto the LDS's SB2: a violation at every level.
+[[variants]]
+id = "MERGE_FALSEV"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f0007077f89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R7, R7, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x00000000020a7984], [64, 41, 0x800]], stall = 4, wbar = 2, rbar = 7, wait = 0, expect = "LDS R10, [R2]" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 4, expect = "VIADD R8, R6, 0x1" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]

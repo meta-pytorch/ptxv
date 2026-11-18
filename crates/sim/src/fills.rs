@@ -125,8 +125,11 @@ fn run(mut m: Machine) -> Result<(Vec<u8>, Vec<Finding>), String> {
     let mut faults = FaultLoop::default();
     while let Some(a) = sched.pick(&m) {
         m.apply(&a);
-        if let Some(why) = faults.repeats(delivery.fresh(&m)) {
+        if let Some(why) = faults.repeats(&m, delivery.fresh(&m)) {
             return Err(why);
+        }
+        if faults.stalled() {
+            sched.move_on();
         }
         delivery.collect(&mut m, &mut fs);
     }

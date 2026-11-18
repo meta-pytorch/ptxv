@@ -286,6 +286,36 @@ pub enum Space {
     Generic,
 }
 
+/// The modifier of a SASS `BSYNC` (MISS 81). ptxas 13.0 joins a divergent region with
+/// `BSSY.RECONVERGENT` / `BSYNC.RECONVERGENT` and lowers a `bar.warp.sync` right after the
+/// region to that `BSYNC` alone; it joins a region that can yield or block (`YIELD`,
+/// `NANOSLEEP`, a `WARPSYNC.COLLECTIVE`) with a plain `BSSY` / `BSYNC` and then needs a
+/// `WARPSYNC.ALL` for such a `bar.warp.sync`; loop regions left with `BREAK.RELIABLE` use
+/// `.RELIABLE`.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize
+)]
+pub enum BarForm {
+    /// Also what a serialized `Bsync` without the field reads as (seg/ helper templates).
+    #[default]
+    Plain,
+    Reliable,
+    Reconvergent,
+    /// `.RECONVERGENT`, but a lane of its region can reach a `YIELD`, a `NANOSLEEP` or a
+    /// `WARPSYNC.COLLECTIVE` before it (the lifter's region walk): GB300 lets the waiting lanes
+    /// pass such a `BSYNC` while a lane of its mask sleeps, so it is taken as the plain form
+    /// (E-BSYNC, MISS 81 gap G1).
+    ReconvergentYield,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShflMode {
     Idx,
@@ -519,8 +549,11 @@ pub enum AtomOp {
     Xor,
     Add,
     Exch,
-    /// f32 add, round to nearest, subnormals flushed (`ATOM.E.ADD.F32.FTZ.RN`,
-    /// `atom.add.f32`).
+    /// f32 add, round to nearest (`ATOM.E.ADD.F32.FTZ.RN`, `REDG` / `ATOMG` `.E.ADD.F32.FTZ.RN`,
+    /// `atom` / `red` `.add.f32`). Subnormals are flushed in global memory and kept in shared
+    /// memory, where ptxas compiles the add to `LDS` / `FADD` / `ATOMS.CAST.SPIN` (GB300,
+    /// probes/atom_f32_space; N-ATOMIC). The SASS generic form performs only at a global
+    /// address (`p`).
     FAddFtz,
     /// f64 add, round to nearest even, subnormals kept (`ATOMG` / `REDG` `.E.ADD.F64.RN`,
     /// `atom` / `red` `.add.f64`; probes/atom_f64).
@@ -530,6 +563,11 @@ pub enum AtomOp {
     AddBf16x2,
     /// The same on one bf16 (2 bytes; PTX `atom` / `red` `.add.noftz.bf16`, a CAS loop in SASS).
     AddBf16,
+    /// f16x2 add per lane, round to nearest even, subnormals kept, NaN results 0x7fff
+    /// (`ATOM` / `ATOMG` / `REDG` `.E.ADD.F16x2.RN`, `atom` / `red` `.add.noftz.f16x2`, N-F16X2).
+    AddF16x2,
+    /// The same on one f16 (2 bytes; PTX `atom` / `red` `.add.noftz.f16`, a CAS loop in SASS).
+    AddF16,
     /// Compare-and-swap, SASS `.CAST.SPIN`: `v` is the register pair {compare, new}; the
     /// result (`d` = 1 / 0, `p`) says whether the swap happened.
     CasSpin,
@@ -868,7 +906,8 @@ pub enum Op {
         sync: MemSync,
         /// Predicate result: a generic `ATOM` sets it when the address was global (the
         /// operation was performed; ptxas then skips its shared / local fallbacks), `.CAST.SPIN`
-        /// when the swap happened.
+        /// when the swap happened. At a shared-window address the f32 add performs nothing and
+        /// clears it (GB300, probes/atom_f32_space).
         p: Option<Reg>,
         /// Compare-and-swap (`Cas`, `CasSpin`): the new value, with `v` the compare value.
         /// None: the new value is the register (pair, for 8 bytes) right after `v` (SASS
@@ -876,10 +915,13 @@ pub enum Op {
         new: Option<Val>,
     },
     /// SASS `QSPC.E.{S,D} Pd, RZ, [Ra]`: does the generic address lie in the shared::cta (S) /
-    /// shared::cluster (D) window? (ptxas's generic-atomic fallbacks.)
+    /// shared::cluster (D) window? (ptxas's generic-atomic fallbacks; `isspacep.shared::cta` /
+    /// `.shared::cluster`.)
     Qspc {
         p: Reg,
         addr: Addr,
+        /// `.D`: the shared::cluster window (every CTA of the cluster); else `.S`, the CTA's own.
+        cluster: bool,
     },
     /// `d = (a << shift) + b`; `cout`: carry out of the 32-bit add (`LEA Rd, Pc, ...`).
     /// `neg_a` (`LEA Rd, Pc, -Ra, Rb, s`): `d = b + ~(a << s) + 1`, the low half of a 64-bit
@@ -1429,10 +1471,14 @@ pub enum Op {
     Bssy {
         b: u8,
     },
-    /// SASS `BSYNC Bb`: the lanes `BSSY Bb` recorded (not exited) rendezvous, like
-    /// `bar.warp.sync` with that mask (`__syncwarp` after a divergent region compiles to it).
+    /// SASS `BSYNC Bb`: with `.RECONVERGENT`, the lanes `BSSY Bb` recorded (not exited)
+    /// rendezvous, like `bar.warp.sync` with that mask (`__syncwarp` after a divergent region
+    /// compiles to it); any other form is not a reconvergence point: the executing lanes leave
+    /// the barrier as with `BREAK Bb` (E-BSYNC, MISS 81).
     Bsync {
         b: u8,
+        #[serde(default)]
+        form: BarForm,
     },
     /// SASS `BREAK Bb`: the executing lanes leave convergence barrier `b` (a loop exited early
     /// skips its `BSYNC`); lanes parked at that BSYNC no longer wait for them.
@@ -1790,10 +1836,13 @@ pub enum Op {
         /// holds at most n of both kinds together, so at most n of each).
         cp: bool,
     },
-    /// `tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [dst], ncols` (warp-wide).
+    /// `tcgen05.alloc.cta_group::{1,2}.sync.aligned.shared::cta.b32 [dst], ncols` (warp-wide).
     TmemAlloc {
         dst: Addr,
         ncols: Val,
+        /// `cta_group::2`: one warp of each CTA of the pair allocates the same columns in both,
+        /// together (E-PAIR).
+        pair: bool,
     },
     /// SASS `UTCATOMSWS.FIND_AND_SET.ALIGN UPok, URd, URn`: allocate `units` 32-column units;
     /// blocks while the allocation cannot succeed (ptxas spins on failure).
@@ -2191,6 +2240,10 @@ impl Op {
                 | Op::BarSync { .. }
                 | Op::Converge
                 | Op::MbarInit { .. }
+                // An inval ends the object: an init, arrival, wait or store at its address
+                // before or after it differs (MISS 242: run eagerly, a SYNCS.EXCH.64 re-init
+                // unordered with SYNCS.CCTL.IV was explored in one order only, clean on SASS).
+                | Op::MbarInval { .. }
                 | Op::MbarArrive { .. }
                 | Op::MbarTryWait { .. }
                 | Op::ClusterArrive { .. }
@@ -2546,8 +2599,11 @@ impl Op {
             } => {
                 let mut x = ad(addr);
                 match y {
-                    // A vector red.add.f32 (REDG.E.ADD.F32x2 / F32x4): every data register.
-                    Val::Reg(r, _) if *op == AtomOp::FAddFtz && *bytes > 4 => {
+                    // A vector red / atom add (REDG / ATOMG .E.ADD.F32x2 / F32x4 / BF16x4):
+                    // every data register, one per 4 bytes.
+                    Val::Reg(r, _)
+                        if matches!(op, AtomOp::FAddFtz | AtomOp::AddBf16x2) && *bytes > 4 =>
+                    {
                         for k in 0..(*bytes / 4) as u16 {
                             x.push(Val::Reg(
                                 Reg {
@@ -2722,6 +2778,9 @@ impl Op {
             Op::BMov { r, to_b: false, .. } => vec![*r],
             Op::Mov { d, a } => match a {
                 Val::Reg(_, n) => span(*d, *n as u16),
+                // SASS `CS2R Rd, SR_CLOCKLO`: the 64-bit clock in a register pair (a PTX
+                // register holds all 64 bits).
+                Val::SReg(SReg::Clock) if d.file == File::R => span(*d, 2),
                 // `LDC.64 R10, c[..]` / `LDCU.128`: one register per 4 bytes.
                 Val::Const(_, b) => span(*d, (*b as u16 / 4).max(1)),
                 _ => span(*d, 1),
@@ -3024,6 +3083,11 @@ pub struct Kernel {
     /// EIATTR_REQNTID / EIATTR_MAX_THREADS), if declared: a launch must agree with it.
     #[serde(default)]
     pub ntid: Option<Ntid>,
+    /// The cluster launch the kernel was compiled for (PTX `.reqnctapercluster` /
+    /// `.explicitcluster`, cubin EIATTR_CTA_PER_CLUSTER / EIATTR_EXPLICIT_CLUSTER), if declared:
+    /// it runs as a cluster launch whatever the launch names (`ClusterDecl::resolve`).
+    #[serde(default)]
+    pub cluster: Option<ClusterDecl>,
     /// SASS: module data globals (`__device__` variables) whose addresses the kernel's
     /// constant banks hold, and where (`GlobalReloc`). The launch places each in a buffer.
     #[serde(default)]
@@ -3045,6 +3109,38 @@ pub struct Kernel {
     /// mask (those scoreboards only) and the `DEPBAR` waits (scoreboard, at most n left).
     #[serde(default)]
     pub ldtm_waits: Vec<(usize, u8, Vec<(u8, u8)>)>,
+}
+
+/// A kernel's declared cluster launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClusterDecl {
+    /// `.reqnctapercluster` / EIATTR_CTA_PER_CLUSTER: clusters of exactly this shape.
+    Dims([u32; 3]),
+    /// `.explicitcluster` / EIATTR_EXPLICIT_CLUSTER: a cluster launch whose shape the launch
+    /// sets.
+    Explicit,
+}
+
+impl ClusterDecl {
+    /// The launch's cluster shape (None: not a cluster launch, `%is_explicit_cluster` = 0)
+    /// from the case's `cluster` (the launch attribute) and the kernel's declaration `decl`.
+    /// GB300 (probes/cluster_launch_ops): a kernel compiled with `.reqnctapercluster 1, 1, 1`
+    /// runs as a cluster launch without a launch attribute. A capture keeps no 1 x 1 x 1
+    /// attribute (tools/capture.py), so `.explicitcluster` alone is taken as 1 x 1 x 1. Err:
+    /// the case names another shape than the compiled-in one.
+    pub fn resolve(
+        decl: Option<ClusterDecl>,
+        case: Option<[u32; 3]>,
+    ) -> Result<Option<[u32; 3]>, String> {
+        match (decl, case) {
+            (Some(ClusterDecl::Dims(d)), Some(c)) if c != d => Err(format!(
+                "cluster {c:?} differs from the kernel's compiled-in cluster {d:?} (.reqnctapercluster / EIATTR_CTA_PER_CLUSTER)"
+            )),
+            (Some(ClusterDecl::Dims(d)), None) => Ok(Some(d)),
+            (Some(ClusterDecl::Explicit), None) => Ok(Some([1, 1, 1])),
+            (_, c) => Ok(c),
+        }
+    }
 }
 
 /// A kernel's declared block shape.
@@ -3109,6 +3205,8 @@ pub struct KernelPart {
     pub vreg_names: Vec<String>,
     #[serde(default)]
     pub ntid: Option<Ntid>,
+    #[serde(default)]
+    pub cluster: Option<ClusterDecl>,
     pub globals: Vec<GlobalSym>,
     #[serde(default)]
     pub global_relocs: Vec<GlobalReloc>,
@@ -3206,6 +3304,7 @@ impl Kernel {
         assert!(!ks.is_empty());
         let mut out = ks[0].clone();
         out.ntid = None;
+        out.cluster = None;
         out.code.clear();
         out.labels.clear();
         out.static_findings.clear();
@@ -3230,6 +3329,7 @@ impl Kernel {
                 smem_bytes: k.smem_bytes,
                 vreg_names: k.vreg_names.clone(),
                 ntid: k.ntid,
+                cluster: k.cluster,
                 globals: k.globals.clone(),
                 global_relocs: k.global_relocs.clone(),
             });
@@ -3269,6 +3369,8 @@ impl Kernel {
     }
 }
 
+pub mod casloop;
+
 /// Constant-bank-0 offsets the driver fills in (Blackwell, validated by differential runs).
 pub mod cbank {
     /// Generic address of the kernel parameter block (used by TMA tensor-map operands).
@@ -3297,6 +3399,39 @@ mod tests {
         };
         assert!(max.mismatch([128, 4, 1]).is_none());
         assert!(max.mismatch([1024, 1, 1]).unwrap().contains("maximum"));
+    }
+
+    /// MISS 209: a compiled-in cluster makes a cluster launch without a launch attribute.
+    #[test]
+    fn cluster_decl_resolve() {
+        use super::ClusterDecl;
+        use super::ClusterDecl::*;
+        assert_eq!(ClusterDecl::resolve(None, None), Ok(None));
+        assert_eq!(
+            ClusterDecl::resolve(None, Some([2, 1, 1])),
+            Ok(Some([2, 1, 1]))
+        );
+        assert_eq!(
+            ClusterDecl::resolve(Some(Dims([1, 1, 1])), None),
+            Ok(Some([1, 1, 1]))
+        );
+        assert_eq!(
+            ClusterDecl::resolve(Some(Dims([2, 1, 1])), Some([2, 1, 1])),
+            Ok(Some([2, 1, 1]))
+        );
+        assert!(
+            ClusterDecl::resolve(Some(Dims([2, 1, 1])), Some([4, 1, 1]))
+                .unwrap_err()
+                .contains("compiled-in")
+        );
+        assert_eq!(
+            ClusterDecl::resolve(Some(Explicit), None),
+            Ok(Some([1, 1, 1]))
+        );
+        assert_eq!(
+            ClusterDecl::resolve(Some(Explicit), Some([1, 2, 1])),
+            Ok(Some([1, 2, 1]))
+        );
     }
 }
 

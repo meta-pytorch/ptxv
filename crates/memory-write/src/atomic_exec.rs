@@ -17,16 +17,25 @@ use crate::atomic_integer::IntegerResult;
 pub enum Operation {
     Integer(IntegerOp),
     AddF32Ftz,
+    /// fp32 add that keeps subnormals: `FAddFtz` in shared memory (ptxas: LDS / FADD /
+    /// ATOMS.CAST.SPIN; GB300, probes/atom_f32_space; N-ATOMIC, MISS 142).
+    AddF32,
     AddF64,
     AddBf16,
     AddBf16x2,
+    /// f16 add (`atom.add.noftz.f16`), one rounding to nearest even, subnormals kept (N-F16X2).
+    AddF16,
+    /// Per-lane f16 add (`atom.add.noftz.f16x2`), as HADD2 (N-F16X2).
+    AddF16x2,
 }
 
 /// Floating instruction bit results supplied by the arithmetic subsystem.
 pub trait FloatingArithmetic {
     fn add_f32_ftz(old: u32, value: u32) -> u32;
+    fn add_f32(old: u32, value: u32) -> u32;
     fn add_f64(old: u64, value: u64) -> u64;
     fn add_bf16(old: u16, value: u16) -> u16;
+    fn add_f16(old: u16, value: u16) -> u16;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +66,7 @@ pub fn resolve_old(request: AtomicRequest, old: u64) -> AtomicInput {
 }
 
 pub fn fadd_operand(request: AtomicRequest) -> Option<u32> {
-    if matches!(request.op, Operation::AddF32Ftz) && request.bytes == 4 {
+    if matches!(request.op, Operation::AddF32Ftz | Operation::AddF32) && request.bytes == 4 {
         Some(request.value as u32)
     } else {
         None
@@ -81,10 +90,14 @@ pub struct AtomicOutcome {
 pub fn validate(op: Operation, bytes: u8) -> Result<(), AtomicError> {
     let supported = match op {
         Operation::Integer(IntegerOp::Inc | IntegerOp::Dec) => bytes == 4,
+        // `atom.cas.b16` (MISS 160, fixtures/c_atom_dec_cas16).
+        Operation::Integer(IntegerOp::Cas) => bytes == 2 || bytes == 4 || bytes == 8,
         Operation::Integer(_) => bytes == 4 || bytes == 8,
-        Operation::AddF32Ftz | Operation::AddBf16x2 => bytes == 4,
+        Operation::AddF32Ftz | Operation::AddF32 | Operation::AddBf16x2 | Operation::AddF16x2 => {
+            bytes == 4
+        }
         Operation::AddF64 => bytes == 8,
-        Operation::AddBf16 => bytes == 2,
+        Operation::AddBf16 | Operation::AddF16 => bytes == 2,
     };
     if supported {
         Ok(())
@@ -140,11 +153,38 @@ pub fn execute<F: FloatingArithmetic>(input: AtomicInput) -> Result<AtomicOutcom
                 swapped: false,
             }
         }
+        Operation::AddF32 => {
+            let old = input.old as u32;
+            let value = input.value as u32;
+            IntegerResult {
+                old: old as u64,
+                replacement: F::add_f32(old, value) as u64,
+                swapped: false,
+            }
+        }
         Operation::AddF64 => IntegerResult {
             old: input.old,
             replacement: F::add_f64(input.old, input.value),
             swapped: false,
         },
+        Operation::AddF16 => {
+            let old = input.old as u16;
+            let value = input.value as u16;
+            IntegerResult {
+                old: old as u64,
+                replacement: F::add_f16(old, value) as u64,
+                swapped: false,
+            }
+        }
+        Operation::AddF16x2 => {
+            let low = F::add_f16(input.old as u16, input.value as u16) as u64;
+            let high = F::add_f16((input.old >> 16) as u16, (input.value >> 16) as u16) as u64;
+            IntegerResult {
+                old: input.old as u32 as u64,
+                replacement: low | (high << 16),
+                swapped: false,
+            }
+        }
         Operation::AddBf16 => {
             let old = input.old as u16;
             let value = input.value as u16;
@@ -181,6 +221,12 @@ mod tests {
             panic!("unexpected floating arithmetic")
         }
         fn add_bf16(_: u16, _: u16) -> u16 {
+            panic!("unexpected floating arithmetic")
+        }
+        fn add_f32(_: u32, _: u32) -> u32 {
+            panic!("unexpected floating arithmetic")
+        }
+        fn add_f16(_: u16, _: u16) -> u16 {
             panic!("unexpected floating arithmetic")
         }
     }
@@ -254,6 +300,12 @@ mod tests {
                 (0x1122, 0x5566) => 0xabcd,
                 _ => panic!("wrong packed lane"),
             }
+        }
+        fn add_f32(_: u32, _: u32) -> u32 {
+            panic!("unexpected floating arithmetic")
+        }
+        fn add_f16(_: u16, _: u16) -> u16 {
+            panic!("unexpected floating arithmetic")
         }
     }
 

@@ -123,7 +123,11 @@ write_only=())` is a context manager. The calling thread runs the region normall
   - Without torch, buffers are whole driver allocations.
 - **Stale names.** A named tensor smaller than the live allocator block at its address
   (beyond the allocator's 512-byte rounding) does not bound the buffer: the buffer takes the
-  block's extent, with a warning (a workspace reusing a freed tensor's block). Where a tensor
+  block's extent, with a warning (a workspace reusing a freed tensor's block). An allocator
+  block counts only while live at a launch of the group: one allocated in the region from its
+  allocation to its free, one live at entry until its free in the region (2026-11-12; before,
+  a block live at entry and freed in the region joined the tensors the region placed in its
+  memory into one u8 buffer). Where a tensor
   map reads a buffer as an element type of another size than its name says, the buffer takes
   the tensor map's type.
 - **Vacuous inputs.** capture.json `warnings` name every input buffer whose bytes are all
@@ -149,6 +153,53 @@ write_only=())` is a context manager. The calling thread runs the region normall
     in the region started as zeros): bytes no kernel writes, e.g. rows of a `torch.empty`
     output a kernel leaves alone, compare equal with the captured output. Older outputs keep
     their bytes, as for an in-place update. Outputs listed in `write_only` start as zeros.
+  - Expected bytes are those after the last launch of the group that reaches the buffer
+    (through a parameter, a tensor map or a pointer table). When that launch has no snapshot
+    covering the buffer (`snapshots="first"`, the snapshot `budget`, a launch under graph
+    capture, or a pointer path the snapshot did not follow), no snapshot holds the bytes it
+    left: an earlier one predates its writes, and a later one may hold changes made after it
+    (MISS 219, below). A buffer the group writes (allocated in the
+    region, or changed by an earlier launch) then refuses the case (MISS 185); any other
+    buffer stays uncompared, with a warning. The writer cannot tell a read from a write, so a
+    last reacher that only reads the buffer refuses it too; the refusal names
+    `case(outputs=[...])` without that buffer as the only way to keep the group's case from
+    that capture. Before, those earlier bytes were written as
+    expected: two grouped GEMM cases captured on 2026-11-06, whose GEMM reaches its output
+    only through an argument table in a 2 MiB segment, store the output's pre-launch bytes.
+  - A pointer table is read at every snapshot of its allocation in the group, before and
+    after each launch (2026-11-12, MISS 185): a table that a launch of the group fills, or the
+    host uploads inside the region, after the allocation's earliest snapshot still makes the
+    launches that point to it reach its targets, and the words of its initial bytes (the
+    snapshot the table's own initial bytes come from) become `ptrs`. Before, only the earliest
+    snapshot was read: a launch writing through such a table did not count, so its target kept
+    an earlier launch's bytes as expected, and an uploaded table word was not relocated.
+  - A launch that reaches a table through another table reaches that table's targets too, to
+    any depth (2026-11-13, MISS 185). In a group of several launches, a table the group reaches
+    only through another table is read as well (and its words become `ptrs`). The capture
+    copies one level of table targets, so a launch that writes through a second level has no
+    snapshot of the target: as the target's last reacher, it refuses the case (or leaves it
+    uncompared). Before, reach went through one pass over the tables in address order and
+    stopped at the first level: a buffer reached through a two-level table kept an earlier
+    launch's bytes as expected, and the check passed with a mismatch against the GPU.
+  - A launch recorded under CUDA graph capture runs when its graph is launched (2026-11-12,
+    MISS 185). The writer places it at the graph launch that follows it in the region when
+    there is exactly one, and "first" and "last" above are in that execution order. When such
+    a launch is a buffer's last reacher, no snapshot follows it, so the buffer has no known
+    bytes after the group (refused, or uncompared, as above); the same holds for every buffer
+    a captured launch reaches when no graph launch follows it in the region (it did not run
+    there) or several do (it may have run more than once). Before, it counted at its place in
+    the records, and a buffer's expected bytes could miss its writes.
+  - Expected bytes are the last reacher's own snapshot after it (2026-11-12, MISS 219), never a
+    later snapshot of the allocation, which may hold a change made after that launch by a host
+    copy, another stream or a launch outside the group. A launch whose own snapshots, before
+    and after it, show the buffer changed counts as reaching it (an address the writer cannot
+    follow). When a later snapshot shows the buffer changed after its last reacher, and every
+    launch of the group in between has a snapshot covering it, the change happened between
+    launches, outside the group: a warning, and the bytes after the last reacher stay. When a
+    launch in between has no such snapshot, it may have written the buffer, so its bytes after
+    the group are unknown (refused, or uncompared, as above). Before, the latest snapshot was
+    taken: a host copy that restored a buffer after its last writer erased that write (the
+    buffer was then no output, or with `outputs=[...]` stored its restored bytes).
   - Override with `case(outputs=[...])`.
 - **Selection.**
   - `cap.kernels` deduplicates by kernel and launch shape (`Kernel.instances` holds every

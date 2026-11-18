@@ -1,0 +1,67 @@
+name = "probe_dpor_pipe_issue_order"
+description = """
+DPOR repro (MISS 222, behind MISS 221): two lanes of rank 0's warp issue remote arrivals into
+one pipe (rank 1's M1) in either order; the draining lane's fence lands the pipe prefix up to
+its own op, so only the order Y,X leaves X in flight at its release. Rank 1 test_waits M1
+after acquiring that release: always true for X,Y, true or false for Y,X. run.sh pins every
+explorer's classes (expected/classes.txt); fixtures.rs `dpor_reverses_issues_into_one_pipe`
+cross-checks DPOR against the stateful search. SASS: ptxas if-converts lane 1's path, so the
+converged warp issues X before Y in every schedule (clean).
+"""
+ptx = "kernel.ptx"
+entry = "dpor_pipe_issue_order"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "NOBRK"
+summary = "without lane 1's step break"
+marker = "@BRK"
+replace = "<delete>"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SWAP"
+summary = "lane 0 takes the X path (falls through), lane 1 the drain path"
+marker = "@SWAP"
+find = "@!%p1 bra LANE0;"
+replace = "@%p1 bra LANE0;"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "RACE"
+summary = "lane 1 stores g into rank 1 and X releases it (.release.cluster); rank 1 reads g right after its test_wait of M1: ordered when the test saw phase 0 complete (X landed), a race when it did not (order Y,X only)"
+marker = "@H2"
+find = "// (lane 1 store)"
+replace = "st.shared::cluster.u32 [%r13], %r1;"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]
+
+[[variants.edits]]
+marker = "@XREL"
+find = "mbarrier.arrive.relaxed.cluster"
+replace = "mbarrier.arrive.release.cluster"
+
+[[variants.edits]]
+marker = "@RD"
+find = "// (rank 1 read)"
+replace = "ld.shared.u32 %r15, [%r8];"

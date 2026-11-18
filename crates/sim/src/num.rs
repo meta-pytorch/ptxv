@@ -58,9 +58,9 @@ pub enum NodeKind {
     Add(u32, u32, bool),
     /// fp32 atomic add of a value (second child) into a location holding the first child,
     /// rounded to nearest; `ftz` (third): subnormal operands and results flushed to zero
-    /// (`red/atom.add.f32`, SASS `RED.E.ADD.F32.FTZ.RN`), else kept (a bulk f32 reduction,
-    /// `UBLKRED`). The chain of them on one location adds its values in a schedule-dependent
-    /// order (`equiv` bounds every order).
+    /// (`red/atom.add.f32` in global memory, SASS `RED.E.ADD.F32.FTZ.RN`), else kept (in
+    /// shared memory, MISS 142; a bulk f32 reduction, `UBLKRED`). The chain of them on one
+    /// location adds its values in a schedule-dependent order (`equiv` bounds every order).
     AtomAdd(u32, u32, bool),
     /// A 16-bit bulk-reduction add (`UTMAREDG.ADD` on a bf16 / f16 tensor): the value (second
     /// child) added into a location holding the first child, rounded to nearest even to bf16
@@ -114,11 +114,17 @@ pub enum NodeKind {
         neg_ab: bool,
         neg_c: bool,
     },
-    /// Segment mode: the exact FMNMX maximum or minimum of two tracked values.
+    /// Segment mode: the maximum (or minimum) of two tracked values, exact (`FMNMX`; an
+    /// `FSETP` + `SEL` pair is a comparison-selection segment, `comparison_selection_node`).
+    /// `kind`: how it chooses, which fixes the result's bits at zeros of either sign and at
+    /// NaN operands (MISS 197, 202); `fin`: both operands are non-NaN for every admissible
+    /// input (`NumState::non_nan`, N-FINITE), where every kind gives the same value.
     Max {
         a: u32,
         b: u32,
         min: bool,
+        kind: MaxKind,
+        fin: bool,
     },
     /// Segment mode: a value computed from tracked nodes by an instruction slice (`seg.rs`).
     Seg(SegRef),
@@ -138,6 +144,113 @@ pub enum NodeKind {
         arg: u32,
         part: Tf32Part,
     },
+}
+
+/// How a `Max` node chooses between its operands a and b.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    serde::Deserialize
+)]
+pub enum MaxKind {
+    /// `FMNMX` (max.f32 / min.f32, redux.sync max / min): -0 below +0; one NaN operand gives the
+    /// other operand, two give the canonical NaN. `nan`: `FMNMX.NAN` (max.NaN.f32), where a NaN
+    /// operand gives the canonical NaN (MISS 202).
+    Fmnmx { nan: bool },
+    /// A compare and select between the compare's own operands (setp + selp; FSETP + SEL):
+    /// bit i set when b is the operand returned for outcome i of comparing a with b, in the
+    /// order a > b, a < b, a == b (zeros of either sign included), unordered (MISS 197).
+    Select(u8),
+}
+
+impl MaxKind {
+    /// FMNMX without .NAN (max.f32 / min.f32).
+    pub const FMNMX: MaxKind = MaxKind::Fmnmx { nan: false };
+
+    /// The outcome index of comparing x with y: 0 x > y, 1 x < y, 2 x == y, 3 unordered.
+    pub fn outcome(x: f64, y: f64) -> usize {
+        if x.is_nan() || y.is_nan() {
+            3
+        } else if x > y {
+            0
+        } else if x < y {
+            1
+        } else {
+            2
+        }
+    }
+
+    /// The result's bits at operand bits x (a) and y (b); `min` for FMNMX.
+    pub fn eval(self, min: bool, x: u32, y: u32) -> u32 {
+        match self {
+            MaxKind::Fmnmx { nan } => fp::f32_minmax(x, y, min, nan, false),
+            MaxKind::Select(m) => {
+                let o = MaxKind::outcome(f32::from_bits(x) as f64, f32::from_bits(y) as f64);
+                if m >> o & 1 == 1 { y } else { x }
+            }
+        }
+    }
+
+    /// Whether the result's bits at operand bits x (a), y (b) are a's (else b's, or FMNMX's
+    /// canonical NaN).
+    pub fn picks_bits(self, min: bool, x: u32, y: u32) -> bool {
+        match self {
+            MaxKind::Fmnmx { nan } => fp::f32_minmax(x, y, min, nan, false) == x,
+            MaxKind::Select(m) => {
+                let o = MaxKind::outcome(f32::from_bits(x) as f64, f32::from_bits(y) as f64);
+                m >> o & 1 == 0
+            }
+        }
+    }
+
+    /// Whether the operand passed on at values x (a), y (b) is a (else b): FMNMX passes the
+    /// other operand of a NaN (b for FMNMX.NAN's canonical NaN, and for two NaNs), and a when
+    /// (x >= y) != min; a select by its mask.
+    pub fn picks_a(self, min: bool, x: f64, y: f64) -> bool {
+        match self {
+            MaxKind::Fmnmx { nan } => {
+                if x.is_nan() || (nan && y.is_nan()) {
+                    false
+                } else if y.is_nan() {
+                    true
+                } else {
+                    (x >= y) != min
+                }
+            }
+            MaxKind::Select(m) => m >> MaxKind::outcome(x, y) & 1 == 0,
+        }
+    }
+
+    /// The op's name in a dump: max / min, `.nan` for FMNMX.NAN, a select's mask (hex).
+    pub fn name(self, min: bool) -> String {
+        let op = if min { "min" } else { "max" };
+        match self {
+            MaxKind::Fmnmx { nan: false } => op.into(),
+            MaxKind::Fmnmx { nan: true } => format!("{op}.nan"),
+            MaxKind::Select(m) => format!("sel{op}.{m:x}"),
+        }
+    }
+
+    /// The same choice with a and b swapped (FMNMX is symmetric; a selection's mask is
+    /// mirrored: a > b becomes b < a, and the other operand is returned).
+    pub fn swapped(self) -> MaxKind {
+        match self {
+            MaxKind::Fmnmx { .. } => self,
+            MaxKind::Select(m) => {
+                let bit = |i: u8| m >> i & 1;
+                MaxKind::Select(
+                    (1 - bit(1)) | (1 - bit(0)) << 1 | (1 - bit(2)) << 2 | (1 - bit(3)) << 3,
+                )
+            }
+        }
+    }
 }
 
 /// What a 16-bit bf16 operand half holds for the numerics (`Machine::bf16_half`).
@@ -238,10 +351,19 @@ pub fn mufu_true_deriv(func: MufuFunc, ptx: bool, x: f64) -> f64 {
 
 /// A-priori bound of one MUFU node's own error at operand `x` and hardware result `hw`
 /// (ASSUME(N-MUFU)). ulp(f(x)) is taken just above |hw|, which covers f(x) in the next binade.
+/// At the 16 largest finite magnitudes |hw| (1 + 2^-20) rounds to infinity in f32 and f(x) may
+/// lie at or above 2^128: the spacing there is that of the binade above FLT_MAX in an f32 format
+/// without an exponent limit, 2^105 (MISS 206: ulp_f32 of infinity, 2^-149, gave a bound of
+/// 2^-126 where PTX rcp.approx.f32 of a subnormal is 7.7e25 off; probes/mufu_bound_top).
 pub fn mufu_local_bound(func: MufuFunc, ptx: bool, x: f32, hw: f32) -> f64 {
     let b = crate::mufu::error_bound(func, ptx, x);
     let above = (hw.abs() as f64 * (1.0 + 2f64.powi(-20))) as f32;
-    b.rel_ulps * ulp_f32(above.max(hw.abs())) + b.abs
+    let ulp = if above.is_finite() {
+        ulp_f32(above.max(hw.abs()))
+    } else {
+        2f64.powi(105)
+    };
+    b.rel_ulps * ulp + b.abs
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -301,6 +423,10 @@ pub struct NumState {
     /// Segment mode (equiv runs that ask for it): products, maxima and instruction slices
     /// get nodes (`Fma`, `Max`, `Seg`); MUFU results do not (they are part of slices).
     pub segments: bool,
+    /// Each PTX `.approx.ftz` node (a one-instruction slice, `num_mufu`): its operand node, the
+    /// function and the operand's negation / absolute value. `out_rec` bounds its error as a
+    /// MUFU node's (MISS 207).
+    pub(crate) ftz_mufu: HashMap<u32, (u32, MufuFunc, bool, bool)>,
     /// Segment mode: per thread, the pc of every instruction it issued (`seg::GUARD_FALSE`
     /// set when its guard was false).
     pub trace: HashMap<u32, Vec<u32>>,
@@ -324,6 +450,10 @@ pub struct NumState {
     const_leaves: std::collections::HashSet<u32>,
     /// `fin` per node.
     fin_memo: HashMap<u32, bool>,
+    /// Max nodes of hardware FMNMX / FMNMX3 instructions (the SASS front), whose NaN results are
+    /// 0x7fffffff whatever their operands hold (`equiv::Side::nan_canonical`, MISS 135). A PTX
+    /// max.f32's node is not one: ptxas can fold it into a copy.
+    pub fmnmx_hw: BTreeSet<u32>,
     /// `ptxv num` (N-NUM-TRACK): the destination of a rounding instruction (`rounding_op`)
     /// that gets no node is tainted as input data, whatever its operands, so a dropped
     /// rounding of kernel parameters, special registers or constants is never an exact
@@ -1202,8 +1332,10 @@ impl NumState {
                 d(*b),
                 c.map(|c| format!(" + {}", d(c))).unwrap_or_default()
             ),
-            NodeKind::Max { a, b, min } => {
-                format!("{}({}, {})", if *min { "min" } else { "max" }, d(*a), d(*b))
+            NodeKind::Max {
+                a, b, min, kind, ..
+            } => {
+                format!("{}({}, {})", kind.name(*min), d(*a), d(*b))
             }
             NodeKind::Seg(p) => format!(
                 "slice#{n}[{} ops]({})",
@@ -1440,8 +1572,8 @@ impl NumState {
         });
         symbolic::checked_node_id(self.nodes.len() - 1).expect("numeric node IDs exhausted")
     }
-    /// An exact max / min node of two nodes.
-    fn max_node(&mut self, a: u32, b: u32, min: bool, pc: u32) -> u32 {
+    /// An exact max / min node of two nodes, choosing as `kind`.
+    fn max_node(&mut self, a: u32, b: u32, min: bool, kind: MaxKind, pc: u32) -> u32 {
         let (ea, eb) = (&self.nodes[a as usize].exact, &self.nodes[b as usize].exact);
         // An infinite operand (Triton's running maximum starts at -inf) is not an expansion
         // the exact difference handles (inf - inf components): compare the values themselves.
@@ -1452,21 +1584,18 @@ impl NumState {
             fa >= fb
         };
         let pick_a = a_big != min;
-        let (ha, hb) = (
-            f32::from_bits(self.nodes[a as usize].hw),
-            f32::from_bits(self.nodes[b as usize].hw),
-        );
-        let hw = f32::from_bits(fp::f32_minmax(
-            ha.to_bits(),
-            hb.to_bits(),
-            min,
-            false,
-            false,
-        ));
+        let hw = kind.eval(min, self.nodes[a as usize].hw, self.nodes[b as usize].hw);
         let exact = if pick_a { ea.clone() } else { eb.clone() };
+        let fin = self.non_nan(a) && self.non_nan(b);
         self.nodes.push(Node {
-            kind: NodeKind::Max { a, b, min },
-            hw: hw.to_bits(),
+            kind: NodeKind::Max {
+                a,
+                b,
+                min,
+                kind,
+                fin,
+            },
+            hw,
             exact,
             err: vec![],
             pc,
@@ -1619,24 +1748,47 @@ impl NumState {
         n
     }
 
+    /// Records leaf `n` as an input-independent constant (tests that build nodes by hand).
+    #[cfg(test)]
+    pub(crate) fn mark_constant(&mut self, n: u32) {
+        self.const_leaves.insert(n);
+    }
+
     /// Whether node `n` is non-NaN for every admissible input: a non-NaN constant leaf, or
     /// `fin` (N-FINITE).
     pub(crate) fn non_nan(&mut self, n: u32) -> bool {
+        let mut memo = std::mem::take(&mut self.fin_memo);
+        let r = self.non_nan_with(&mut memo, n);
+        self.fin_memo = memo;
+        r
+    }
+
+    /// `non_nan` with the caller's memo of `fin` (readers of a finished state, softmax).
+    pub(crate) fn non_nan_with(&self, memo: &mut HashMap<u32, bool>, n: u32) -> bool {
         let konst = matches!(self.nodes[n as usize].kind, NodeKind::Leaf)
             && self.const_leaves.contains(&n)
             && !f32::from_bits(self.nodes[n as usize].hw).is_nan();
-        konst || self.fin(n)
+        konst || self.fin_with(memo, n)
     }
 
     /// Whether node `n` is finite for every input with finite elements on which no operation
     /// of the DAG overflows (N-FINITE): inputs, finite constants, and sums, products, MMA steps,
     /// roundings, exp2 / tanh / sin / cos and TF32 parts of such nodes; a max (min) of one
-    /// such node and a constant other than +inf (-inf).
+    /// such node and a constant other than +inf (-inf), and other than NaN unless the max is
+    /// FMNMX without .NAN.
     // ASSUME(N-FINITE): see ASSUMPTIONS.md
     pub(crate) fn fin(&mut self, root: u32) -> bool {
+        let mut memo = std::mem::take(&mut self.fin_memo);
+        let r = self.fin_with(&mut memo, root);
+        self.fin_memo = memo;
+        r
+    }
+
+    /// `fin` with the caller's memo.
+    pub(crate) fn fin_with(&self, memo: &mut HashMap<u32, bool>, root: u32) -> bool {
         let mut stack = vec![(root, false)];
         while let Some((n, done)) = stack.pop() {
-            if self.fin_memo.contains_key(&n) {
+            if memo.contains_key(&n) {
                 continue;
             }
             let nd = &self.nodes[n as usize];
@@ -1670,12 +1822,12 @@ impl NumState {
                 stack.push((n, true));
                 stack.extend(
                     kids.iter()
-                        .filter(|k| !self.fin_memo.contains_key(k))
+                        .filter(|k| !memo.contains_key(k))
                         .map(|&k| (k, false)),
                 );
                 continue;
             }
-            let f = |k: &u32| self.fin_memo.get(k).copied().unwrap_or(false);
+            let f = |k: &u32| memo.get(k).copied().unwrap_or(false);
             let konst = |k: u32| {
                 matches!(self.nodes[k as usize].kind, NodeKind::Leaf)
                     && self.const_leaves.contains(&k)
@@ -1696,9 +1848,17 @@ impl NumState {
                     kids.iter().all(f)
                         && ops.iter().zip(terms).all(|(o, t)| o.is_some() || *t == 0.0)
                 }
-                NodeKind::Max { a, b, min } => {
+                NodeKind::Max {
+                    a, b, min, kind, ..
+                } => {
                     let bad = if *min { 0xff80_0000 } else { 0x7f80_0000 };
-                    let ok_const = |k: u32| konst(k) && self.nodes[k as usize].hw != bad;
+                    // Only FMNMX without .NAN passes over a NaN operand.
+                    let ok_const = |k: u32| {
+                        let hw = self.nodes[k as usize].hw;
+                        konst(k)
+                            && hw != bad
+                            && (*kind == MaxKind::FMNMX || !f32::from_bits(hw).is_nan())
+                    };
                     (f(a) && f(b)) || (f(a) && ok_const(*b)) || (f(b) && ok_const(*a))
                 }
                 // The predicate's arguments do not reach the value.
@@ -1711,9 +1871,9 @@ impl NumState {
                 }
                 _ => kids.iter().all(f),
             };
-            self.fin_memo.insert(n, v);
+            memo.insert(n, v);
         }
-        self.fin_memo[&root]
+        memo[&root]
     }
     pub fn mem_node(&self, loc: Loc) -> Option<u32> {
         self.mem.get(&mem_key(loc)).copied()
@@ -1742,6 +1902,85 @@ impl NumState {
             self.written.insert((k.1, k.2));
         }
     }
+}
+
+/// The register holding word `i` of a store of PTX registers with 64-bit elements (`st.b64`,
+/// `st.v2.b64`, `st.b128`): lane i % 2 of element i / 2.
+fn v_pair_reg(v: &Val, bytes: u8, i: u16) -> Option<Reg> {
+    match v {
+        Val::Reg(r, n) if r.file == File::V && bytes / (*n).max(1) >= 8 => Some(lane_reg(
+            Reg {
+                file: File::V,
+                idx: r.idx + i / 2,
+            },
+            (i % 2) as usize,
+        )),
+        _ => None,
+    }
+}
+
+impl NumState {
+    /// The node a full-word store of `v` (`data`) leaves in its word `i` (`num_st`): the stored
+    /// register's node (vector stores, st.async included: word i from register r + i,
+    /// consecutive PTX registers after lowering, as in exec), else an opaque leaf of the word
+    /// where the store's guard or the word's value is input data, else none.
+    fn store_word_node(
+        &mut self,
+        t: usize,
+        v: &Val,
+        data: &[u8],
+        origins: &StoreOrigins,
+        i: u16,
+        pc: u32,
+    ) -> Option<u32> {
+        let bytes = data.len() as u8;
+        let split = bytes > 8 && bytes.is_multiple_of(4)
+            || bytes > 4
+                && bytes.is_multiple_of(4)
+                && matches!(v, Val::Reg(r, n) if r.file == File::R || *n >= 2);
+        let mut n = match v {
+            _ if bytes.is_multiple_of(4) && v_pair_reg(v, bytes, i).is_some() => {
+                self.node_of_reg(t, v_pair_reg(v, bytes, i).unwrap())
+            }
+            Val::Reg(r, _) if split => self.node_of(
+                t,
+                &Val::Reg(
+                    Reg {
+                        file: r.file,
+                        idx: r.idx + i,
+                    },
+                    1,
+                ),
+            ),
+            _ if bytes == 4 => self.node_of(t, v),
+            _ => None,
+        };
+        if origins.guard || n.is_none() && origins.words[i as usize] {
+            let bits = u32::from_le_bytes(
+                data[4 * i as usize..4 * i as usize + 4]
+                    .try_into()
+                    .expect("complete store word"),
+            );
+            n = Some(self.leaf_with_origin(bits, pc, true));
+        }
+        n
+    }
+}
+
+/// A NIC atomic's read-modify-write of an 8-byte word, for `Machine::num_nic_atomic` (MISS 257).
+pub(crate) struct NicAtomicNum {
+    /// The word's value before and after (little-endian).
+    pub(crate) old: u64,
+    pub(crate) new: u64,
+    /// A fetch-add's operand; None for a compare-and-swap.
+    pub(crate) add: Option<u64>,
+    /// A compare-and-swap that swapped.
+    pub(crate) swapped: bool,
+    /// Read before the write (`Machine::num_mem_inexact`): per 4-byte word of the target, and
+    /// the WQE's add or swap operand and a compare-and-swap's compare operand.
+    pub(crate) old_inexact: [bool; 2],
+    pub(crate) operand_inexact: bool,
+    pub(crate) compare_inexact: bool,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -1782,8 +2021,9 @@ pub(crate) struct AtomNum {
     pub old_input_derived: bool,
     pub previous: Metadata,
     pub operand: Option<Metadata>,
-    /// fp32 add: old, added and new bits.
-    pub fadd: Option<(u32, u32, u32)>,
+    /// fp32 add: old, added and new bits, and whether it flushes subnormals (global memory;
+    /// N-ATOMIC, MISS 142).
+    pub fadd: Option<(u32, u32, u32, bool)>,
     pub d: Option<Reg>,
     pub p: Option<Reg>,
     /// The instruction's guard register.
@@ -2082,10 +2322,14 @@ impl Machine {
             self.num_clobber(t, d, ops, pc);
             return;
         }
+        let sass = self.k.front == ptxv_ir::Front::Sass;
         let ns = self.num.as_mut().unwrap();
         let mut acc = nodes[0];
         for &n in &nodes[1..] {
-            acc = ns.max_node(acc, n, min, pc);
+            acc = ns.max_node(acc, n, min, MaxKind::Fmnmx { nan }, pc);
+            if sass {
+                ns.fmnmx_hw.insert(acc);
+            }
         }
         ns.set(t, d, Some(acc));
     }
@@ -2160,7 +2404,7 @@ impl Machine {
         }
         let mut acc = nodes[0];
         for &n in &nodes[1..] {
-            acc = ns.max_node(acc, n, min, pc);
+            acc = ns.max_node(acc, n, min, MaxKind::Fmnmx { nan }, pc);
         }
         for &t in active {
             ns.set(t, d, Some(acc));
@@ -2538,6 +2782,8 @@ impl Machine {
         }
         let ex = mufu_true(func, ptx, xe);
         let loc = f32::from_bits(r) as f64 - mufu_true(func, ptx, f32::from_bits(x) as f64);
+        // A true value that is not finite has no exact expansion: 0 stands in, and out_rec
+        // leaves every element above the node unanalyzed (`mufu_exact_undetermined`).
         let fin = |v: f64| {
             if v.is_finite() {
                 exact::from(v)
@@ -2596,6 +2842,9 @@ impl Machine {
             pc,
         });
         let id = (ns.nodes.len() - 1) as u32;
+        if ftz {
+            ns.ftz_mufu.insert(id, (na, func, neg, abs));
+        }
         ns.set(t, d, Some(id));
     }
 
@@ -2737,6 +2986,14 @@ impl Machine {
         pc: u32,
     ) {
         let p = ptxv_ir::register_owner::normalize_predicate(self.k.front, p);
+        // The operand not chosen and whether `v` is the SEL's first operand (MISS 197 path).
+        let other = match selection {
+            Some(Op::Sel { a, b, p: sp, .. }) => {
+                let first = self.prd(t, *sp);
+                Some((if first { b.clone() } else { a.clone() }, first))
+            }
+            _ => None,
+        };
         let Some(ns) = self.num.as_mut() else { return };
         let data_dep = p.reg.is_some_and(|r| ns.taint.reg_t(t, r));
         if !data_dep {
@@ -2758,6 +3015,43 @@ impl Machine {
                         .dst_regs()
                         .contains(&r)
                 });
+                // int7's compare-and-select maximum (MISS 197): SEL d, a, b, P: d = P ? a : b,
+                // P = (x cmp y) ^ neg. Per outcome of comparing x with y (x > y, x < y,
+                // x == y, unordered), the operand returned: the selection mask of a `Select`
+                // max of (x, y) (bit set: y). It is a max or a min when x > y and x < y return
+                // different operands; which one it returns on a tie of zeros of either sign
+                // and at a NaN fixes its bits. Tried first; upstream's structural
+                // comparison-selection segment below takes the pairs it does not cover.
+                if let (true, Some((o, v_first)), Some(nv)) = (fresh, &other, ns.node_of(t, v)) {
+                    if let Some(no) = ns.node_of(t, o) {
+                        let (a, b) = if *v_first { (nv, no) } else { (no, nv) };
+                        let swap = if (a, b) == (x, y) {
+                            Some(false)
+                        } else if (a, b) == (y, x) {
+                            Some(true)
+                        } else {
+                            None
+                        };
+                        if let Some(swap) = swap {
+                            let (one, nan) = (0x3f80_0000u32, 0x7fc0_0000u32);
+                            let mut mask = 0u8;
+                            for (i, (vx, vy)) in [(one, 0), (0, one), (one, one), (nan, one)]
+                                .into_iter()
+                                .enumerate()
+                            {
+                                let holds = fp::f32_cmp(vx, vy, cmp, false) != p.neg;
+                                // P holds: the SEL returns a, which is y when swapped.
+                                mask |= ((holds == swap) as u8) << i;
+                            }
+                            let (gt_y, lt_y) = (mask & 1 == 1, mask >> 1 & 1 == 1);
+                            if gt_y != lt_y {
+                                let n = ns.max_node(x, y, gt_y, MaxKind::Select(mask), pc);
+                                ns.set(t, d, Some(n));
+                                return;
+                            }
+                        }
+                    }
+                }
                 if fresh {
                     struct Sources<'a> {
                         state: &'a NumState,
@@ -2928,7 +3222,8 @@ impl Machine {
             ns.other_atomics += 1;
         }
         match fadd {
-            Some((o, x, r)) => {
+            // `ftz`: the add flushes subnormals (global memory; N-ATOMIC, MISS 142).
+            Some((o, x, r, ftz)) => {
                 let no = old
                     .history
                     .unwrap_or_else(|| ns.leaf_with_origin(o, pc, old.tainted));
@@ -2945,7 +3240,7 @@ impl Machine {
                 );
                 let err = exact::sub(&exact::from(f32::from_bits(r) as f64), &a_v);
                 ns.nodes.push(Node {
-                    kind: NodeKind::AtomAdd(no, nx, true),
+                    kind: NodeKind::AtomAdd(no, nx, ftz),
                     hw: r,
                     exact: ex,
                     err,
@@ -2960,6 +3255,18 @@ impl Machine {
             None => {
                 for off in footprint.history_start as u128..footprint.history_end {
                     ns.mem.remove(&(k.0, k.1, off as u64));
+                }
+                // ASSUME(N-EQUIV): every word the atomic covers loses its node, written or not:
+                // both words of a 64-bit atomic, the word holding a 16-bit one. A failed
+                // compare-and-swap writes nothing, but where its outcome depends on input data
+                // (below) another input may swap; where it does not, the nodes go for nothing but
+                // precision. Until MISS 177 only the word at the atomic's address lost its node:
+                // the other word of a 64-bit exchange, compare-and-swap or add kept the node of
+                // its earlier value, which outweighed MISS 159's taint.
+                let words = ((k.2 & !3)..k.2 + a.bytes as u64).step_by(4);
+                for w in words {
+                    ns.note_write((k.0, k.1, w));
+                    ns.mem.remove(&(k.0, k.1, w));
                 }
                 // ASSUME(N-EQUIV): a compare-and-swap whose compare or old value is input data
                 // has an input-dependent outcome: another input may swap where this run did not,
@@ -3106,6 +3413,83 @@ impl Machine {
         ns.words_rounded(mem_key(loc), bytes as u64) || ns.half_rounded(&half)
     }
 
+    /// `ptxv num` (N-NUM-TRACK): whether one of `bytes` memory bytes at `loc` is input data or a
+    /// byte of a word holding a rounding (`num_old_rounded`). False without the rounding rule.
+    pub(crate) fn num_mem_inexact(&mut self, loc: Loc, bytes: u8) -> bool {
+        let Some(ns) = self.num.as_ref().filter(|ns| ns.rounding_taint) else {
+            return false;
+        };
+        let (space, allocation, off) = mem_key(loc);
+        let input = (off..off + bytes as u64)
+            .any(|b| ns.taint.memory_unit_input_derived((space, allocation, b)));
+        input || self.num_old_rounded(loc, bytes)
+    }
+
+    /// The 8-byte word at `loc` after a NIC atomic (S-NIC-ATOMIC; `a`: what it did, `snapshot`:
+    /// the word as it read it). With `ptxv num`'s rounding rule a word is input data where what
+    /// the atomic left in it may differ in the exact computation, as `num_atom_rounding` decides
+    /// for a GPU atomic: a word a fetch-add computes from an inexact word or operand, the high
+    /// word of a fetch-add whose carry an inexact low word decides, both words of a
+    /// compare-and-swap whose old value or compare operand is inexact (the exact computation may
+    /// swap where this run did not, or the reverse), and both words of one that swapped in an
+    /// inexact operand. Otherwise a word the atomic left unchanged keeps its node, taint and
+    /// 16-bit provenance, and a word it changed holds an exact integer result: no node. Until
+    /// MISS 257 both words lost their nodes without taint, so the rounded value an unchanged
+    /// word still held, and an integer result computed from one, became exact constants.
+    /// Without the rounding rule (equiv, errdist) both words lose their nodes, as a GPU atomic's
+    /// do there (N-EQUIV).
+    // ASSUME(N-NUM-TRACK): see ASSUMPTIONS.md
+    pub(crate) fn num_nic_atomic(
+        &mut self,
+        loc: Loc,
+        a: &NicAtomicNum,
+        snapshot: Option<&ReadSnapshot>,
+    ) {
+        let Some(ns) = self.num.as_mut() else { return };
+        let (space, allocation, off) = mem_key(loc);
+        let word = |v: u64, k: usize| (v >> (32 * k)) as u32;
+        let input = match a.add {
+            _ if !ns.rounding_taint => None,
+            // The low word: old + the operand's low half; the high word: old + the high half +
+            // the carry out of the low word, which the low word decides unless the low half is 0.
+            Some(c) => {
+                let carry = word(c, 0) != 0 && a.old_inexact[0];
+                let high_changed = word(a.new, 1) != word(a.old, 1);
+                Some([
+                    a.operand_inexact || carry,
+                    a.operand_inexact || carry || high_changed && a.old_inexact[1],
+                ])
+            }
+            None => {
+                let decided = a.compare_inexact || a.old_inexact[0] || a.old_inexact[1];
+                let x = decided || a.swapped && a.operand_inexact;
+                Some([x, x])
+            }
+        };
+        let mut keep = Vec::new();
+        for k in 0..2 {
+            let key = (space, allocation, off + 4 * k as u64);
+            if input.is_some_and(|i| !i[k]) && word(a.new, k) == word(a.old, k) {
+                keep.push(key);
+                continue;
+            }
+            ns.note_write(key);
+            ns.mem.remove(&key);
+            if input.is_some_and(|i| i[k]) {
+                for b in key.2..key.2 + 4 {
+                    ns.taint.mem_set((space, allocation, b), true);
+                }
+            }
+        }
+        // The write ended the bytes' 16-bit provenance: an unchanged word keeps its own.
+        if let Some(s) = snapshot.filter(|s| s.half.len() == 8) {
+            for key in keep {
+                let b = (key.2 - off) as usize;
+                self.half_mem_set(key, &s.half[b..b + 4]);
+            }
+        }
+    }
+
     /// `d` of thread `t` got bytes of memory at `locs` without a node (ldmatrix `.trans`,
     /// unaligned or `.b8`): with `ptxv num`'s rounding rule it is input data if a word holding
     /// one of them has a node with a rounding (N-NUM-TRACK); see `num_clobber`.
@@ -3244,61 +3628,7 @@ impl Machine {
         } else {
             self.half_on_st(t, v, loc, bytes);
         }
-        // Registers holding 16-bit values with provenance (packed bf16) are moved as bytes:
-        // nothing to materialize.
-        let halves = match v {
-            Val::Reg(r, _) if r.file == File::R => (0..(bytes as u16).div_ceil(4)).all(|i| {
-                self.half_val(
-                    t,
-                    &Val::Reg(
-                        Reg {
-                            file: r.file,
-                            idx: r.idx + i,
-                        },
-                        1,
-                    ),
-                )
-                .is_some_and(|b| b.iter().all(|x| x.is_some()))
-            }),
-            _ => false,
-        };
-        // The register holding word i of a store of PTX registers with 64-bit elements
-        // (`st.b64`, `st.v2.b64`, `st.b128`): lane i % 2 of element i / 2.
-        let v_pair = |i: u16| -> Option<Reg> {
-            match v {
-                Val::Reg(r, n) if r.file == File::V && bytes / (*n).max(1) >= 8 => Some(lane_reg(
-                    Reg {
-                        file: File::V,
-                        idx: r.idx + i / 2,
-                    },
-                    (i % 2) as usize,
-                )),
-                _ => None,
-            }
-        };
-        if halves {
-        } else if bytes == 4 {
-            self.num_node_mat(t, v);
-        } else if bytes.is_multiple_of(4) && v_pair(0).is_some() {
-            // Lanes of PTX registers: only their nodes (no slices; num_ffma2_seg).
-        } else if bytes.is_multiple_of(4) {
-            // A vector store of 32-bit registers (STS.64 of a quotient and a sum): each word's
-            // input-derived value is materialized as for a 4-byte store.
-            if let Val::Reg(r, n) = v {
-                if r.file == File::R || *n >= 2 {
-                    for i in 0..(bytes / 4) as u16 {
-                        let w = Val::Reg(
-                            Reg {
-                                file: r.file,
-                                idx: r.idx + i,
-                            },
-                            1,
-                        );
-                        self.num_node_mat(t, &w);
-                    }
-                }
-            }
-        }
+        self.num_store_materialize(t, v, bytes);
         let Some(ns) = self.num.as_mut() else { return };
         if !ns.taint.position && store_space <= 1 {
             for (i, &input_derived) in origins.words[..origins.count].iter().enumerate() {
@@ -3334,40 +3664,9 @@ impl Machine {
             }
             return;
         }
-        // Vector stores (STS.128, st.v2/v4.b32): word i comes from register r + i (consecutive
-        // PTX registers after lowering, as in exec).
-        let split = bytes > 8 && bytes.is_multiple_of(4)
-            || bytes > 4
-                && bytes.is_multiple_of(4)
-                && matches!(v, Val::Reg(r, n) if r.file == File::R || *n >= 2);
         // Every word the store covers loses its old node (a 64-bit PTX register: both).
-        let words = (bytes as u16).div_ceil(4);
-        for i in 0..words {
-            let mut n = match v {
-                _ if bytes.is_multiple_of(4) && v_pair(i).is_some() => {
-                    ns.node_of_reg(t, v_pair(i).unwrap())
-                }
-                Val::Reg(r, _) if split => ns.node_of(
-                    t,
-                    &Val::Reg(
-                        Reg {
-                            file: r.file,
-                            idx: r.idx + i,
-                        },
-                        1,
-                    ),
-                ),
-                _ if bytes == 4 => ns.node_of(t, v),
-                _ => None,
-            };
-            if origins.guard || n.is_none() && origins.words[i as usize] {
-                let bits = u32::from_le_bytes(
-                    data[4 * i as usize..4 * i as usize + 4]
-                        .try_into()
-                        .expect("complete store word"),
-                );
-                n = Some(ns.leaf_with_origin(bits, pc, true));
-            }
+        for i in 0..(bytes as u16).div_ceil(4) {
+            let n = ns.store_word_node(t, v, data, origins, i, pc);
             let (sp, a, off) = mem_key(loc);
             let k = (sp, a, off + 4 * i as u64);
             ns.note_write(k);
@@ -3380,6 +3679,101 @@ impl Machine {
                 }
             }
         }
+    }
+
+    /// `num_st`, before it writes: an input-derived value of the stored registers gets its node
+    /// (`num_node_mat`), word by word for a vector store of 32-bit registers.
+    fn num_store_materialize(&mut self, t: usize, v: &Val, bytes: u8) {
+        // Registers holding 16-bit values with provenance (packed bf16) are moved as bytes:
+        // nothing to materialize.
+        let halves = match v {
+            Val::Reg(r, _) if r.file == File::R => (0..(bytes as u16).div_ceil(4)).all(|i| {
+                self.half_val(
+                    t,
+                    &Val::Reg(
+                        Reg {
+                            file: r.file,
+                            idx: r.idx + i,
+                        },
+                        1,
+                    ),
+                )
+                .is_some_and(|b| b.iter().all(|x| x.is_some()))
+            }),
+            _ => false,
+        };
+        if halves {
+        } else if bytes == 4 {
+            self.num_node_mat(t, v);
+        } else if bytes.is_multiple_of(4) && v_pair_reg(v, bytes, 0).is_some() {
+            // Lanes of PTX registers: only their nodes (no slices; num_ffma2_seg).
+        } else if bytes.is_multiple_of(4) {
+            // A vector store of 32-bit registers (STS.64 of a quotient and a sum): each word's
+            // input-derived value is materialized as for a 4-byte store.
+            if let Val::Reg(r, n) = v {
+                if r.file == File::R || *n >= 2 {
+                    for i in 0..(bytes / 4) as u16 {
+                        let w = Val::Reg(
+                            Reg {
+                                file: r.file,
+                                idx: r.idx + i,
+                            },
+                            1,
+                        );
+                        self.num_node_mat(t, &w);
+                    }
+                }
+            }
+        }
+    }
+
+    /// ASSUME(N-EQUIV): what a remote st.async in flight leaves in each word it covers when it
+    /// lands (MISS 205): per word, the taint, node and 16-bit provenance `num_st` gives a store
+    /// of the same value at issue, as a snapshot `num_copy_snapshot` applies at the landing
+    /// (`complete_remote_op`). Until MISS 205 the landing went through the async completion
+    /// (`complete_async` clears the taint of the current instruction) and wrote no node: the
+    /// word kept the node of its earlier value and lost the stored value's taint. `data` is
+    /// whole 4-aligned words. Empty without numerics.
+    pub(crate) fn num_store_snapshots(
+        &mut self,
+        t: usize,
+        v: &Val,
+        data: &[u8],
+        origins: &StoreOrigins,
+        pc: u32,
+    ) -> Vec<ReadSnapshot> {
+        if self.num.is_none() {
+            return Vec::new();
+        }
+        let bytes = data.len() as u8;
+        let half = if !self.num.as_ref().unwrap().half.is_on() {
+            Vec::new()
+        } else if origins.guard {
+            vec![None; data.len()]
+        } else {
+            self.half_store_srcs(t, v, bytes)
+        };
+        self.num_store_materialize(t, v, bytes);
+        let ns = self.num.as_mut().unwrap();
+        (0..(bytes / 4) as u16)
+            .map(|i| {
+                let node = ns.store_word_node(t, v, data, origins, i, pc);
+                // As in `num_st`: the stored word's own taint (the instruction's coverage in
+                // position mode).
+                let origin = if ns.taint.position {
+                    origins.coverage
+                } else {
+                    origins.words[i as usize]
+                };
+                let w = 4 * i as usize;
+                ReadSnapshot {
+                    origins: vec![origin; 4],
+                    nodes: vec![node],
+                    half: half.get(w..w + 4).map_or_else(Vec::new, |h| h.to_vec()),
+                    rounded: Vec::new(),
+                }
+            })
+            .collect()
     }
 
     /// Segment mode, before a store whose guard depends on input data (thread `t`, executed or
@@ -3966,7 +4360,7 @@ impl Machine {
                 } else if fmax != new {
                     Some("the result is not the float maximum")
                 } else {
-                    let m = ns.max_node(a, b, false, pc);
+                    let m = ns.max_node(a, b, false, MaxKind::FMNMX, pc);
                     ns.mem.insert(k, m);
                     None
                 }
@@ -4485,19 +4879,21 @@ impl Machine {
         })
     }
 
-    /// A bf16 atomic add (`AtomOp::AddBf16x2` / `AddBf16`, `bytes` 4 / 2) at `loc` of operand
-    /// `v` (bits `x`) to the old value `o`, leaving `n`: each lane a `bf16_lane_node` of the
-    /// location's old bytes and the operand's half, written as the location's byte provenance
-    /// (unknown when untracked); `d` gets the old bytes. One schedule's order: certification
-    /// refuses unordered bf16 adds of one location (C-ORDER).
+    /// A bf16 or f16 atomic add (`AtomOp::AddBf16x2` / `AddBf16`, `AddF16x2` / `AddF16`,
+    /// `bytes` 4 / 2) at `loc` of operand `v` (bits `x`) to the old value `o`, leaving `n`: with
+    /// `bf16`, each lane a `bf16_lane_node` of the location's old bytes and the operand's half,
+    /// written as the location's byte provenance (unknown when untracked); an f16 lane has no
+    /// node (unknown, as `num_clobber` for f16 `HFMA2`). `d` gets the old bytes. One
+    /// schedule's order: certification refuses unordered half adds of one location (C-ORDER).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn num_atom_bf16(
+    pub(crate) fn num_atom_half(
         &mut self,
         t: usize,
         loc: Loc,
         bytes: u8,
         n: u32,
         d: Option<Reg>,
+        bf16: bool,
         pc: u32,
         input: Option<AtomicBf16Input>,
     ) {
@@ -4507,10 +4903,21 @@ impl Machine {
         ns.note_write(k);
         ns.other_atomics += 1;
         ns.mem.remove(&k);
+        // ASSUME(N-EQUIV): the word holding the bytes loses its node (`ptxv num`: below, with
+        // its rounding rule). A 16-bit atomic on the upper half has an unaligned key, which
+        // holds no node: until MISS 177 equiv and errdist kept the word's earlier node.
+        if !ns.rounding_taint {
+            let w = (k.0, k.1, k.2 & !3);
+            ns.note_write(w);
+            ns.mem.remove(&w);
+        }
         let old = input.old;
         let mut out: Vec<Option<crate::halfin::Src>> = vec![None; bytes as usize];
         for lane in 0..(bytes as u32 / 2) {
             let i = 2 * lane as usize;
+            if !bf16 {
+                continue;
+            }
             let a = match self.half_op(old[i], old[i + 1]) {
                 crate::halfin::HalfOp::Zero => Bf16Half::Const(0),
                 crate::halfin::HalfOp::Node(n) => Bf16Half::Node(n),
@@ -5119,10 +5526,17 @@ pub struct OutRec {
 
 pub const U32: f64 = 1.0 / (1u64 << 24) as f64;
 
+/// The spacing of the f32 encodings at |x|: the distance from |x| to the next encoding up, so
+/// 2^-149 below 2^-126 and 2^(e - 23) in binade e. In the top binade that is 2^104, the
+/// distance below FLT_MAX: until MISS 161 FLT_MAX's ulp was its distance to +inf, infinite,
+/// and an error at an output of +-FLT_MAX was 0 ulp.
 pub fn ulp_f32(x: f32) -> f64 {
     let a = x.abs();
     if a == 0.0 || !a.is_finite() {
         return f32::from_bits(1) as f64;
+    }
+    if a == f32::MAX {
+        return (a - f32::from_bits(a.to_bits() - 1)) as f64;
     }
     let next = f32::from_bits(a.to_bits() + 1);
     (next - a) as f64
@@ -5185,6 +5599,84 @@ impl NumState {
         }
     }
 
+    /// N-NUM-NONFINITE: a MUFU / PTX approx node of operand `arg` (modifiers `neg`, `abs`) whose
+    /// true function has no finite value at the operand's exact value: no real value (sqrt,
+    /// rsqrt, lg2 of a negative number), an infinity or a pole (lg2, rsqrt, rcp at 0), or a value
+    /// beyond f64 (ex2 above 1024). num_mufu's `fin` made that node's exact value up (0), and so
+    /// every exact value computed from it.
+    fn mufu_exact_undetermined(
+        &self,
+        arg: u32,
+        (func, ptx): (MufuFunc, bool),
+        (neg, abs): (bool, bool),
+    ) -> bool {
+        let mut xe = exact::approx(&self.nodes[arg as usize].exact);
+        if abs {
+            xe = xe.abs();
+        }
+        if neg {
+            xe = -xe;
+        }
+        xe.is_finite() && !mufu_true(func, ptx, xe).is_finite()
+    }
+
+    /// N-NUM-NONFINITE: whether the tree under `root` (an MMA factor) holds a MUFU / PTX approx
+    /// node whose true function has no finite value at its operand's exact value
+    /// (`mufu_exact_undetermined`), through the edges out_rec walks, MMA factors and TF32 parts.
+    /// `seen`: the nodes already searched for this element.
+    fn mufu_undetermined_under(
+        &self,
+        root: u32,
+        seen: &mut std::collections::HashSet<u32>,
+    ) -> bool {
+        let mut stack = vec![root];
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            match &self.nodes[n as usize].kind {
+                NodeKind::Mufu {
+                    arg,
+                    func,
+                    ptx,
+                    neg,
+                    abs,
+                } => {
+                    if self.mufu_exact_undetermined(*arg, (*func, *ptx), (*neg, *abs)) {
+                        return true;
+                    }
+                    stack.push(*arg);
+                }
+                NodeKind::Seg(_) if self.ftz_mufu.contains_key(&n) => {
+                    let (arg, func, neg, abs) = self.ftz_mufu[&n];
+                    if self.mufu_exact_undetermined(arg, (func, true), (neg, abs)) {
+                        return true;
+                    }
+                    stack.push(arg);
+                }
+                NodeKind::Add(a, b, _)
+                | NodeKind::AtomAdd(a, b, _)
+                | NodeKind::AtomAdd16(a, b, _)
+                | NodeKind::Max { a, b, .. } => stack.extend([*a, *b]),
+                NodeKind::Mma { acc, ops, sc, .. } => {
+                    stack.extend(acc);
+                    for &(x, y) in ops.iter().flatten().chain(sc) {
+                        stack.extend([x, y]);
+                    }
+                }
+                NodeKind::Round { arg, .. } | NodeKind::Tf32 { arg, .. } => stack.push(*arg),
+                // Leaves, and segment-mode terms (out_rec does not walk them either).
+                NodeKind::Leaf
+                | NodeKind::Opaque
+                | NodeKind::Input(_)
+                | NodeKind::Fma { .. }
+                | NodeKind::Seg(_)
+                | NodeKind::Sel { .. } => {}
+            }
+        }
+        false
+    }
+
     /// Analyze the tree rooted at `node` (or an exact value if `node` is None).
     // ASSUME(N-BOUND): see ASSUMPTIONS.md
     pub fn out_rec(&self, index: usize, hw_bits: u32, node: Option<u32>) -> OutRec {
@@ -5224,6 +5716,10 @@ impl NumState {
         let hwabs = |n: u32| (f32::from_bits(self.nodes[n as usize].hw) as f64).abs();
         let mut untracked = false;
         let mut untracked_pc: Option<u32> = None;
+        // An MMA factor's tree holds a MUFU node without a finite true value (below), and the
+        // factor nodes searched for one.
+        let mut factor_undetermined = false;
+        let mut factors_seen = std::collections::HashSet::new();
         while let Some((n, g)) = stack.pop() {
             match &self.nodes[n as usize].kind {
                 NodeKind::Opaque => {
@@ -5279,9 +5775,23 @@ impl NumState {
                     terms,
                     ops,
                     eps,
+                    sc,
                     ..
                 } => {
                     rnodes.push(n);
+                    // ASSUME(N-NUM-NONFINITE): a product's exact value is its factors' (push_mma),
+                    // so a MUFU node under a factor whose true function has no finite value at its
+                    // exact operand leaves the element's exact value undetermined as well (MISS
+                    // 258: out_rec never walked the factors). The bounds keep the products as
+                    // terms.
+                    if !factor_undetermined
+                        && ops.iter().flatten().chain(sc).any(|&(x, y)| {
+                            self.mufu_undetermined_under(x, &mut factors_seen)
+                                || self.mufu_undetermined_under(y, &mut factors_seen)
+                        })
+                    {
+                        factor_undetermined = true;
+                    }
                     // Products of rounded (non-input) factors: their factors' errors are not
                     // analyzed here (equiv does), and Thm 1 is not an identity through them.
                     if ops.iter().flatten().any(|&(x, y)| {
@@ -5320,6 +5830,12 @@ impl NumState {
                     stack.push((*a, g));
                     stack.push((*b, g));
                 }
+                // ASSUME(N-MUFU): a PTX .ftz approx result (a slice) is a MUFU node (MISS 207).
+                NodeKind::Seg(_) if self.ftz_mufu.contains_key(&n) => {
+                    rnodes.push(n);
+                    mufu.push((n, g));
+                    leaf_terms.push((hwabs(n), g));
+                }
                 NodeKind::Fma { .. }
                 | NodeKind::Seg(_)
                 | NodeKind::Sel { .. }
@@ -5348,18 +5864,21 @@ impl NumState {
         // |f'(x)| times its operand's bounds; both are carried through the rounding nodes
         // above it.
         let mut mufu_extra = (0.0, 0.0);
-        let mut nonfinite_sub = false;
+        let mut nonfinite_sub = factor_undetermined;
         for &(n, grow) in &mufu {
             let nd = &self.nodes[n as usize];
-            let NodeKind::Mufu {
-                arg,
-                func,
-                ptx,
-                neg,
-                abs,
-            } = nd.kind
-            else {
-                unreachable!()
+            let (arg, func, ptx, neg, abs, ftz) = match nd.kind {
+                NodeKind::Mufu {
+                    arg,
+                    func,
+                    ptx,
+                    neg,
+                    abs,
+                } => (arg, func, ptx, neg, abs, false),
+                _ => {
+                    let (arg, func, neg, abs) = self.ftz_mufu[&n];
+                    (arg, func, true, neg, abs, true)
+                }
             };
             let child = &self.nodes[arg as usize];
             let mut x = f32::from_bits(child.hw) as f64;
@@ -5369,12 +5888,30 @@ impl NumState {
             if neg {
                 x = -x;
             }
+            // ASSUME(N-MUFU): `.ftz` flushes a subnormal operand to a zero of its sign; the
+            // swept bound (N-MUFU's `.ftz` terms) holds for f(+-0), so |f(x) - f(+-0)| adds
+            // (MISS 207: until then a PTX .ftz approx node carried no bound at all).
+            let flush_in = if ftz && x != 0.0 && x.abs() < f32::MIN_POSITIVE as f64 {
+                (mufu_true(func, ptx, x) - mufu_true(func, ptx, 0f64.copysign(x))).abs()
+            } else {
+                0.0
+            };
             let sub = self.out_rec(index, child.hw, Some(arg));
             untracked |= sub.untracked;
             untracked_pc = untracked_pc.or(sub.untracked_pc);
             nonfinite_sub |= sub.nonfinite;
+            // ASSUME(N-NUM-NONFINITE): where the true function has no finite value at the
+            // operand's exact value (`mufu_exact_undetermined`), the element's exact value is not
+            // determined: not analyzed, whatever the operations above make of it (MISS 258:
+            // num_mufu's `fin` made it the exact value 0, so a negative subnormal that the .ftz
+            // forms and the bare MUFU units flush to -0 was analyzed against 0, and against 1
+            // after an ex2; lg2 of an exact 0 under a max with -1000 was claimed exact where its
+            // error is 1000).
+            if self.mufu_exact_undetermined(arg, (func, ptx), (neg, abs)) {
+                nonfinite_sub = true;
+            }
             let fp = mufu_true_deriv(func, ptx, x).abs();
-            let own = mufu_local_bound(func, ptx, x as f32, f32::from_bits(nd.hw));
+            let own = mufu_local_bound(func, ptx, x as f32, f32::from_bits(nd.hw)) + flush_in;
             mufu_extra.0 += (own + fp * sub.bound_cor1a) * grow;
             mufu_extra.1 += (own + fp * sub.bound_running) * grow;
         }
@@ -5407,6 +5944,7 @@ impl NumState {
                         u16_ * hwabs(n) + a16
                     }
                     NodeKind::Mufu { .. } => 0.0, // in mufu_extra
+                    NodeKind::Seg(_) if self.ftz_mufu.contains_key(&n) => 0.0, // in mufu_extra
                     _ => U32 * (f32::from_bits(nd.hw) as f64).abs(),
                 }
             })
@@ -5452,6 +5990,16 @@ impl NumState {
                 let nan = f64::NAN;
                 (nan, nan, nan, nan, false)
             }
+        };
+        // ASSUME(N-NUM-NONFINITE): an element that is not analyzed has NaN error fields and no
+        // finite exact value (MISS 258: one flagged through a MUFU's operand printed the error
+        // of an exact value made up from it).
+        let (exact_v, signed_err, abs_err, rel_err, err_ulps, thm1) = if nonfinite {
+            let nan = f64::NAN;
+            let ex = if exact_v.is_finite() { nan } else { exact_v };
+            (ex, nan, nan, nan, nan, false)
+        } else {
+            (exact_v, signed_err, abs_err, rel_err, err_ulps, thm1)
         };
         OutRec {
             index,
@@ -7546,7 +8094,7 @@ impl Machine {
         }
         // ASSUME(N-NUM-TRACK): `ptxv num`: a destination computed outside the DAG from a node
         // holding a rounding (`num_clobber`) is input data. So is the value a float atomic add
-        // returns (f32, f64, bf16x2 and bf16x4, bf16): a rounded partial sum of the location's
+        // returns (f32, f64, bf16x2 and bf16x4, bf16, f16x2, f16): a rounded partial sum of the location's
         // updates, whose order this run fixes, without a node.
         for (t, r) in std::mem::take(&mut tn.clobber_taint) {
             let k = tn.reg_key(t, r);
@@ -7557,7 +8105,12 @@ impl Machine {
             && matches!(
                 inst.op,
                 Op::Atom {
-                    op: AtomOp::FAddFtz | AtomOp::FAdd64 | AtomOp::AddBf16x2 | AtomOp::AddBf16,
+                    op: AtomOp::FAddFtz
+                        | AtomOp::FAdd64
+                        | AtomOp::AddBf16x2
+                        | AtomOp::AddBf16
+                        | AtomOp::AddF16x2
+                        | AtomOp::AddF16,
                     d: Some(_),
                     ..
                 }
@@ -8020,7 +8573,17 @@ mod untracked_producer_tests {
         use_lop3_ir: bool,
         finish: &str,
     ) -> (NumState, (u32, Option<u32>)) {
-        let mut machine = run_machine_body_finish_ir(body, input, use_lop3_ir, finish, false);
+        finish_word(run_machine_body_finish_ir(
+            body,
+            input,
+            use_lop3_ir,
+            finish,
+            false,
+        ))
+    }
+
+    /// The output word and the numerics state of a finished run.
+    fn finish_word(mut machine: Machine) -> (NumState, (u32, Option<u32>)) {
         let word = u32::from_le_bytes(std::array::from_fn(|byte| *machine.gmem[1].bytes.get(byte)));
         let state = *machine.num.take().unwrap();
         let node = state.mem.get(&(1, 1, 0)).copied();
@@ -8040,6 +8603,24 @@ mod untracked_producer_tests {
         run_machine_body_transform(body, input, use_lop3_ir, finish, half_inputs, false, None)
     }
 
+    /// A body that stores to a cp.async's source before the copy completes: that store races
+    /// with the copy's load (E-CPASYNC, MISS 117), and nothing else is found.
+    fn run_machine_source_race(body: &str, input: f64, finish: &str, half_inputs: bool) -> Machine {
+        let (machine, findings) =
+            run_machine_body_findings(body, input, false, finish, half_inputs, false, None);
+        assert!(
+            !findings.is_empty() && findings.iter().all(source_race),
+            "{findings:?}"
+        );
+        machine
+    }
+
+    /// The race of a store to a cp.async's source with the copy's load (MISS 117), landed by
+    /// the wait or at the exit.
+    fn source_race(f: &crate::machine::Finding) -> bool {
+        f.kind == "race" && f.sig.starts_with("race:gmem:") && f.msg.contains("`cp.async.")
+    }
+
     fn run_machine_body_transform(
         body: &str,
         input: f64,
@@ -8049,6 +8630,28 @@ mod untracked_producer_tests {
         segments: bool,
         transform: Option<fn(&mut ptxv_ir::Kernel)>,
     ) -> Machine {
+        let (machine, findings) = run_machine_body_findings(
+            body,
+            input,
+            use_lop3_ir,
+            finish,
+            half_inputs,
+            segments,
+            transform,
+        );
+        assert!(findings.is_empty(), "{findings:?}");
+        machine
+    }
+
+    fn run_machine_body_findings(
+        body: &str,
+        input: f64,
+        use_lop3_ir: bool,
+        finish: &str,
+        half_inputs: bool,
+        segments: bool,
+        transform: Option<fn(&mut ptxv_ir::Kernel)>,
+    ) -> (Machine, Vec<crate::machine::Finding>) {
         let ptx = format!(
             r#"
 .version 8.8
@@ -8130,8 +8733,7 @@ mod untracked_producer_tests {
         machine.num = Some(Box::new(state));
         let (machine, findings, completed) = crate::explore::run_once(machine);
         assert!(completed, "{findings:?}");
-        assert!(findings.is_empty(), "{findings:?}");
-        machine
+        (machine, findings)
     }
 
     fn run_body(body: &str, input: f64) -> (NumState, (u32, Option<u32>)) {
@@ -8466,17 +9068,22 @@ mod untracked_producer_tests {
         }
     }
 
+    // The three tests below store to the copy's source before its wait: the copy keeps the
+    // bytes it took at issue, and the store races with its load (MISS 117).
     #[test]
     fn async_copy_preserves_issue_epoch_at_captured_zero() {
         let body = ".shared .align 4 .b8 scratch[4]; mov.u64 %w, scratch;             cp.async.ca.shared.global [%w], [%p0], 4; cp.async.commit_group;             st.global.u32 [%p0], 0; cp.async.wait_group 0; ld.shared.u32 %r1, [%w]; mov.b32 %f0, %r1;";
-        let (state, output) = run_body_finish_ir(body, 0.0, false, "st.global.f32 [%p1], %f0;");
+        let run = |input| {
+            finish_word(run_machine_source_race(
+                body,
+                input,
+                "st.global.f32 [%p1], %f0;",
+                false,
+            ))
+        };
+        let (state, output) = run(0.0);
         assert_eq!(output.0, 0);
-        assert_eq!(
-            run_body_finish_ir(body, 1.0, false, "st.global.f32 [%p1], %f0;")
-                .1
-                 .0,
-            1.0f32.to_bits()
-        );
+        assert_eq!(run(1.0).1.0, 1.0f32.to_bits());
         assert!(
             output.1.is_some(),
             "captured input history was lost at completion"
@@ -8485,18 +9092,13 @@ mod untracked_producer_tests {
             state.taint.memory_unit_input_derived((1, 1, 0)),
             "captured input origin was re-read from overwritten source"
         );
-        assert_eq!(
-            run_body_finish_ir(body, 1.0, false, "st.global.f32 [%p1], %f0;")
-                .1
-                 .0,
-            1.0f32.to_bits()
-        );
+        assert_eq!(run(1.0).1.0, 1.0f32.to_bits());
     }
 
     #[test]
     fn async_copy_preserves_half_bytes_at_issue() {
         let body = ".shared .align 4 .b8 scratch[4]; mov.u64 %w, scratch;             cp.async.ca.shared.global [%w], [%p0], 4; cp.async.commit_group;             st.global.u32 [%p0], 0; cp.async.wait_group 0;";
-        let machine = run_machine_body_finish_ir(body, 0.0, false, "", true);
+        let machine = run_machine_source_race(body, 0.0, "", true);
         let dst = machine
             .k
             .code
@@ -8534,7 +9136,7 @@ mod untracked_producer_tests {
         let body = ".shared .align 4 .b8 scratch[4]; mov.u64 %w, scratch; \
             cp.async.ca.shared.global [%w], [%p0], 4; cp.async.commit_group; \
             st.global.u32 [%p0], 0; cp.async.wait_group 0;";
-        let waited = run_machine_body_finish_ir(body, 0.0, false, "", true);
+        let waited = run_machine_source_race(body, 0.0, "", true);
         let mut kernel = (*waited.k).clone();
         for instruction in &mut kernel.code {
             if matches!(instruction.op, Op::CpAsyncWait { .. }) {
@@ -8549,9 +9151,12 @@ mod untracked_producer_tests {
         machine.num = Some(Box::new(state));
         let (machine, findings, completed) = crate::explore::run_once(machine);
         assert!(completed, "{findings:?}");
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert_eq!(findings[0].kind, "contract");
-        assert!(findings[0].sig.starts_with("cp-async-exit:"));
+        // The copy lands at the exit (a contract finding); the store races with its load.
+        let exit: Vec<_> = findings.iter().filter(|f| !source_race(f)).collect();
+        assert_eq!(exit.len(), 1, "{findings:?}");
+        assert_eq!(exit[0].kind, "contract");
+        assert!(exit[0].sig.starts_with("cp-async-exit:"));
+        assert!(findings.iter().any(source_race), "{findings:?}");
         let dst = machine
             .k
             .code
@@ -8644,19 +9249,40 @@ mod untracked_producer_tests {
             state.nodes[node as usize].hw, output,
             "P0 and UP0 must keep distinct comparison histories"
         );
-        assert!(
-            matches!(state.nodes[node as usize].kind, NodeKind::Seg(_)),
-            "kind={:?}, comparisons={:?}, trace={:?}, code={:?}",
-            state.nodes[node as usize].kind,
-            state.pred_src,
-            state.trace,
-            machine
-                .k
-                .code
-                .iter()
-                .map(|inst| &inst.op)
-                .collect::<Vec<_>>()
-        );
+        // The node keeps P0's comparison and the selection exactly, as int7's compare-and-select
+        // maximum (MISS 197) or upstream's comparison-selection segment: x < y ? x : y at every
+        // x, y. UP0's comparison would select the maximum; a forgotten one leaves no selection.
+        let select = |x: u32, y: u32| match &state.nodes[node as usize].kind {
+            NodeKind::Max {
+                min,
+                kind: kind @ MaxKind::Select(_),
+                ..
+            } => kind.eval(*min, x, y),
+            NodeKind::Seg(program) => program.0.eval(&[x, y]).unwrap(),
+            kind => panic!(
+                "kind={kind:?}, comparisons={:?}, trace={:?}, code={:?}",
+                state.pred_src,
+                state.trace,
+                machine
+                    .k
+                    .code
+                    .iter()
+                    .map(|inst| &inst.op)
+                    .collect::<Vec<_>>()
+            ),
+        };
+        let (zero, negative_zero, one, two, nan) =
+            (0, 0x8000_0000, 0x3f80_0000, 0x4000_0000, 0x7fc0_0000);
+        for (x, y, selected) in [
+            (one, two, one),
+            (two, one, one),
+            (zero, negative_zero, negative_zero),
+            (negative_zero, zero, zero),
+            (nan, one, one),
+            (one, nan, nan),
+        ] {
+            assert_eq!(select(x, y), selected, "{x:#x} {y:#x}");
+        }
     }
 
     #[test]
@@ -8874,6 +9500,90 @@ mod value_fault_tests {
                         );
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod max_kind_tests {
+    use super::MaxKind;
+
+    const WORDS: [u32; 12] = [
+        0x0000_0000,
+        0x8000_0000,
+        0x3f80_0000,
+        0xbf80_0000,
+        0x0000_0001,
+        0x7f80_0000,
+        0xff80_0000,
+        0x7fc0_0000,
+        0x7fc1_2345,
+        0xffc0_0001,
+        0x7f80_0001,
+        0x7fff_ffff,
+    ];
+
+    /// A select's mask mirrored for swapped operands is the same choice, and `picks_bits`
+    /// names the operand whose bits `eval` returns (FMNMX: unless its canonical NaN).
+    #[test]
+    fn select_masks_mirror_and_pick() {
+        for m in 0u8..16 {
+            let k = MaxKind::Select(m);
+            assert_eq!(k.swapped().swapped(), k);
+            for &x in &WORDS {
+                for &y in &WORDS {
+                    for min in [false, true] {
+                        let v = k.eval(min, x, y);
+                        assert_eq!(v, k.swapped().eval(min, y, x), "{m:#x} {x:#x} {y:#x}");
+                        assert_eq!(v, if k.picks_bits(min, x, y) { x } else { y });
+                    }
+                }
+            }
+        }
+        for nan in [false, true] {
+            let k = MaxKind::Fmnmx { nan };
+            assert_eq!(k.swapped(), k);
+            for &x in &WORDS {
+                for &y in &WORDS {
+                    for min in [false, true] {
+                        let v = k.eval(min, x, y);
+                        assert_eq!(v, crate::fp::f32_minmax(x, y, min, nan, false));
+                        assert_eq!(v, k.eval(min, y, x), "FMNMX is symmetric: {x:#x} {y:#x}");
+                        if k.picks_bits(min, x, y) {
+                            assert_eq!(v, x);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Selects and FMNMX agree where neither operand is NaN and the operands are not zeros of
+    /// opposite sign, and only there in general: a > b ? a : b against max.f32 at (+0, -0) and
+    /// at a NaN (MISS 197); FMNMX.NAN against FMNMX at one NaN (MISS 202).
+    #[test]
+    fn kinds_differ_only_at_signed_zeros_and_nans() {
+        let gt = MaxKind::Select(0b1110);
+        assert_eq!(gt.eval(false, 0, 0x8000_0000), 0x8000_0000);
+        assert_eq!(MaxKind::FMNMX.eval(false, 0, 0x8000_0000), 0);
+        assert_eq!(gt.eval(false, 0x7fc0_0000, 0x3f80_0000), 0x3f80_0000);
+        assert_eq!(gt.eval(false, 0x3f80_0000, 0x7fc1_2345), 0x7fc1_2345);
+        assert_eq!(
+            MaxKind::FMNMX.eval(false, 0x3f80_0000, 0x7fc1_2345),
+            0x3f80_0000
+        );
+        let nan = MaxKind::Fmnmx { nan: true };
+        assert_eq!(nan.eval(false, 0x3f80_0000, 0x7fc1_2345), 0x7fff_ffff);
+        for &x in &WORDS {
+            for &y in &WORDS {
+                let (fx, fy) = (f32::from_bits(x), f32::from_bits(y));
+                if fx.is_nan() || fy.is_nan() || (fx == 0.0 && fy == 0.0 && x != y) {
+                    continue;
+                }
+                let f = MaxKind::FMNMX.eval(false, x, y);
+                assert_eq!(gt.eval(false, x, y), f, "{x:#x} {y:#x}");
+                assert_eq!(nan.eval(false, x, y), f);
             }
         }
     }
@@ -9612,10 +10322,31 @@ mod signed_zero_comparison_probe {
             state.nodes[node as usize].hw, actual,
             "comparison-based max inference changed the selected signed-zero bits"
         );
-        let NodeKind::Seg(program) = &state.nodes[node as usize].kind else {
-            panic!("comparison selection must retain its exact instruction slice");
+        // The exact selection, as int7's compare-and-select maximum (MISS 197) or upstream's
+        // comparison-selection segment: FSETP.GT then SEL returns R1 on a tie of zeros of
+        // either sign and at a NaN.
+        let select = |x: u32, y: u32| match &state.nodes[node as usize].kind {
+            NodeKind::Max {
+                min,
+                kind: kind @ MaxKind::Select(_),
+                ..
+            } => kind.eval(*min, x, y),
+            NodeKind::Seg(program) if program.0.ops.len() == 2 => {
+                program.0.eval(&[x, y]).unwrap()
+            }
+            kind => panic!("comparison selection must retain its exact selection: {kind:?}"),
         };
-        assert_eq!(program.0.ops.len(), 2);
+        let (zero, negative_zero, one, nan) = (0, 0x8000_0000, 0x3f80_0000, 0x7fc0_0000);
+        for (x, y, selected) in [
+            (zero, negative_zero, negative_zero),
+            (negative_zero, zero, zero),
+            (one, zero, one),
+            (zero, one, one),
+            (nan, one, one),
+            (one, nan, nan),
+        ] {
+            assert_eq!(select(x, y), selected, "{x:#x} {y:#x}");
+        }
     }
 }
 

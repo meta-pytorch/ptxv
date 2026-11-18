@@ -1,0 +1,47 @@
+name = "e_remote_fifo_nonhead"
+description = """
+E-REMOTE-FIFO with S-REMOTE-INFLIGHT's pipe order (MISS 154): a remote arrival's landing
+delivers the arrivals whose issue happens-before it, each behind the ops ahead of it in its
+pipe. Lane 1 arrives on rank 1's M1 (X), lane 0 on M1 (Y) and M2 (Z); with X issued first,
+Z's landing lands X (the pipe's head, not drained) before Y. Until then it landed Y behind the
+pending X, the only path left to DPOR's non-head backtrack (dpor::NONHEAD_BACKTRACKS); the
+verdicts are the same either way, for both explorers. good: lane 1 stores g into rank 1 before
+X; rank 1 reads g after its waits, but .release.cta orders nothing for rank 1: race. On SASS
+lane 1's store is a remote ST.E, in flight until a drain (S-REMOTE-INFLIGHT), and nothing of
+lane 1 drains before rank 1's read: the read can come before the store lands (undefined
+output, S-INIT; nondeterministic). DPOR always reported those outcomes; the stateful search
+reaches them since MISS 232 (a remote landing writes its pipe key in the synchronization
+reduction's footprints too; without it the reduction landed the store ahead of the read).
+NOST: without the store, rank 1 reads g unwritten (S-INIT violation)."""
+ptx = "kernel.ptx"
+entry = "e_remote_fifo_nonhead"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+remote_fifo = true
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 1 stores g, then arrives on M1 (X); lane 0 arrives on M1 (Y), then on M2 (Z)"
+# SASS: the read before lane 1's in-flight ST.E lands (both explorers since MISS 232; tests/
+# fixtures.rs deliver_fifo_before_lands_the_pipe_head_first pins both).
+expect = ["race"]
+expect_sass = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "NOST"
+summary = "without lane 1's store: rank 1 reads g unwritten"
+marker = "@ST"
+replace = "<delete>"
+expect = ["violation"]

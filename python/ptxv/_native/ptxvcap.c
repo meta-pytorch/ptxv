@@ -19,7 +19,10 @@
 //   enabled): driver-API callbacks on cuLaunchKernel,
 //   cuLaunchKernelEx, cuLaunchCooperativeKernel (and _ptsz) append one JSON line per launch to
 //   <dir>/launches.jsonl, in tools/capture.py's launchcap format (name, grid, block, smem,
-//   cluster, pdl, stream, params with offsets and hex bytes; "packed" for an `extra` buffer).
+//   cluster, pdl, stream, params with offsets and hex bytes; "packed" for an `extra` buffer;
+//   "cluster_attr": 1 for a cluster launch that the shape alone does not show: the launch gives
+//   the cluster dimension attribute, or the kernel requires a cluster shape; "required_cluster"
+//   where the kernel requires a shape other than the launch attribute's, which the launch takes).
 // - Snapshots: at API_ENTER the context is synchronized and every device allocation an 8-byte
 //   parameter word points into (cuMemGetAddressRange) is copied to <dir>/snap/s<N>_pre_<base>.bin;
 //   at API_EXIT, after another synchronize, the same allocations go to s<N>_post_<base>.bin.
@@ -75,6 +78,8 @@ typedef CUresult (*getdev_t)(CUdevice *);
 typedef CUresult (*fmod_t)(CUmodule *, CUfunction);
 typedef CUresult (*klib_t)(CUlibrary *, CUkernel);
 typedef CUresult (*libmod_t)(CUmodule *, CUlibrary);
+typedef CUresult (*fattr_t)(int *, CUfunction_attribute, CUfunction);
+typedef CUresult (*kattr_t)(int *, CUfunction_attribute, CUkernel, CUdevice);
 typedef CUresult (*sid_t)(CUstream, unsigned long long *);
 typedef CUresult (*scap_t)(CUstream, CUstreamCaptureStatus *, cuuint64_t *);
 typedef CUresult (*sattr_t)(CUstream, CUlaunchAttributeID, CUlaunchAttributeValue *);
@@ -91,6 +96,8 @@ static getdev_t c_getdev;
 static fmod_t c_fmod;
 static klib_t c_klib;
 static libmod_t c_libmod;
+static fattr_t c_fattr;
+static kattr_t c_kattr;
 // Legacy ([0]) and per-thread default stream ([1]) flavours: a stream query takes the
 // flavour of the call it describes (stream 0 is a different stream in each).
 static sid_t c_sid[2];
@@ -442,6 +449,12 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
     t_rec = 0;
     t_unrec = 0;
     unsigned cx = 1, cy = 1, cz = 1;
+    // Whether the launch gives the cluster dimension attribute (a nonzero one; MISS 259), or the
+    // kernel requires a cluster shape (below; MISS 281): a cluster launch even at 1 x 1 x 1, where
+    // st.async runs (without one GB300 traps, MISS 209).
+    int cattr = 0;
+    // The kernel's required cluster shape where the launch attribute gives another (0s: none).
+    int rqx = 0, rqy = 0, rqz = 0;
     // Preferred cluster dimension (0s without the attribute): S-CGA-SHAPE, probes/cga_size.
     unsigned px = 0, py = 0, pz = 0;
     int pdl = 0;
@@ -458,6 +471,7 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
                 cx = cfg->attrs[i].value.clusterDim.x;
                 cy = cfg->attrs[i].value.clusterDim.y;
                 cz = cfg->attrs[i].value.clusterDim.z;
+                cattr = cx != 0;
             } else if (cfg->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PREFERRED_CLUSTER_DIMENSION) {
                 px = cfg->attrs[i].value.preferredClusterDim.x;
                 py = cfg->attrs[i].value.preferredClusterDim.y;
@@ -520,6 +534,35 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
         capturing = cs != CU_STREAM_CAPTURE_STATUS_NONE ? -1 : 0;  // no id: unknown capture
     CUdevice dev = -1;
     if (c_getdev) c_getdev(&dev);
+    // A cluster shape the kernel requires (cudaFuncAttributeRequiredClusterWidth / Height /
+    // Depth, set at run time or compiled in by __cluster_dims__) makes every launch of it a
+    // cluster launch of that shape, triple-chevron ones and ones without the launch attribute
+    // included (MISS 281: recorded as launches without a cluster, such a case was checked as one
+    // CTA per cluster: a fault where the application ran, or a clean verdict on a kernel that
+    // races with its real cluster). Where the launch attribute gives a shape too, it wins, and a
+    // different required shape is recorded beside it ("required_cluster").
+    {
+        static const CUfunction_attribute req[3] = {CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_WIDTH,
+                                                    CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_HEIGHT,
+                                                    CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_DEPTH};
+        int r[3] = {0, 0, 0}, ok = 1;
+        for (int i = 0; i < 3 && ok; i++) {
+            if (k) ok = c_kattr && dev >= 0 && c_kattr(&r[i], req[i], k, dev) == CUDA_SUCCESS;
+            else ok = f && c_fattr && c_fattr(&r[i], req[i], f) == CUDA_SUCCESS;
+        }
+        if (ok && r[0] > 0 && r[1] > 0 && r[2] > 0) {
+            if (!cattr) {
+                cx = (unsigned)r[0];
+                cy = (unsigned)r[1];
+                cz = (unsigned)r[2];
+                cattr = 1;
+            } else if ((unsigned)r[0] != cx || (unsigned)r[1] != cy || (unsigned)r[2] != cz) {
+                rqx = r[0];
+                rqy = r[1];
+                rqz = r[2];
+            }
+        }
+    }
     t_seq = seq++;
     fprintf(fp, "\"name\": ");
     json_str(fp, nm);
@@ -586,6 +629,8 @@ static void on_launch_enter(CUfunction f, unsigned gx, unsigned gy, unsigned gz,
     }
     if (inj) fprintf(fp, ", \"inv\": %ld", inv);
     if (px) fprintf(fp, ", \"preferred_cluster\": [%u, %u, %u]", px, py, pz);
+    if (cattr) fprintf(fp, ", \"cluster_attr\": 1");
+    if (rqx) fprintf(fp, ", \"required_cluster\": [%d, %d, %d]", rqx, rqy, rqz);
     {
         // Wall-clock launch time (us), the clock of torch's allocator trace (time_us): the
         // case writer keeps only allocator blocks live at the launch.
@@ -1093,6 +1138,8 @@ int ptxvcap_init(const char *cupti_path, const char *module_dir) {
     c_fmod = (fmod_t)dlsym(cu, "cuFuncGetModule");
     c_klib = (klib_t)dlsym(cu, "cuKernelGetLibrary");
     c_libmod = (libmod_t)dlsym(cu, "cuLibraryGetModule");
+    c_fattr = (fattr_t)dlsym(cu, "cuFuncGetAttribute");
+    c_kattr = (kattr_t)dlsym(cu, "cuKernelGetAttribute");
     c_sid[0] = (sid_t)dlsym(cu, "cuStreamGetId");
     c_sid[1] = (sid_t)dlsym(cu, "cuStreamGetId_ptsz");
     // The first version (status and id), whatever cuda.h maps the name to now.

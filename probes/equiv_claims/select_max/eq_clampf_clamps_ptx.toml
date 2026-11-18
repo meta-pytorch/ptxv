@@ -1,0 +1,10 @@
+# min(max(a, b), c) vs the same clamp by selects (ptx front). The model's claim, taken on set g (finite, no zeros or ties) without captures (check.py).
+max_states = 200000
+segments = true
+reference = { case = "clampf_g", variant = "good", front = "ptx", certify = true }
+
+[[candidates]]
+case = "clamps_g"
+variant = "good"
+front = "ptx"
+certify = true

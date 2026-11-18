@@ -103,7 +103,14 @@ establish equivalence.
 ### The report
 
 - **headline:**
-  - "PROVEN bitwise identical (L0)", "PROVEN L1 ... |C - R| <= bound";
+  - "PROVEN bitwise identical (L0)", "PROVEN L1 ... |C - R| <= bound"; every form of the
+    bound (sum, 16-bit round, norm, softmax) ends in "+ A" when a bounded output has an
+    absolute term (flushed subnormals, subnormal roundings), A the largest (MISS 145: until
+    2026-11-12 the headline dropped it, "0 * sum|terms|" next to GPU outputs within the proven
+    bound but not within that). Printed bounds (k, A, the forms' parts, elementwise maxima)
+    round up and printed condition limits (kappa, Q, the one-ulp conditioning) round down, so
+    the text never claims more than the proof (until 2026-11-12 they rounded to nearest:
+    A = 3.526e-38 read "3.5e-38"); report.json keeps the exact values;
   - "PROVEN equal up to the sign of zero (L0~0)": the same bits, except that where one
     kernel's output is -0 the other's can be +0 (one adds +0, as cuBLAS's alpha = 1, beta = 0
     epilogue does, to a value that holds no NaN but the canonical one: MISS 135). Not bitwise
@@ -121,7 +128,8 @@ establish equivalence.
   - level and proven, plus each of L0, L1 and L2 (and L0~0, L0 up to the sign of zero, when
     some output is equal only up to it);
   - `per_output_bound`: max / median / min, a histogram (exact values if 8 or fewer
-    distinct, else 8 bins), and each kernel's own maximum against the exact value;
+    distinct, else 8 bins), `max_abs_extra` (the largest absolute term of a bounded output),
+    and each kernel's own maximum against the exact value;
   - for softmax, the form `rel u * y + add u`;
   - simulator trials;
   - `captured` (the bound at the captured inputs, per output);

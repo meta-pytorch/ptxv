@@ -1,0 +1,85 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CPASYNC-MBAR, the prior copies an arrive-on is ordered after: PTX ISA 9.5 8.9.1.1, "The
+// asynchronous mbarrier arrive-on operation performed by a cp.async.mbarrier.arrive instruction
+// is ordered with respect to the memory operations performed by all prior cp.async operations
+// initiated by the same thread, but not to those of any other instruction issued by the thread."
+// One 16-byte slot, two rounds, each read by a different thread. Thread 0 copies in[0..15] into
+// the slot with cp.async and arrives on full with cp.async.mbarrier.arrive.noinc (count 1);
+// thread 32 waits on full (phase 0), reads the slot into out[0] and arrives on empty (count 1);
+// thread 0 waits on empty and copies the same bytes again, then arrives on full. Thread 64 passes
+// empty's phase 0 with a relaxed wait (no acquire), waits on full's phase 1 with acquire, and
+// reads the slot into out[1]: it synchronizes with the second round only. The second copy writes
+// the bytes already there (S-SAME-VALUE), so thread 64's read is checked against the first copy,
+// which the second arrive-on is ordered after (a prior cp.async of thread 0).
+//   good:  clean.
+//   DIFF:  the second copy reads in[16..31], a different value in every byte: clean.
+//   STORE: the first round is a plain store of the same bytes and a release arrive. The second
+//          copy is ordered after the store (PTX ISA 8.9.1.1) and the second arrive-on after that
+//          copy, so the store is ordered before thread 64's read (causality order is transitive,
+//          8.9.5). The race reported with the store is a known precision artifact (MISS 178):
+//          S-SAME-VALUE checks the read against the store, which the second copy supersedes.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_cpasync_arrive_prior(.param .u64 out_p, .param .u64 in_p)
+{
+    .shared .align 16 .b8 slot[16];
+    .shared .align 8 .b64 full;
+    .shared .align 8 .b64 empty;
+    .reg .b32 %r<20>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, slot;
+    mov.u32 %r5, full;
+    mov.u32 %r6, empty;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    mbarrier.init.shared::cta.b64 [%r6], 1;
+INIT_DONE:
+    bar.sync 0;
+    setp.eq.u32 %p0, %r1, 0;
+    setp.eq.u32 %p1, %r1, 32;
+    setp.eq.u32 %p3, %r1, 64;
+    @%p1 bra CONS_A;
+    @%p3 bra CONS_B;
+    @!%p0 bra DONE;
+    cp.async.cg.shared.global [%r2], [%rd2], 16;     // @R1A
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r5];     // @R1B
+EW:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r6], 0;
+    @!%p4 bra EW;
+    add.u64 %rd3, %rd2, 0;     // @SRC2
+    cp.async.cg.shared.global [%r2], [%rd3], 16;
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%r5];
+    bra DONE;
+CONS_A:
+FA:
+    mbarrier.try_wait.parity.shared::cta.b64 %p5, [%r5], 0;
+    @!%p5 bra FA;
+    ld.shared.u32 %r12, [%r2];
+    st.global.u32 [%rd1], %r12;
+    mbarrier.arrive.shared::cta.b64 %rd9, [%r6];
+    bra DONE;
+CONS_B:
+FB0:
+    mbarrier.try_wait.parity.relaxed.cta.shared::cta.b64 %p7, [%r6], 0;
+    @!%p7 bra FB0;
+FB:
+    mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %p6, [%r5], 1;
+    @!%p6 bra FB;
+    ld.shared.u32 %r13, [%r2];
+    st.global.u32 [%rd1+4], %r13;
+DONE:
+    ret;
+}

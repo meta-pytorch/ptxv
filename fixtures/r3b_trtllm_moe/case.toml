@@ -594,6 +594,8 @@ byte_offset = 0
 id = "good"
 summary = "as shipped in flashinfer 0.5.3 (cubins slimmed by tools/cubin_slim.py)"
 expect = ["race"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract", "race"]
 hw_note = "T3b-2: gemm2's warp 0 frees TMEM (UTCATOMSWS.AND, sass:0x1cc0) after a named barrier of epilogue warps 0-3 only; the second M half's MMAs (committed to the mbarrier only warps 4-7 wait on) and warps 4-7's LDTM are not ordered before it. GB300: out bitwise = simulator 1000/1000 (one CTA per SM: nothing can reallocate the freed columns)"
 
 [[variants]]
@@ -615,6 +617,8 @@ patch = [
     { at = "@0x2ac0", bits = [[32, 32, 0]], expect = "IMAD.MOV.U32 R10, RZ, RZ, 0x0", kernel = "_ZN3moe3dev7routing18routingRenormalize27routingIndicesClusterKernelINS2_12KernelParamsI13__nv_bfloat16S5_Li128ELb0ELb1ELb1EEEEEvT_" },
 ]
 expect = ["race"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract", "race"]
 hw_note = "race: several threads store the permuted-row entries of slot 0 (routing sass:0xa070); the routing claim fails. GB300: wrong output 1000/1000, equal to the simulator's B70 output bitwise 1000/1000 (PTXV_HW_EXPECT=variant)"
 
 [[variants]]

@@ -1,0 +1,52 @@
+name = "e_barover_brau_regid"
+description = """
+E-BAR-OVER's register-id walk (the consumer's `BAR.SYNC R4, 0x40`; fixtures/e_barover_brau:
+the plain walk) and SASS `@P BRA.U` (MISS 141). Warps 2 and 3 reach the counted barrier
+`BAR.SYNC 0x1, 0x40` only on the fall-through of `@!P0 BRA.U` with P0 mixed across the warp, a
+path the thread's own guard (true in lanes 0-15) does not take. Binary-only: kernel.cubin is
+kernel.ptx through ptxas 13.0 (-arch=sm_103a); variant BRAU sets bit 32 of the `@!P0 BRA` at
+0x0210 (the edit of probes/bra_u/patch.py). Test e_barover_walk_follows_both_edges_of_bra_u
+also runs BRAU with the guard true in every lane (k1 = 32): the warp branches, and the run is
+clean."""
+cubin = "kernel.cubin"
+arch = "sm_103a"
+entry = "e_barover_brau_regid"
+grid = [1, 1, 1]
+block = [32, 4, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+# k1: the branch's guard holds in the lanes below it (warps 2 and 3).
+[[params]]
+kind = "u32"
+value = 16
+
+# k2: lanes below it go on to the barrier if they fall through.
+[[params]]
+kind = "u32"
+value = 16
+
+# bid: the consumer's barrier id (e_barover_brau_regid; unused in e_barover_brau).
+[[params]]
+kind = "u32"
+value = 1
+
+[[variants]]
+id = "good"
+summary = "per-lane `@!P0 BRA`: warps 2 and 3 never arrive"
+expect = ["clean"]
+
+[[variants]]
+id = "BRAU"
+summary = "`@!P0 BRA.U`, P0 mixed: no lane branches; 128 arrivals on barrier 1 (count 64)"
+patch = [{ at = "@0x0210", bits = [[32, 1, 1]], expect = "@!P0 BRA.U `(.L_x_1)" }]
+expect = ["nondeterministic", "violation"]

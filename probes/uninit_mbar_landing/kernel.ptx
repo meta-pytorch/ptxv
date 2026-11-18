@@ -1,0 +1,54 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Repro (MISS 279 widened, RDP2 finding J): an asynchronous update of mbarrier M issued before
+// M's init, unordered with it. Warp 0 lane 0: the update (@U; TMA: a 16-byte bulk copy into t
+// with complete_tx on M). Warp 1 lane 32: mbarrier.init M, 1; then arrive.expect_tx M, 16. Warp 2
+// lane 64: waits for phase 0 of M, reads t. Update after the init: phase 0 completes, the waiter
+// reads t (one output). Update first: a violation (used before init) and phase 0 never completes
+// (deadlock). The landings of a bulk copy, a tcgen05.commit, a cp.async.mbarrier.arrive and a
+// CLC response skipped their mbarrier access, and with it the (re)initialization key, before the
+// init, so the synchronization reduction never ran the init before the landing.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry uninit_mbar_landing(.param .u64 in_p, .param .u64 out_p)
+.maxntid 96, 1, 1
+{
+    .shared .align 16 .b8 t[16];
+    .shared .align 8 .b64 m1;
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd2, [in_p];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r4, m1;
+    mov.u32 %r5, t;
+    shr.u32 %r2, %r1, 5;
+    and.b32 %r3, %r1, 31;
+    setp.ne.u32 %p2, %r3, 0;
+    @%p2 bra END;
+    setp.eq.u32 %p3, %r2, 1;
+    @%p3 bra I;
+    setp.eq.u32 %p3, %r2, 2;
+    @%p3 bra W;
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r5], [%rd2], 16, [%r4];  // @U
+    bra END;
+I:
+    mbarrier.init.shared::cta.b64 [%r4], 1;  // @N
+    fence.proxy.async.shared::cta;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;  // @I
+    bra END;
+W:
+    mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %p5, [%r4], 0;
+    @!%p5 bra W;
+    ld.shared.u32 %r15, [%r5];
+    st.global.u32 [%rd1], %r15;
+END:
+    ret;
+}

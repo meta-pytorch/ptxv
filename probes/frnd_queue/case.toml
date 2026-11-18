@@ -1,0 +1,78 @@
+name = "probe_frnd_queue"
+description = """
+Probe (L-OPCLASS, E-HW-SB-QUEUE) for FRND in the conversion queue on GB300. ptxas (sm_103a)
+schedules `MUFU.RCP R4, R12` (wr=SB0) at 0x80, `FRND R6, R13` (no scoreboard) at 0x90,
+`FRND R7, R14` (wr=SB1) at 0xa0 and `FMUL R5, R15, R4` (waits on SB0) at 0xb0. The variants
+take MUFU.RCP's write scoreboard away and cut the stalls before the FMUL to 3 cycles:
+- COVER: the FMUL waits on SB1 only, the later FRND's scoreboard. Correct on GB300 if and only
+  if FRND completes in issue order after MUFU.
+- NOWAIT: the FMUL waits on nothing: the positive control, R4 read before MUFU wrote it.
+- OWN: the stalls cut, MUFU.RCP keeps SB0 and the FMUL waits on it (control).
+GB300 (2026-11-11, `ptxv hw --scrub`, 1000 runs each): good and OWN correct in every run; COVER
+and NOWAIT wrong in every run with the same outputs (one column stale). FRND is not in the
+conversion queue: the scoreboard check reports COVER's read (`sb:nosb`) on both levels."""
+ptx = "kernel.ptx"
+entry = "frnd_queue"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [256, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [256, 4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract"]
+
+[[variants]]
+id = "COVER"
+summary = "MUFU.RCP with no write scoreboard, the FMUL waits on the later FRND's SB1 only"
+patch = [
+    { at = "@0x80", wbar = 7, stall = 1, expect = "MUFU.RCP R4, R12" },
+    { at = "@0x90", stall = 1, expect = "FRND R6, R13" },
+    { at = "@0xb0", wait = 2, expect = "FMUL R5, R15, R4" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "MUFU.RCP with no write scoreboard, the FMUL waits on nothing (positive control)"
+patch = [
+    { at = "@0x80", wbar = 7, stall = 1, expect = "MUFU.RCP R4, R12" },
+    { at = "@0x90", stall = 1, expect = "FRND R6, R13" },
+    { at = "@0xb0", wait = 0, expect = "FMUL R5, R15, R4" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "OWN"
+summary = "the stalls cut as in COVER, MUFU.RCP keeps SB0 and the FMUL waits on it (control)"
+patch = [
+    { at = "@0x80", stall = 1, expect = "MUFU.RCP R4, R12" },
+    { at = "@0x90", stall = 1, expect = "FRND R6, R13" },
+]
+expect = ["clean"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract"]

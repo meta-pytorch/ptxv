@@ -157,6 +157,7 @@ class Job(cf.Future):
         self.cached = False
         self._kill: Callable[[], None] | None = None
         self._listeners: list[Callable[[str], None]] = []
+        self._before_result: list[Callable[[Any], None]] = []
 
     def use_spec(self, spec: JobSpec) -> None:
         with self._input_lock:
@@ -193,6 +194,22 @@ class Job(cf.Future):
 
     def add_progress_callback(self, fn: Callable[[str], None]) -> None:
         self._listeners.append(fn)
+
+    def before_result(self, fn: Callable[[Any], None]) -> None:
+        """Run `fn(result)` inside `set_result`, before any waiter wakes or done callback
+        runs: what it does (the result cache write) is complete when `result()` returns.
+        Done callbacks run only after the waiters are woken. Register before the backend
+        can finish the job."""
+        self._before_result.append(fn)
+
+    def set_result(self, result: Any) -> None:
+        if not self.done():
+            for fn in self._before_result:
+                try:
+                    fn(result)
+                except Exception:
+                    pass
+        super().set_result(result)
 
     def _line(self, line: str) -> None:
         self.progress = line
@@ -625,6 +642,8 @@ def result_from_cache(path: Path) -> dict | None:
 
 def store_cache(path: Path, result: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    # One temporary name per process and thread: two jobs of one key finishing together
+    # (a resubmitted job and its first run) must not rename each other's file away.
+    tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(result))
     tmp.replace(path)

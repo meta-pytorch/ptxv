@@ -1,0 +1,8 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# PTX: not modeled (expect_tx on another CTA's mbarrier, S-MBAR); pinned so a change shows.
+good  ptx  stateful [unmodeled,violation]
+good  ptx  dpor     [unmodeled,violation]
+good  ptx  certify  [unmodeled,violation]
+good  sass stateful [nondeterministic,race,violation]
+good  sass dpor     [nondeterministic,race,violation]
+good  sass certify  [nondeterministic,race,violation]

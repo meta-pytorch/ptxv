@@ -71,4 +71,8 @@ buffer = "acc"
 [[variants]]
 id = "good"
 summary = "as written"
-expect = ["clean"]
+# PTX: the 32 lanes of the one atom.add.f32 take effect in any order (E-LOCKSTEP, MISS 74), so
+# the old values and the sum depend on the order (lane order and its reverse explored, the bound
+# note); SASS keeps lane order, whose output is GB300's bitwise.
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

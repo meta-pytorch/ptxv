@@ -110,7 +110,17 @@ pub fn delay_loops(k: &Kernel) -> HashSet<u32> {
     out
 }
 
-fn succs(k: &Kernel, pc: usize) -> Vec<usize> {
+/// The instructions after each `CALL.REL` of the code: where a `RET` may return to.
+fn return_sites(k: &Kernel) -> Vec<usize> {
+    (0..k.code.len())
+        .filter(|&pc| matches!(k.code[pc].op, Op::Call { .. }))
+        .map(|pc| pc + 1)
+        .collect()
+}
+
+/// Successors of `pc`. A `RET` returns to every call's return site (`rets`, context
+/// insensitive): what a callee computes, a clock value say, flows back to its callers.
+fn succs(k: &Kernel, pc: usize, rets: &[usize]) -> Vec<usize> {
     let i = &k.code[pc];
     let next = pc + 1;
     let v = match &i.op {
@@ -128,7 +138,14 @@ fn succs(k: &Kernel, pc: usize) -> Vec<usize> {
             }
         }
         Op::Brx { targets, .. } => targets.clone(),
-        Op::Exit | Op::Ret { .. } | Op::Trap { .. } if i.guard.reg.is_none() => vec![],
+        Op::Ret { .. } => {
+            let mut v = rets.to_vec();
+            if i.guard.reg.is_some() {
+                v.push(next);
+            }
+            v
+        }
+        Op::Exit | Op::Trap { .. } if i.guard.reg.is_none() => vec![],
         Op::Call { target } => vec![*target, next],
         _ => vec![next],
     };
@@ -228,6 +245,7 @@ fn taint(k: &Kernel, loads: bool, data: bool) -> Vec<TState> {
     // first byte, end) by the address's immediate offset (stack slots: vprintf arguments, a
     // spilled start time).
     let mut local: HashSet<(usize, i64, i64)> = HashSet::new();
+    let rets = return_sites(k);
     loop {
         let flags = local.len();
         let mut work: Vec<usize> = (0..n).rev().collect();
@@ -325,7 +343,7 @@ fn taint(k: &Kernel, loads: bool, data: bool) -> Vec<TState> {
                 _ => None,
             };
             let part = k.entry_of(pc);
-            for s in succs(k, pc) {
+            for s in succs(k, pc, &rets) {
                 // Control flow stays within one kernel of a concatenated launch.
                 if k.entry_of(s) != part {
                     continue;
@@ -355,7 +373,14 @@ fn taint(k: &Kernel, loads: bool, data: bool) -> Vec<TState> {
 /// code (unconditional branches followed)? A timeout's print-and-trap path: a hang guard
 /// (E-CLOCK). What runs before the trap does not matter: the trap aborts the launch, and
 /// the trap itself is what E-CLOCK assumes never happens.
-fn leads_to_trap(k: &Kernel, mut pc: usize) -> bool {
+fn leads_to_trap(k: &Kernel, pc: usize) -> bool {
+    leads_to_trap_past(k, pc, &HashSet::new())
+}
+
+/// `leads_to_trap`, falling through the back edges in `delay` (pure delay loops: their
+/// deadline passes, `delay_loops`), as DeepEP-style timeouts wait a while after the print and
+/// before the trap.
+fn leads_to_trap_past(k: &Kernel, mut pc: usize, delay: &HashSet<u32>) -> bool {
     for _ in 0..256 {
         let Some(i) = k.code.get(pc) else {
             return false;
@@ -373,6 +398,7 @@ fn leads_to_trap(k: &Kernel, mut pc: usize) -> bool {
                 cond: None,
                 div: None,
             } if i.guard.is_always() => pc = *target,
+            Op::Bra { .. } if delay.contains(&(pc as u32)) => pc += 1,
             Op::Bra { .. } | Op::Brx { .. } | Op::Exit | Op::Ret { .. } | Op::Call { .. } => {
                 return false;
             }
@@ -421,12 +447,439 @@ fn choices(k: &Kernel, delay: &HashSet<u32>, t: &[TState]) -> HashSet<u32> {
             {
                 return None;
             }
-            if let Op::Bra { target, .. } = &i.op {
-                if leads_to_trap(k, *target) || leads_to_trap(k, pc + 1) {
-                    return None;
-                }
+            if trap_side(k, pc, delay).is_some() {
+                return None;
             }
             Some(pc as u32)
+        })
+        .collect()
+}
+
+/// For a guarded branch: `Some(true)` when its taken side reaches a trap (through straight-line
+/// code and pure delay loops), `Some(false)` when its fall-through does, None otherwise.
+fn trap_side(k: &Kernel, pc: usize, delay: &HashSet<u32>) -> Option<bool> {
+    let Op::Bra { target, .. } = &k.code[pc].op else {
+        return None;
+    };
+    if leads_to_trap_past(k, *target, delay) {
+        Some(true)
+    } else if leads_to_trap_past(k, pc + 1, delay) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Clock units a hang guard's clock must advance by, after its first clock read, before the
+/// guard may take its trap side, for the guard to be exempt from the clock choices
+/// (`Machine::new`, `hang_bound_holds`): 2^31 cycles is over a second at GB300's clock, 2^31
+/// ns of the global timer two. ASSUME(E-CLOCK)
+pub const HANG_BOUND: u64 = 1 << 31;
+
+/// What `Machine::new` re-executes to decide whether a hang guard's bound is at least
+/// `HANG_BOUND`: the backward slice of a predicate the trap side needs (the guard, or the
+/// operand of the guard's AND / OR combine that the trap side forces), through unique
+/// reaching definitions (pure register arithmetic, parameter and constant loads, clock
+/// reads), in dependency order, and its clock reads in the order they run.
+#[derive(Clone, Debug)]
+pub struct HangSlice {
+    pub pcs: Vec<u32>,
+    pub reads: Vec<u32>,
+    /// The predicate the trap side needs ...
+    pub pred: ptxv_ir::Pred,
+    /// ... and its value there.
+    pub trap_when: bool,
+}
+
+/// Hang guards (a branch on a clock-derived predicate with a side that reaches a trap, other
+/// than pure delay loops' back edges), each with the slice that decides its bound, None
+/// where no slice can be built (a loaded value, a register with several reaching definitions,
+/// clock reads in no dominance order): such a guard is a clock choice. ASSUME(E-CLOCK)
+pub fn hang_guards(k: &Kernel, delay: &HashSet<u32>) -> Vec<(u32, Option<HangSlice>)> {
+    let t = clock_taint(k);
+    let mut out = Vec::new();
+    let mut preds: Option<Vec<Vec<usize>>> = None;
+    for (pc, i) in k.code.iter().enumerate() {
+        let Some(p) = choice_pred(i) else {
+            continue;
+        };
+        let Some(g) = p.reg else {
+            continue;
+        };
+        let clean = ptxv_ir::Pred {
+            reg: None,
+            neg: false,
+        };
+        if !t[pc].has(&g, clean) || delay.contains(&(pc as u32)) {
+            continue;
+        }
+        let Some(trap_taken) = trap_side(k, pc, delay) else {
+            continue;
+        };
+        let preds = preds.get_or_insert_with(|| predecessors(k));
+        out.push((pc as u32, hang_slice(k, preds, pc, p, trap_taken)));
+    }
+    out
+}
+
+fn predecessors(k: &Kernel) -> Vec<Vec<usize>> {
+    let rets = return_sites(k);
+    let mut p = vec![Vec::new(); k.code.len()];
+    for pc in 0..k.code.len() {
+        for s in succs(k, pc, &rets) {
+            if k.entry_of(s) == k.entry_of(pc) {
+                p[s].push(pc);
+            }
+        }
+    }
+    p
+}
+
+/// The definitions of `r` that reach `pc` (a guarded definition does not end the search).
+/// Empty when a path from the kernel's entry reaches `pc` with no definition (the register's
+/// initial value is no definition the slice can re-execute) or the search did not finish.
+fn reaching_defs(k: &Kernel, preds: &[Vec<usize>], r: Reg, pc: usize) -> Vec<usize> {
+    let entry = k.entry_of(pc);
+    if pc == entry {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    let mut work: Vec<usize> = preds[pc].clone();
+    let mut defs = Vec::new();
+    while let Some(q) = work.pop() {
+        if !seen.insert(q) {
+            continue;
+        }
+        if seen.len() > 100_000 {
+            // Not searched to the end: no definition is known to be the only one.
+            return Vec::new();
+        }
+        let i = &k.code[q];
+        if i.op.dst_regs().contains(&r) {
+            defs.push(q);
+            if i.guard.is_always() {
+                continue;
+            }
+        }
+        if q == entry {
+            return Vec::new();
+        }
+        work.extend(preds[q].iter().copied());
+    }
+    defs
+}
+
+/// The slice of the hang guard at `pc` (predicate `guard`, trap side taken when
+/// `trap_taken`): of the guard itself, else of a predicate the trap side forces through the
+/// guard's definition (DeepEP: `ISETP.GT.U32.OR P0, PT, R19, 0x1, !P0` over the timeout
+/// compare `P0`; the trap side, P0 false, needs the timeout compare true).
+fn hang_slice(
+    k: &Kernel,
+    preds: &[Vec<usize>],
+    pc: usize,
+    guard: ptxv_ir::Pred,
+    trap_taken: bool,
+) -> Option<HangSlice> {
+    let mut cands = vec![(pc, guard, trap_taken)];
+    let (mut at, mut p, mut when) = (pc, guard, trap_taken);
+    for _ in 0..4 {
+        let Some(r) = p.reg else { break };
+        let &[d] = reaching_defs(k, preds, r, at).as_slice() else {
+            break;
+        };
+        let i = &k.code[d];
+        let Op::Setp {
+            and,
+            or,
+            xor: false,
+            ex: None,
+            ..
+        } = &i.op
+        else {
+            break;
+        };
+        if !i.guard.is_always() || and.reg.is_none() {
+            break;
+        }
+        // The register's value on the trap side (the predicate reads it negated or not).
+        let v = when != p.neg;
+        // `r = cmp || and` false needs `and` false; `r = cmp && and` true needs `and` true.
+        if *or == v {
+            break;
+        }
+        (at, p, when) = (d, *and, v);
+        cands.push((at, p, when));
+    }
+    cands
+        .into_iter()
+        .find_map(|(at, p, when)| slice_at(k, preds, at, p, when))
+}
+
+/// The slice of predicate `p` read at `pc`, whose value `trap_when` the trap side needs.
+fn slice_at(
+    k: &Kernel,
+    preds: &[Vec<usize>],
+    pc: usize,
+    p: ptxv_ir::Pred,
+    trap_when: bool,
+) -> Option<HangSlice> {
+    let g = p.reg?;
+    // (register, use) pairs to resolve; definitions in post-order (operands first).
+    let mut order: Vec<usize> = Vec::new();
+    let mut reads: Vec<usize> = Vec::new();
+    let mut done: HashSet<usize> = HashSet::new();
+    #[allow(clippy::too_many_arguments)]
+    fn visit(
+        k: &Kernel,
+        preds: &[Vec<usize>],
+        r: Reg,
+        at: usize,
+        order: &mut Vec<usize>,
+        reads: &mut Vec<usize>,
+        done: &mut HashSet<usize>,
+        depth: usize,
+    ) -> Option<()> {
+        if depth > 64 || order.len() > 64 {
+            return None;
+        }
+        let d = match reaching_defs(k, preds, r, at).as_slice() {
+            [d] => *d,
+            _ => return None,
+        };
+        let i = &k.code[d];
+        if !i.guard.is_always() {
+            return None;
+        }
+        if done.contains(&d) {
+            return Some(());
+        }
+        let vals = i.op.src_vals();
+        if reads_clock(&i.op) {
+            if !matches!(i.op, Op::Mov { .. }) {
+                return None;
+            }
+            done.insert(d);
+            order.push(d);
+            reads.push(d);
+            return Some(());
+        }
+        let param = matches!(
+            i.op,
+            Op::Ld {
+                space: ptxv_ir::Space::Param,
+                ..
+            } | Op::LdConst { .. }
+        );
+        if !(crate::num::pure_op(&i.op) || param) || vals.iter().any(|v| matches!(v, Val::SReg(_)))
+        {
+            return None;
+        }
+        for s in i.op.src_regs() {
+            visit(k, preds, s, d, order, reads, done, depth + 1)?;
+        }
+        done.insert(d);
+        order.push(d);
+        Some(())
+    }
+    visit(k, preds, g, pc, &mut order, &mut reads, &mut done, 0)?;
+    if reads.is_empty() {
+        return None;
+    }
+    // Each slice instruction must stand for one execution: none in a callee (a callee called
+    // twice gives two clock values from one read), and every user of one in a loop reads its
+    // latest execution (below).
+    let rets = return_sites(k);
+    let mut callee: HashSet<usize> = HashSet::new();
+    let mut work: Vec<usize> = k
+        .code
+        .iter()
+        .filter_map(|i| match i.op {
+            Op::Call { target } => Some(target),
+            _ => None,
+        })
+        .collect();
+    while let Some(q) = work.pop() {
+        if q >= k.code.len() || !callee.insert(q) {
+            continue;
+        }
+        if !matches!(k.code[q].op, Op::Ret { .. }) {
+            work.extend(succs(k, q, &rets));
+        }
+    }
+    if order.iter().any(|d| callee.contains(d)) {
+        return None;
+    }
+    let in_cycle = |d: usize| -> bool {
+        let mut seen = HashSet::new();
+        let mut w = succs(k, d, &rets);
+        while let Some(q) = w.pop() {
+            if q == d {
+                return true;
+            }
+            if seen.insert(q) {
+                w.extend(succs(k, q, &rets));
+            }
+        }
+        false
+    };
+    // Whether `pc` is reachable from `d` (past it) without passing `u`.
+    let avoids = |d: usize, u: usize| -> bool {
+        let mut seen = HashSet::new();
+        let mut w = succs(k, d, &rets);
+        while let Some(q) = w.pop() {
+            if q == u || !seen.insert(q) {
+                continue;
+            }
+            if q == pc {
+                return true;
+            }
+            w.extend(succs(k, q, &rets));
+        }
+        false
+    };
+    let set: HashSet<usize> = order.iter().copied().collect();
+    let mut users: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+    for &u in order.iter().chain(std::iter::once(&pc)) {
+        for r in k.code[u]
+            .op
+            .src_regs()
+            .into_iter()
+            .chain(k.code[u].guard.reg)
+        {
+            if let [d] = reaching_defs(k, preds, r, u).as_slice() {
+                if set.contains(d) {
+                    users.entry(*d).or_default().push(u);
+                }
+            }
+        }
+    }
+    // A definition in a loop: every path from it to `pc` passes each of its users, so after
+    // its last execution before `pc` each user runs again and reads that execution (no user
+    // keeps an older iteration's value while another reads a newer one).
+    for (d, us) in &users {
+        if in_cycle(*d) && us.iter().any(|&u| u != pc && avoids(*d, u)) {
+            return None;
+        }
+    }
+    // Time order of the clock reads: each must dominate the next.
+    let entry = k.entry_of(pc);
+    let dominates = |a: usize, b: usize| -> bool {
+        // b unreachable from the entry without passing a.
+        let rets = return_sites(k);
+        let mut seen = HashSet::new();
+        let mut work = vec![entry];
+        while let Some(q) = work.pop() {
+            if q == a || !seen.insert(q) {
+                continue;
+            }
+            if q == b {
+                return false;
+            }
+            for s in succs(k, q, &rets) {
+                if k.entry_of(s) == entry {
+                    work.push(s);
+                }
+            }
+        }
+        true
+    };
+    let mut sorted: Vec<usize> = Vec::new();
+    for r in reads {
+        let pos = sorted.iter().position(|&x| dominates(r, x));
+        match pos {
+            Some(p) => sorted.insert(p, r),
+            None => sorted.push(r),
+        }
+    }
+    // In a loop, a read's next execution must not come between the next read and `pc`: every
+    // path from it to `pc` passes the next read (their last executions in time order).
+    if !sorted
+        .windows(2)
+        .all(|w| dominates(w[0], w[1]) && !(in_cycle(w[0]) && avoids(w[0], w[1])))
+    {
+        return None;
+    }
+    Some(HangSlice {
+        pcs: order.into_iter().map(|x| x as u32).collect(),
+        reads: sorted.into_iter().map(|x| x as u32).collect(),
+        pred: p,
+        trap_when,
+    })
+}
+
+/// Clock choices (`clock_branches`, `mem_branches`) whose deciding predicate may differ
+/// between the lanes of one warp split: derived from a lane-varying value (`%tid`, the lane
+/// id and masks, a load or other non-arithmetic result, a value written under lane-varying
+/// control) or, on the PTX front, from a clock read itself (each thread reads `%clock` on
+/// its own; the SASS front reads one value per warp instruction, E-LOCKSTEP). A clock choice
+/// fixes one predicate for the whole split, so such a choice with more than one lane is
+/// `unmodeled` (`exec`). ASSUME(E-CLOCK)
+pub fn lane_varying_choices(k: &Kernel, delay: &HashSet<u32>) -> HashSet<u32> {
+    use ptxv_ir::SReg;
+    let ptx = k.front == ptxv_ir::Front::Ptx;
+    let varying_sreg = |v: &Val| match v {
+        Val::SReg(s) => {
+            matches!(
+                s,
+                SReg::Tid(_)
+                    | SReg::LaneId
+                    | SReg::LaneMaskLt
+                    | SReg::LaneMaskLe
+                    | SReg::LaneMaskGe
+                    | SReg::LaneMaskGt
+                    | SReg::LaneMaskEq
+            ) || ptx && s.is_clock()
+        }
+        _ => false,
+    };
+    let cfg = crate::elect_lanes::Cfg::new(k);
+    let mut lv: HashSet<Reg> = HashSet::new();
+    let mut ctl = vec![false; k.code.len()];
+    loop {
+        let before = (lv.len(), ctl.iter().filter(|&&x| x).count());
+        for (pc, i) in k.code.iter().enumerate() {
+            let uniform_dst = |r: &Reg| matches!(r.file, ptxv_ir::File::UR | ptxv_ir::File::UP);
+            let param = matches!(
+                i.op,
+                Op::Ld {
+                    space: ptxv_ir::Space::Param,
+                    ..
+                } | Op::LdConst { .. }
+            );
+            let v = ctl[pc]
+                || i.guard.reg.is_some_and(|g| lv.contains(&g))
+                || i.op.src_regs().iter().any(|r| lv.contains(r))
+                || i.op.src_vals().iter().any(varying_sreg)
+                || !(crate::num::pure_op(&i.op) || param);
+            if v {
+                for d in i.op.dst_regs() {
+                    if !uniform_dst(&d) {
+                        lv.insert(d);
+                    }
+                }
+            }
+            // A branch on a lane-varying guard, or an indexed branch on a lane-varying index.
+            if matches!(i.op, Op::Bra { .. } | Op::Brx { .. })
+                && (i.guard.reg.is_some_and(|g| lv.contains(&g))
+                    || matches!(i.op, Op::Brx { .. })
+                        && i.op.src_regs().iter().any(|r| lv.contains(r)))
+            {
+                for x in cfg.region(pc) {
+                    ctl[x] = true;
+                }
+            }
+        }
+        if (lv.len(), ctl.iter().filter(|&&x| x).count()) == before {
+            break;
+        }
+    }
+    let mut all = clock_branches(k, delay);
+    all.extend(mem_branches(k, delay));
+    all.extend(hang_guards(k, delay).into_iter().map(|x| x.0));
+    all.into_iter()
+        .filter(|&pc| {
+            choice_pred(&k.code[pc as usize])
+                .is_some_and(|p| p.reg.is_some_and(|g| lv.contains(&g)))
         })
         .collect()
 }
@@ -450,10 +903,18 @@ pub fn mem_branches(k: &Kernel, delay: &HashSet<u32>) -> HashSet<u32> {
 }
 
 /// Non-arithmetic instructions other than branches with a control operand that may derive
-/// from the clock (a clock-dependent address, count or descriptor): not modeled (`unmodeled`
-/// when executed). A clock-derived guard is a choice (`clock_branches`).
+/// from the clock (a clock-dependent address, count or descriptor), branches the explorer
+/// cannot steer under a clock guard, and indexed branches with a clock-derived index: not
+/// modeled (`unmodeled` when executed). A clock-derived guard is a choice (`clock_branches`).
 pub fn clock_effects(k: &Kernel) -> HashSet<u32> {
     let t = clock_taint(k);
+    // When the kernel stores clock values, an index loaded from memory may be one (as
+    // `mem_branches` for guards).
+    let mt = if clock_stores(k).is_empty() {
+        None
+    } else {
+        Some(taint(k, true, false))
+    };
     k.code
         .iter()
         .enumerate()
@@ -469,7 +930,13 @@ pub fn clock_effects(k: &Kernel) -> HashSet<u32> {
                         },
                     )
                 });
-                return (g && choice_pred(i).is_none()).then_some(pc as u32);
+                // An indexed branch whose index (or target) derives from the clock: the
+                // clock picks the target.
+                let idx = matches!(i.op, Op::Brx { .. })
+                    && i.op.src_regs().iter().any(|r| {
+                        t[pc].has(r, i.guard) || mt.as_ref().is_some_and(|m| m[pc].has(r, i.guard))
+                    });
+                return (g && choice_pred(i).is_none() || idx).then_some(pc as u32);
             }
             if crate::num::pure_op(&i.op) {
                 return None;

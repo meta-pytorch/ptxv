@@ -289,9 +289,7 @@ fn packed_later_access_rechecks_bounds_and_keeps_completed_memory_prefix() {
     };
     machine.wr(0, destination, 0xdeadbeef, 1);
     take_component(&mut machine, 0, First);
-    Arc::make_mut(&mut machine.launch).allocs[0]
-        .init
-        .truncate(2);
+    Arc::make_mut(&mut Arc::make_mut(&mut machine.launch).allocs[0].init).truncate(2);
     take_component(&mut machine, 0, Second);
     assert_eq!(
         [*machine.gmem[0].bytes.get(0), *machine.gmem[0].bytes.get(1)],

@@ -1,0 +1,10 @@
+# x > y ? x : y vs y > x ? y : x, x = a + b, y = a - b (sass front). The model's claim, taken on set g (finite, no zeros or ties) without captures (check.py).
+max_states = 200000
+segments = true
+reference = { case = "mz_sel_g", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "mz_selsw_g"
+variant = "good"
+front = "sass"
+certify = true

@@ -1,0 +1,37 @@
+name = "e_clock_brx_mem"
+description = """
+E-CLOCK (MISS 77, review): brx.idx on (%clock stored to shared and reloaded) & 1. T1 is the
+write-write race of e_clock_brx. clock_effects follows the register taint only; the store is a
+clock-store note (kind note: not a finding), the indexed branch neither a choice nor an effect.
+Now (2026-11-11): when the kernel stores clock values, an indexed branch on a loaded index is
+a clock effect too (as `mem_branches` for guards): unmodeled."""
+ptx = "kernel.ptx"
+entry = "e_clock_brx_mem"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "index from the reloaded clock"
+expect = ["unmodeled"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "unmodeled"]
+
+[[variants]]
+id = "REG"
+summary = "index from the clock register"
+marker = "@IDX"
+find = "and.b32 %r6, %r9, 1;"
+replace = "and.b32 %r6, %r5, 1;"
+expect = ["unmodeled"]

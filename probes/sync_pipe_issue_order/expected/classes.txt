@@ -1,0 +1,8 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# DPOR lines are added where the DPOR fixes for MISS 221 / 222 are present (agentDP).
+good  ptx  stateful  [nondeterministic]
+good  ptx  nosyncpor [nondeterministic]
+good  ptx  certify   [nondeterministic]
+good  sass stateful  [nondeterministic]
+good  sass nosyncpor [nondeterministic]
+good  sass certify   [nondeterministic]

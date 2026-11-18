@@ -1,0 +1,31 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// The lanes of ONE instruction store different values to one shared word (MISS 74, MISS 75);
+// lane 0 reads the word after bar.warp.sync. Variants change the store (volatile, relaxed,
+// plain, exchange, values, a reduction).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_lane_order(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 x;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, x;
+    st.volatile.shared.u32 [%r2], %r1;   // @ST
+    bar.warp.sync -1;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    ld.volatile.shared.u32 %r5, [%r2];
+    st.global.u32 [%rd1], %r5;
+DONE:
+    ret;
+}

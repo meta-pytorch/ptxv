@@ -106,21 +106,34 @@ fn dominators(succ: &[Vec<usize>], preds: &[Vec<usize>], root: usize) -> Vec<usi
 impl Cfg {
     pub fn new(k: &Kernel) -> Cfg {
         let n = k.code.len();
+        // Where a return goes: the instruction after each call (a kernel without calls
+        // returns to the exit).
+        let rets: Vec<usize> = (0..n)
+            .filter(|&pc| matches!(k.code[pc].op, Op::Call { .. }))
+            .map(|pc| pc + 1)
+            .collect();
+        let ret_to = if rets.is_empty() { vec![n] } else { rets };
         let mut succ: Vec<Vec<usize>> = (0..n)
             .map(|pc| {
                 let i = &k.code[pc];
                 let guarded = i.guard.reg.is_some();
-                match &i.op {
+                let mut v = match &i.op {
                     Op::Bra { target, .. } if guarded => vec![pc + 1, *target],
                     Op::Bra { target, .. } => vec![*target],
-                    // A guarded exit, return or trap falls through for the other lanes.
-                    Op::Exit | Op::Ret { .. } | Op::Trap { .. } if guarded => vec![pc + 1, n],
-                    Op::Exit | Op::Ret { .. } | Op::Trap { .. } => vec![n],
+                    // An indexed branch goes to any of its targets; a call to its callee,
+                    // which returns after the call.
+                    Op::Brx { targets, .. } => targets.clone(),
+                    Op::Call { target } => vec![*target],
+                    Op::Ret { .. } => ret_to.clone(),
+                    // A guarded exit or trap falls through for the other lanes.
+                    Op::Exit | Op::Trap { .. } if guarded => vec![pc + 1, n],
+                    Op::Exit | Op::Trap { .. } => vec![n],
                     _ => vec![pc + 1],
+                };
+                if guarded && matches!(i.op, Op::Brx { .. } | Op::Call { .. } | Op::Ret { .. }) {
+                    v.push(pc + 1);
                 }
-                .into_iter()
-                .map(|s| s.min(n))
-                .collect()
+                v.into_iter().map(|s| s.min(n)).collect()
             })
             .collect();
         succ.push(Vec::new());

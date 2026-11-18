@@ -1,0 +1,46 @@
+name = "c_equiv_atom64_cand_copy"
+description = """
+MISS 177: out[t] = x[t] (the reference of eq_atom64.toml). Inputs: x = 1.5 + t/64 (data/)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_equiv_atom64_cand_copy"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "buf"
+dtype = "u32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "buf"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

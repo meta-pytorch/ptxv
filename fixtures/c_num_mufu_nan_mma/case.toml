@@ -1,0 +1,53 @@
+name = "c_num_mufu_nan_mma"
+description = """
+MISS 258: D = A B + 0 by mma.sync.m16n8k16 (bf16, f32 accumulate) with A[r][k] =
+bf16(sqrt.approx.ftz.f32(x[l])) for the lane l holding the element (x[0] = -3 2^-149, which .ftz
+flushes to -0, where sqrt has no real value; x[l] = 1 in the other lanes) and B = bf16 ones (input
+bm). out[4 l + j] = lane l's D fragment j: out[0..16) (rows 0 and 8 of D) hold lane 0's four
+products, whose exact values are not determined (N-NUM-NONFINITE); out[16..128) = 16.
+expected/: GB300."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "num_mufu_nan_mma"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "bm"
+dtype = "bf16"
+shape = [128]
+init = "file"
+file = "data/bm.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "bm"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

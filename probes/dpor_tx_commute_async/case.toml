@@ -1,0 +1,45 @@
+name = "probe_dpor_tx_commute_async"
+description = """
+DPOR repro (MISS 231): an async completion's tx decrement (a TMA copy landing, variant TMA; a
+CLC response landing, variant CLC) against another producer's expect_tx into the same phase.
+run.sh pins every explorer's classes (expected/classes.txt); fixtures.rs
+`dpor_orders_tx_increments_against_decrements` cross-checks DPOR against the stateful search.
+"""
+ptx = "kernel.ptx"
+entry = "dpor_tx_commute_async"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [8]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "TMA"
+summary = "thread 0's copy lands before thread 32's expect_tx: early completion, tb unordered"
+expect = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "CLC"
+summary = "thread 0's CLC response (a complete_tx of 16) lands before thread 32's expect_tx"
+marker = "@T0"
+find = "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r2], [%rd1], 16, [%r4];"
+replace = "clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r2], [%r4];"
+expect = ["nondeterministic", "race", "violation"]

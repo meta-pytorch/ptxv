@@ -1,0 +1,94 @@
+name = "e_mbar_store_order"
+description = """
+A plain store over an mbarrier's memory, or a re-initialization, unordered with the inval or the
+first init of the object (MISS 241, MISS 242). Thread 0 initializes `a` (count 1) uniformly,
+bar.sync; then thread IVT invalidates `a` and thread STT stores zero over it, unordered. Either
+order is possible; when the store lands first it is a store over a live object (contract
+violation, MISS 218). good / SWAP (inval and store by the other thread): violation. PREU: no
+inval and no bar.sync: the first init unordered with the store: violation. REINIT: STT
+re-initializes `a` through a per-thread address (SASS: STS.64 of the state word), unordered
+with the inval: race. REINITU: the re-init through a uniform address (SASS: SYNCS.EXCH.64),
+unordered with the inval: race (MISS 242); REINITUS with the threads swapped (the certificate's
+run takes the inval first, so the init must check it). ORD: the store ordered after the inval by a
+bar.sync (legal reuse): clean. ARRV / ARRVS: an arrival unordered with the inval (an arrival
+after it reaches no object: violation; ARRVS's two orders give different outputs, which needs
+the inval to be a scheduling point). Before 2026-11-12 the explorer's reductions and the certificate
+ran the stores (and, on SASS, the inval) in the order that reports nothing."""
+ptx = "kernel.ptx"
+entry = "e_mbar_store_order"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "t0 invals a, t32 stores zero over a, unordered"
+expect = ["violation"]
+
+[[variants]]
+id = "SWAP"
+summary = "t32 invals a, t0 stores zero over a, unordered"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "ORD"
+summary = "control: store ordered after the inval by a bar.sync (legal reuse)"
+marker = "@MID"
+find = "NOINV:"
+replace = "NOINV: bar.sync 0;"
+expect = ["clean"]
+
+[[variants]]
+id = "PREU"
+summary = "no inval: t0's first init of a unordered with t32's zero store over a (no bar.sync between)"
+edits = [{ marker = "@B1", replace = "<delete>" }, { marker = "@INV", replace = "<delete>" }]
+expect = ["violation"]
+
+[[variants]]
+id = "REINIT"
+summary = "t0 invals a, t32 re-initializes a through a per-thread address (SASS: STS.64 state word), unordered"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "sub.u32 %r20, %r1, 32; shl.b32 %r21, %r20, 3; add.u32 %r22, %r2, %r21; mbarrier.init.shared::cta.b64 [%r22], 1;"
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "REINITU"
+summary = "t0 invals a, t32 re-initializes a with a uniform address (SYNCS.EXCH.64), unordered"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "mbarrier.init.shared::cta.b64 [%r2], 1;"
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "ARRV"
+summary = "t0 invals a, t32 arrives on a, unordered (an arrival after the inval reaches no object)"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "mbarrier.arrive.shared::cta.b64 _, [%r2];"
+expect = ["violation"]
+
+[[variants]]
+id = "ARRVS"
+summary = "ARRV with the threads swapped: t32 invals a, t0 arrives on a, unordered (both orders: MISS 242 control)"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mbarrier.arrive.shared::cta.b64 _, [%r2];" }]
+expect = ["nondeterministic", "violation"]
+
+[[variants]]
+id = "REINITUS"
+summary = "REINITU with the threads swapped: t32 invals a, t0 re-initializes it uniformly, unordered (the certificate runs the inval first)"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "mbarrier.init.shared::cta.b64 [%r2], 1;" }]
+expect = ["race"]

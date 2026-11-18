@@ -20,10 +20,11 @@
 //! - **L1 same function**: the exact polynomials over the input leaves are equal (monomial ->
 //!   coefficient maps compared exactly).
 //! - **L2 no less accurate**: L1, and per monomial the candidate's first-order error multiplier
-//!   (sum of the unit roundoffs of the rounding nodes on its paths) is at most the reference's.
-//!   The a-priori bound sum_m |c_m x_m| d_m is monotone in it, so C's bound <= R's for all x.
+//!   (sum of the unit roundoffs of the rounding nodes on its paths) is at most the reference's,
+//!   and so is its absolute term (flushed subnormals, subnormal roundings). The a-priori bound
+//!   sum_m |c_m x_m| d_m + A is monotone in them, so C's bound <= R's for all x.
 //! - **L3 tolerance**: L1, and per monomial d_C + d_R <= k u, so |C(x) - R(x)| <= k u sum |terms|
-//!   (to first order) for every x.
+//!   (to first order) for every x, up to the bound's absolute term A, which L3 does not compare.
 //!
 //! Per output it also gives the **bound achieved** (docs/equiv-reassoc.md): with L1, the
 //! fp_noise Cor 1a bound of each kernel, rigorous rather than first order (per monomial the sum
@@ -49,6 +50,7 @@ use std::hash::Hasher;
 use ptxv_ir::MufuFunc;
 use serde::Serialize;
 
+use crate::num::MaxKind;
 use crate::num::NodeKind;
 use crate::num::NumState;
 use crate::num::U32;
@@ -256,19 +258,23 @@ pub struct Canon {
     pub inner: BTreeMap<u64, InnerBudget>,
     /// Some MUFU node has only an absolute error bound.
     pub abs_bound: bool,
-    /// Why the rounding order is schedule-dependent (fp32 atomic chains): not L0.
+    /// Why the bits depend on an order of atomic adds the form does not fix (`Report`): not L0.
     pub unordered: Option<String>,
-    /// Absolute error term of FTZ operations (atomics), independent of the inputs.
+    /// Absolute error term, independent of the inputs: FTZ operations (atomics), roundings to
+    /// subnormals (16-bit roundings, f32 products and fmas, tensor-core steps).
     pub abs_extra: f64,
-    /// Some product (segment mode) could underflow: the bound assumes it does not.
-    pub products: bool,
     /// A bf16 rounding is in the DAG (its subnormal absolute error is in `abs_extra`).
     pub round_abs: bool,
-    /// ... and enters a product, which scales that absolute error: no polynomial bound.
+    /// An absolute error term enters a product, which scales it by the other factor: no
+    /// polynomial bound (a 16-bit rounding, MISS 201: an f32 product rounded to a subnormal).
     pub round_in_product: bool,
     /// A TF32 MMA operand (N-TF32): the bound assumes every f32 value read as one, or split
     /// into TF32 parts, is zero or at least 2^-103 in magnitude.
     pub tf32: bool,
+    /// A select or FMNMX.NAN maximum has the value form every kind shares where both operands
+    /// are non-NaN (`NodeKind::Max::fin`, N-FINITE): a value level then holds for inputs with
+    /// finite elements on which no operation overflows (MISS 197, 202).
+    pub finite_max: bool,
 }
 
 /// Relative error of hi(x), the TF32 truncation of a normal f32 x: < 2^-10 (N-TF32).
@@ -288,6 +294,8 @@ fn tf32_hash(part: crate::num::Tf32Part, ha: (u64, u64)) -> (u64, u64) {
 pub const BF16_U: f64 = 1.0 / 256.0;
 /// Absolute error of a bf16 rounding to a subnormal (half its spacing 2^-133).
 pub const BF16_SUB: f64 = 4.591774807899561e-41; // 2^-134
+/// Absolute error of an f32 rounding to a subnormal, to nearest (half its spacing 2^-149).
+pub const F32_SUB: f64 = 7.006492321624085e-46; // 2^-150
 
 /// The element index of a leaf for input byte `elem` read as narrow format `t` (`halfin`
 /// `byte_leaf`): the format in bits 56-59.
@@ -372,10 +380,10 @@ fn merge_effects(cx: &mut Canon, sub: &Canon) {
     }
     cx.abs_bound |= sub.abs_bound;
     cx.abs_extra += sub.abs_extra;
-    cx.products |= sub.products;
     cx.round_abs |= sub.round_abs;
     cx.round_in_product |= sub.round_in_product;
     cx.tf32 |= sub.tf32;
+    cx.finite_max |= sub.finite_max;
 }
 
 struct H2(
@@ -592,14 +600,17 @@ impl Side<'_> {
     }
 
     /// MISS 135: whether node `n` holds no NaN other than the canonical 0x7fffffff, for every
-    /// input: a constant that is no other NaN; the result of an f32 ALU operation (`FADD`,
-    /// `FFMA`, `FMUL`: N-FADD), a MUFU op or a tensor-core step, which give the canonical NaN
-    /// for a NaN of any payload (GB300-measured; for the tensor core on kind::f16,
-    /// N-MMA-SPECIAL, argued for the narrow kinds, whose NaN operands are unmodeled, N-MMA-F8);
-    /// or a choice between such values (min / max, a store under a data-dependent guard). An
-    /// input, a moved or bit-manipulated value (a slice), a 16-bit value widened to f32, a
-    /// TF32 part and an atomic add's location are not: they can hold another NaN, which
-    /// x + (+0) turns into the canonical one.
+    /// input: a constant that is no other NaN; an f32 add, multiply or fma (`FADD`, `FMUL`,
+    /// `FFMA`, FFMA2 x*1+0: N-FADD), a MUFU op or a tensor-core step, which give the canonical
+    /// NaN for a NaN operand of any payload (GB300-measured: N-EQUIV, N-MMA-SPECIAL; the
+    /// narrow kinds' NaN operands are unmodeled, N-MMA-F8); a hardware FMNMX / FMNMX3 (the SASS
+    /// front, `NumState::fmnmx_hw`), whose NaN results are canonical whatever its operands hold;
+    /// or another choice between such values (a PTX max.f32, a select's maximum, a store under a
+    /// data-dependent guard), which can pass the payload of the operand it picks (FSEL; ptxas
+    /// folds max.f32 of one value into a copy). An input, a moved or bit-manipulated value (a
+    /// slice: LOP3, F2F.F32.F64) and a 16-bit value widened to f32 can hold another NaN, which
+    /// x + (+0) turns into the canonical one; a TF32 part and an atomic add are rejected too
+    /// (canonical on GB300: a precision loss only).
     fn nan_canonical(&self, n: u32) -> bool {
         let mut stack = vec![n];
         let mut seen = std::collections::HashSet::new();
@@ -618,6 +629,12 @@ impl Side<'_> {
                 | NodeKind::Fma { .. }
                 | NodeKind::Mufu { .. }
                 | NodeKind::Mma { .. } => {}
+                // FMNMX gives 0x7fffffff for two NaN operands and the other operand for one, and
+                // FMNMX.NAN 0x7fffffff for any (GB300: fixtures/c_equiv_zero_sign_fmnmx, probes/
+                // equiv_claims fmnmx_nan). On the PTX front ptxas folds max.f32 / min.f32 of one
+                // value into a copy, which keeps a NaN payload (GB300: fmaxaa there), so a PTX
+                // max is peeled only where its operands are, as a choice.
+                NodeKind::Max { .. } if self.ns.fmnmx_hw.contains(&k) => {}
                 NodeKind::Max { a, b, .. } | NodeKind::Sel { a, b, .. } => stack.extend([*a, *b]),
                 _ => return false,
             }
@@ -644,6 +661,25 @@ impl Side<'_> {
             }
             _ => None,
         }
+    }
+
+    /// The exponent of a power of two that divides every finite value node `n` can take
+    /// (MISS 201): a nonzero finite constant's lowest set bit, a narrow-format leaf's or exact
+    /// product's spacing (`exact_set`), 2^-149 for any other f32 value, and none (a large
+    /// exponent) for the constant 0.
+    fn grid(&self, n: u32) -> i32 {
+        let nd = &self.ns.nodes[n as usize];
+        if let NodeKind::Leaf = nd.kind {
+            let b = nd.hw & 0x7fff_ffff;
+            let (e, m) = (b >> 23, b & 0x7f_ffff);
+            return match (e, m) {
+                (0, 0) => 1 << 20,
+                (0xff, _) => -149,
+                (0, m) => -149 + m.trailing_zeros() as i32,
+                (e, m) => e as i32 - 150 + (m | 0x80_0000).trailing_zeros() as i32,
+            };
+        }
+        self.exact_set(n).map_or(-149, |x| x.lsb.max(-149))
     }
 
     /// Node `n`'s hash and polynomial; its effects on the canonical form (untracked leaves,
@@ -779,15 +815,19 @@ impl Side<'_> {
                 } else if s > if base_zero { 2 } else { 1 } {
                     cx.unordered.get_or_insert_with(|| {
                         format!(
-                            "{s} fp32 atomic adds into one location at pc {} (their order depends on the schedule)",
+                            "{s} fp32 atomic adds into one location at pc {}: the canonical form does not fix their order (the schedule may pick it)",
                             nd.pc
                         )
                     });
                 }
-                // FTZ: per add, two flushed operands and a flushed result, each < 2^-126,
-                // carried through the later adds (as the values' own absolute parts).
+                // FTZ: per flushing add, two flushed operands and a flushed result, each <
+                // 2^-126, carried through the later adds (as the values' own absolute parts). A
+                // non-flushing add has no absolute error: two f32 values are multiples of
+                // 2^-149, so a sum below 2^-126 is a subnormal, exact (MISS 143: until
+                // 2026-11-12 every add was charged, and L2 did not compare the term).
+                let nf = vals.iter().filter(|v| v.1).count();
                 cx.abs_extra = cx.abs_extra * (1.0 + U32).powi(d as i32)
-                    + s as f64 * 3.0 * FTZ_MIN * (1.0 + U32).powi(s as i32);
+                    + nf as f64 * 3.0 * FTZ_MIN * (1.0 + U32).powi(s as i32);
             }
             NodeKind::AtomAdd16(_, _, f16) => {
                 // ASSUME(N-RED16): every value of the location is some sequential order of
@@ -801,6 +841,15 @@ impl Side<'_> {
                 let mut cur = n;
                 while let NodeKind::AtomAdd16(o, x, g) = self.ns.nodes[cur as usize].kind {
                     if g != f16 {
+                        // Not reached: a format change restarts the chain at a constant or an
+                        // opaque value (`num_bulk_add16`). Were it reached, the chain would
+                        // hold adds of both formats, whose order the form does not fix.
+                        cx.unordered.get_or_insert_with(|| {
+                            format!(
+                                "16-bit bulk-reduction adds of both formats (bf16, f16) into one location at pc {}",
+                                nd.pc
+                            )
+                        });
                         break;
                     }
                     vals.push(x);
@@ -843,7 +892,7 @@ impl Side<'_> {
                 if s > if base_zero { 2 } else { 1 } {
                     cx.unordered.get_or_insert_with(|| {
                         format!(
-                            "{s} {} bulk-reduction adds into one location at pc {} (their order depends on the schedule)",
+                            "{s} {} bulk-reduction adds into one location at pc {}: the canonical form does not fix their order (the schedule may pick it)",
                             if f16 { "f16" } else { "bf16" },
                             nd.pc
                         )
@@ -889,9 +938,9 @@ impl Side<'_> {
             } => {
                 let (ha, pa) = self.node(*a, cx, memo);
                 let (hb, pb) = self.node(*b, cx, memo);
-                // Absolute error terms (bf16 roundings to subnormals) of the factors: one
-                // factor an exact constant k scales the other's by |k|; two inexact factors
-                // have no polynomial bound.
+                // Absolute error terms (roundings to subnormals, FTZ) of the factors: one
+                // factor an exact constant k scales the other's by |k|; a term times a
+                // non-constant factor has no polynomial bound.
                 let abs_of = |k: &u32| memo.get(k).map_or(0.0, |e| e.2.abs_extra);
                 let konst = |p: &BTreeMap<Mono, Term>, k: &u32| -> Option<f64> {
                     (abs_of(k) == 0.0 && p.iter().all(|(m, t)| m.is_empty() && t.gam == 0.0))
@@ -925,16 +974,28 @@ impl Side<'_> {
                     None => None,
                 };
                 h.put(("fma", *neg_ab, *neg_c, ch, hc));
-                // ASSUME(N-REASSOC): one rounding, relative u unless the result underflows;
-                // none where the product is exact for every input (N-EXACT).
+                // ASSUME(N-REASSOC): one rounding, relative u where the result is normal, at
+                // most 2^-150 absolute where it is subnormal; none where the product is exact
+                // for every input (N-EXACT). A subnormal result is exact where a * b + c is a
+                // multiple of 2^-149 for every input: a's and b's grids sum to at least -149
+                // (an f32 value times an integer, as x * 1 - y), c being an f32 value. MISS
+                // 201: until 2026-11-12 no term was added (`products` recorded that the bound
+                // assumed no product underflows, and was never read): (a * b) * c against
+                // a * (b * c), a * b subnormal, was L2+L3, and GB300 exceeds its bound by up
+                // to 3317x.
                 let eps = if c.is_none() && self.exact_set(n).is_some() {
                     0.0
                 } else {
                     U32
                 };
+                let sub = if eps != 0.0 && self.grid(*a) + self.grid(*b) < -149 {
+                    F32_SUB
+                } else {
+                    0.0
+                };
                 if let Some(x) = abs_ab {
                     let ac = c.map_or(0.0, |c| memo.get(&c).map_or(0.0, |e| e.2.abs_extra));
-                    cx.abs_extra = (x + ac) * (1.0 + eps);
+                    cx.abs_extra = (x + ac) * (1.0 + eps) + sub;
                 }
                 if prod.len() > 100_000 {
                     cx.untracked.get_or_insert_with(|| {
@@ -942,31 +1003,161 @@ impl Side<'_> {
                     });
                 }
                 add_poly(&mut poly, &prod, eps);
-                cx.products = true;
             }
-            NodeKind::Max { min, .. } => {
-                // The set of operands of nested maxima of one kind, without the identity
-                // (-inf for max, +inf for min).
+            NodeKind::Max {
+                a,
+                b,
+                min,
+                kind,
+                fin,
+            } => {
                 let ident = if *min { 0x7f80_0000 } else { 0xff80_0000 };
-                let mut kids = Vec::new();
-                let mut stack = vec![n];
-                while let Some(x) = stack.pop() {
-                    match &self.ns.nodes[x as usize].kind {
-                        NodeKind::Max { a, b, min: m } if m == min => {
-                            stack.push(*a);
-                            stack.push(*b);
+                let ix = |x: u32| &self.ns.nodes[x as usize];
+                // L0, the bits (MISS 197, 202). FMNMX, with or without .NAN, is a function of
+                // the set of its operands: nested maxima of the same min and kind flatten and
+                // repeated operands count once. -inf (+inf for a min) is dropped, but without
+                // .NAN the result where every other operand is NaN is that constant, not NaN,
+                // so whether one was dropped is part of the form. A compare and select returns
+                // one of its two operands by the outcome of comparing them (at zeros of either
+                // sign and at NaN operands too): its form is the selection mask and the two
+                // operands in order (normalized by swapping), with no flattening.
+                match kind {
+                    MaxKind::Fmnmx { nan } => {
+                        let (mut kids, mut dropped) = (Vec::new(), false);
+                        let mut stack = vec![n];
+                        while let Some(x) = stack.pop() {
+                            match &ix(x).kind {
+                                NodeKind::Max {
+                                    a,
+                                    b,
+                                    min: m,
+                                    kind: k,
+                                    ..
+                                } if m == min && k == kind => {
+                                    stack.push(*a);
+                                    stack.push(*b);
+                                }
+                                NodeKind::Leaf if ix(x).hw == ident => dropped = true,
+                                _ => kids.push(x),
+                            }
                         }
-                        NodeKind::Leaf if self.ns.nodes[x as usize].hw == ident => {}
-                        _ => kids.push(x),
+                        let mut hs: Vec<(u64, u64)> =
+                            kids.iter().map(|&k| self.node(k, cx, memo).0).collect();
+                        hs.sort();
+                        hs.dedup();
+                        h.put(("max", *min, *nan, dropped && !*nan, hs));
+                    }
+                    MaxKind::Select(_) => {
+                        let (ha, hb) = (self.node(*a, cx, memo).0, self.node(*b, cx, memo).0);
+                        let sw = kind.swapped();
+                        let (k, ha, hb) = match ha.cmp(&hb) {
+                            std::cmp::Ordering::Greater => (sw, hb, ha),
+                            // Equal operands: either mask returns them.
+                            std::cmp::Ordering::Equal => (std::cmp::min(*kind, sw), ha, hb),
+                            std::cmp::Ordering::Less => (*kind, ha, hb),
+                        };
+                        h.put(("select-max", k, ha, hb));
                     }
                 }
-                let mut parts: Vec<((u64, u64), BTreeMap<Mono, Term>)> =
-                    kids.iter().map(|&k| self.node(k, cx, memo)).collect();
-                parts.sort_by_key(|p| p.0);
-                parts.dedup_by_key(|p| p.0);
-                h.put(("max", *min, parts.iter().map(|p| p.0).collect::<Vec<_>>()));
+                // The value (L1 / L2 / L3). Where both operands are non-NaN for every
+                // admissible input (`fin`, N-FINITE), every kind gives the maximum (minimum)
+                // as a value (-0 = +0): one form for all, nested such maxima of the same min
+                // flattened, the identity dropped. A select or FMNMX.NAN in it, or a dropped
+                // identity, relies on N-FINITE (`Canon::finite_max`), as MUFU.SQRT of a finite
+                // a < 0 is NaN (GB300: max.f32 and a select of it against b differ in 512 of
+                // 512 words). Otherwise the form keeps the kind, as at L0 (operands in order for
+                // a select).
+                let parts: Vec<((u64, u64), BTreeMap<Mono, Term>)>;
                 let mut id = H2::new();
-                id.put(("max", *min));
+                let tag: Option<MaxKind>;
+                if *fin {
+                    let mut relies = false;
+                    let mut stack = vec![n];
+                    let mut kids = Vec::new();
+                    while let Some(x) = stack.pop() {
+                        match &ix(x).kind {
+                            NodeKind::Max {
+                                a,
+                                b,
+                                min: m,
+                                kind: k,
+                                fin: true,
+                            } if m == min => {
+                                relies |= *k != MaxKind::FMNMX;
+                                stack.push(*a);
+                                stack.push(*b);
+                            }
+                            // Without it, FMNMX of operands that are all NaN gives NaN.
+                            NodeKind::Leaf if ix(x).hw == ident => relies = true,
+                            _ => kids.push(x),
+                        }
+                    }
+                    if relies {
+                        cx.finite_max = true;
+                    }
+                    let mut ps: Vec<_> = kids.iter().map(|&k| self.node(k, cx, memo)).collect();
+                    ps.sort_by_key(|p| p.0);
+                    ps.dedup_by_key(|p| p.0);
+                    parts = ps;
+                    id.put(("max", *min));
+                    tag = None;
+                } else {
+                    match kind {
+                        MaxKind::Fmnmx { nan } => {
+                            let (mut kids, mut dropped) = (Vec::new(), false);
+                            let mut stack = vec![n];
+                            while let Some(x) = stack.pop() {
+                                match &ix(x).kind {
+                                    NodeKind::Max {
+                                        a,
+                                        b,
+                                        min: m,
+                                        kind: k,
+                                        ..
+                                    } if m == min && k == kind => {
+                                        stack.push(*a);
+                                        stack.push(*b);
+                                    }
+                                    NodeKind::Leaf if ix(x).hw == ident => dropped = true,
+                                    _ => kids.push(x),
+                                }
+                            }
+                            let mut ps: Vec<_> =
+                                kids.iter().map(|&k| self.node(k, cx, memo)).collect();
+                            ps.sort_by_key(|p| p.0);
+                            ps.dedup_by_key(|p| p.0);
+                            parts = ps;
+                            id.put(("max-kind", *min, *nan, dropped && !*nan));
+                        }
+                        MaxKind::Select(_) => {
+                            let pa = self.node(*a, cx, memo);
+                            let pb = self.node(*b, cx, memo);
+                            let pid = |p: &BTreeMap<Mono, Term>| {
+                                let mut x = H2::new();
+                                poly_id(&mut x, p);
+                                x.done()
+                            };
+                            let (ia, ib) = (pid(&pa.1), pid(&pb.1));
+                            let sw = kind.swapped();
+                            let k = match ia.cmp(&ib) {
+                                std::cmp::Ordering::Greater => {
+                                    parts = vec![pb, pa];
+                                    sw
+                                }
+                                std::cmp::Ordering::Equal => {
+                                    parts = vec![pa, pb];
+                                    std::cmp::min(*kind, sw)
+                                }
+                                std::cmp::Ordering::Less => {
+                                    parts = vec![pa, pb];
+                                    *kind
+                                }
+                            };
+                            id.put(("select-max", k));
+                        }
+                    }
+                    tag = Some(*kind);
+                }
                 let mut polys: Vec<Vec<(Mono, u64)>> = parts
                     .iter()
                     .map(|p| {
@@ -976,12 +1167,15 @@ impl Side<'_> {
                             .collect()
                     })
                     .collect();
-                polys.sort();
-                polys.dedup();
+                // A select's operands stay in order; the other forms are sets.
+                if !matches!(tag, Some(MaxKind::Select(_))) {
+                    polys.sort();
+                    polys.dedup();
+                }
                 id.put(&polys);
                 for (_, operand) in &parts {
                     let mut inner_id = H2::new();
-                    inner_id.put(("max-operand", *min));
+                    inner_id.put(("max-operand", *min, tag));
                     poly_id(&mut inner_id, operand);
                     let mut terms = BTreeMap::new();
                     for (m, term) in operand {
@@ -1087,9 +1281,12 @@ impl Side<'_> {
                         Some((p, q)) => {
                             let (hp, pp) = self.node(*p, cx, memo);
                             let (hq, pq) = self.node(*q, cx, memo);
+                            // An operand's absolute error term (a 16-bit rounding, MISS 201: an
+                            // f32 product or MMA result rounded to a subnormal) is scaled by the
+                            // other operand: no polynomial bound.
                             if [p, q]
                                 .iter()
-                                .any(|k| memo.get(k).is_some_and(|e| e.2.round_abs))
+                                .any(|k| memo.get(k).is_some_and(|e| e.2.abs_extra > 0.0))
                             {
                                 cx.round_in_product = true;
                             }
@@ -1381,7 +1578,9 @@ impl Side<'_> {
                 hh.sort();
                 x.put(("prod", hh));
                 hashes[j].push(x.done());
-                let in_product = |k: u32, memo: &Memo| memo.get(&k).is_some_and(|e| e.2.round_abs);
+                // An operand with an absolute error term (`Mma` arm, MISS 201).
+                let in_product =
+                    |k: u32, memo: &Memo| memo.get(&k).is_some_and(|e| e.2.abs_extra > 0.0);
                 match (tk, matched.get(&(j, i))) {
                     (Tk::Main(a, b), Some(&(top_j, deep_j, da, db))) => {
                         let (_, pa) = self.node(*a, cx, memo);
@@ -1720,7 +1919,9 @@ pub struct Report {
     #[serde(skip)]
     pub witness_mono: Option<(usize, Mono, f64, f64)>,
     pub untracked: Option<String>,
-    /// Why some output's rounding order depends on the schedule (fp32 atomics).
+    /// Why some output's bits depend on the order of a location's atomic adds, which the
+    /// canonical form does not fix (more adds than commute exactly, or adds of both flush
+    /// modes; the schedule, or a program order the form does not track, picks it): not L0.
     pub unordered: Option<String>,
     /// Softmax normal form found (segment mode): the form and the slices' contracts.
     pub softmax: Option<String>,
@@ -1730,6 +1931,11 @@ pub struct Report {
     /// Outputs at level L0~0, equal only up to the sign of zero (`Canon::l0_z`): bitwise equal
     /// except where one is -0 and the other +0. L0 fails there (MISS 109).
     pub l0_zero_sign: usize,
+    /// Outputs at a value level (L1, L2, L3) whose forms read a select or FMNMX.NAN maximum as
+    /// the maximum of non-NaN values (`Canon::finite_max`; the softmax and attention forms'
+    /// `softmax::Ctx::finite_max`): those levels hold for inputs with finite elements on which
+    /// no operation overflows (N-FINITE; MISS 197, 202).
+    pub finite_max: usize,
 }
 
 /// L0's failure at an output that is equal only up to the sign of zero (L0~0, MISS 109).
@@ -1772,6 +1978,10 @@ fn show_mono(m: &Mono, names: &[String]) -> String {
         .join("*")
 }
 
+/// Why an output has no polynomial bound when an absolute error term enters a product
+/// (`Canon::round_in_product`).
+pub const ABS_IN_PRODUCT: &str = "an absolute error term (a rounding to a subnormal, or a flush to zero) inside a product, which scales it by the other factor";
+
 /// The rigorous bound of an L1 pair of canonical forms: (k, k_R, k_C) in units of u with
 /// per-monomial (a_m, g_R + g_C, c_m), or why there is none.
 // ASSUME(N-REASSOC): see ASSUMPTIONS.md
@@ -1798,9 +2008,7 @@ fn rigorous(cr: &Canon, cc: &Canon) -> Result<(f64, f64, f64, Vec<(Mono, f64, f6
         );
     }
     if cr.round_in_product || cc.round_in_product {
-        return Err(
-            "a bf16-rounded value inside a product: its subnormal absolute error is scaled".into(),
-        );
+        return Err(ABS_IN_PRODUCT.into());
     }
     let (mut k, mut kr, mut kc) = (0.0f64, 0.0f64, 0.0f64);
     let mut terms = Vec::with_capacity(cr.poly.len());
@@ -1855,9 +2063,7 @@ pub fn own_bound(s: &Side, i: usize) -> Result<(f64, f64, f64, &'static str, Vec
         );
     }
     if cx.round_in_product {
-        return Err(
-            "a bf16-rounded value inside a product: its subnormal absolute error is scaled".into(),
-        );
+        return Err(ABS_IN_PRODUCT.into());
     }
     let up = 1.0 + 2f64.powi(-40);
     let mut k = 0.0f64;
@@ -1914,6 +2120,7 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
     let mut nm_detail: Option<String> = None;
     let (mut memo_r, mut memo_c) = (Memo::new(), Memo::new());
     let mut tf32 = false;
+    let mut finite_max = 0usize;
     for i in 0..n {
         // Bound the memo (attention outputs keep many per-output partial sums): drop it when
         // it holds more than 2^22 monomials; it is a cache, the forms do not depend on it.
@@ -2074,6 +2281,9 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
                     if tau_k.is_some() {
                         note!(3, "softmax normal form: see the per-output bound".into());
                     }
+                    if sm_r.finite_max || sm_c.finite_max {
+                        finite_max += 1;
+                    }
                     per_output.push(ob);
                     continue;
                 }
@@ -2221,6 +2431,9 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
                     note!(2, "attention normal form: L2 is not compared".into());
                     if tau_k.is_some() {
                         note!(3, "attention normal form: see the per-output bound".into());
+                    }
+                    if sm_r.finite_max || sm_c.finite_max {
+                        finite_max += 1;
                     }
                     per_output.push(ob);
                     continue;
@@ -2468,6 +2681,32 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
                 ),
             );
         }
+        // L2 also compares the absolute term (flushed subnormals, subnormal 16-bit and
+        // tensor-core roundings): a flushing candidate loses up to 3 * 2^-126 per add where a
+        // non-flushing reference is exact (MISS 143: until 2026-11-12 L2 compared the
+        // multipliers only).
+        if cc.abs_extra > cr.abs_extra {
+            note!(
+                2,
+                format!(
+                    "candidate absolute error term {:.3e} > reference {:.3e} (flushed subnormals, subnormal roundings)",
+                    cc.abs_extra, cr.abs_extra
+                ),
+            );
+        }
+        // An absolute term inside a product (MISS 201): the error has a term |other factor|
+        // 2^-150 per such f32 rounding (2^-134 per bf16 one), which neither the multipliers nor
+        // `abs_extra` bound, so there is no bound to compare or to hold a tolerance. Until
+        // 2026-11-12 L2 and L3 held there: (a * b) * c against a * (b * c), a * b subnormal,
+        // was "L2+L3", and GB300 exceeds its bound by up to 3317x, an 8u tolerance by 1659x.
+        // Both stay at an L0 or L0~0 output (lv[4]): the two outputs are equal for every
+        // input, so their errors are equal and |C - R| is 0.
+        if !lv[4] && (cr.round_in_product || cc.round_in_product) {
+            note!(2, ABS_IN_PRODUCT.into());
+            if tau_k.is_some() {
+                note!(3, ABS_IN_PRODUCT.into());
+            }
+        }
         // L2 inside nonlinear operands: their input error budgets must not grow either.
         if let Some((id, tr, tc)) = cr.inner.iter().find_map(|(id, mr)| {
             let mc = cc.inner.get(id)?.values();
@@ -2501,6 +2740,9 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
         } else {
             "L1"
         };
+        if !(lv[0] || lv[4]) && (cr.finite_max || cc.finite_max) {
+            finite_max += 1;
+        }
         per_output.push(ob);
         if tau_k.is_some() {
             let amplified = [&cr, &cc]
@@ -2581,6 +2823,7 @@ pub fn compare(r: &Side, c: &Side, names: &[String], tau_k: Option<f64>) -> Repo
         conditions: if tf32 { vec![TF32_COND.into()] } else { vec![] },
         per_output,
         l0_zero_sign,
+        finite_max,
     }
 }
 
@@ -2798,6 +3041,59 @@ mod tf32_tests {
             rep.untracked.is_some(),
             "mismatched correction must be untracked"
         );
+    }
+
+    /// MISS 201: an MMA operand with an absolute error term (here an f32 product rounded to
+    /// a subnormal, read whole or through its TF32 hi part) is scaled by the other operand: no
+    /// polynomial bound. An operand without one keeps its bound.
+    #[test]
+    fn an_absolute_term_in_an_mma_operand_has_no_bound() {
+        let eps = crate::fp::TMMA_MODEL.eps_terms(1);
+        let mut c = NumState::default();
+        c.segments = true;
+        let [a, b, x] = [0, 1, 2].map(|i| push(&mut c, NodeKind::Input((0, i)), 1.0));
+        let fma = NodeKind::Fma {
+            a,
+            b,
+            c: None,
+            neg_ab: false,
+            neg_c: false,
+        };
+        let ab = push(&mut c, fma, 1.0);
+        let zero = push(&mut c, NodeKind::Leaf, 0.0);
+        let mma = |c: &mut NumState, p: u32, q: u32| {
+            let kind = NodeKind::Mma {
+                acc: Some(zero),
+                terms: vec![1.0],
+                ops: vec![Some((p, q))],
+                eps,
+                sc: vec![],
+                units: vec![],
+            };
+            push(c, kind, 1.0)
+        };
+        let hi = |c: &mut NumState, arg: u32| {
+            let kind = NodeKind::Tf32 {
+                arg,
+                part: Tf32Part::Hi,
+            };
+            push(c, kind, 1.0)
+        };
+        let (h_ab, h_x, h_a) = (hi(&mut c, ab), hi(&mut c, x), hi(&mut c, a));
+        let tf32 = mma(&mut c, h_ab, h_x);
+        let whole = mma(&mut c, ab, x);
+        let clean = mma(&mut c, h_a, h_x);
+        let canon = |n: u32| {
+            Side {
+                ns: &c,
+                outs: vec![(c.nodes[n as usize].hw, Some(n))],
+                buf_id: vec![0],
+            }
+            .canon(0)
+        };
+        assert!(canon(tf32).round_in_product);
+        assert!(canon(whole).round_in_product);
+        assert!(!canon(clean).round_in_product);
     }
 
     /// theta: for x, y zero or at least 2^-103 in magnitude, hi(x) hi(y) + rh(lo(x)) hi(y) +
@@ -3159,6 +3455,8 @@ mod soundness_tests {
                 a: x,
                 b: zero,
                 min: false,
+                kind: MaxKind::FMNMX,
+                fin: true,
             },
             1.0,
         );
@@ -3168,6 +3466,8 @@ mod soundness_tests {
                 a: difference,
                 b: zero,
                 min: false,
+                kind: MaxKind::FMNMX,
+                fin: true,
             },
             0.0,
         );
@@ -3188,6 +3488,8 @@ mod soundness_tests {
                 a: r,
                 b: c,
                 min: false,
+                kind: MaxKind::FMNMX,
+                fin: true,
             },
             1.0,
         );
@@ -3235,10 +3537,67 @@ mod soundness_tests {
         }
     }
 
+    /// MISS 134 follow-up: a 16-bit bulk-reduction chain whose adds change format (not reached
+    /// through `num_bulk_add16`, which restarts the chain) is reported unordered, not cut short
+    /// silently; one format's two adds into +0 commute (L0).
+    #[test]
+    fn atomic16_format_change_is_unordered() {
+        let mut ns = NumState::default();
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 1.0);
+        let y = push(&mut ns, NodeKind::Input((0, 1)), 2.0);
+        let z = push(&mut ns, NodeKind::Leaf, 0.0);
+        let x0 = push(&mut ns, NodeKind::AtomAdd16(z, x, false), 1.0);
+        let mixed = push(&mut ns, NodeKind::AtomAdd16(x0, y, true), 3.0);
+        let report = compare_nodes(&ns, mixed, mixed);
+        assert!(!report.levels[0].holds, "{report:?}");
+        assert!(
+            report
+                .unordered
+                .as_deref()
+                .is_some_and(|u| u.contains("of both formats")),
+            "{report:?}"
+        );
+        let xy = push(&mut ns, NodeKind::AtomAdd16(x0, y, false), 3.0);
+        let y0 = push(&mut ns, NodeKind::AtomAdd16(z, y, false), 2.0);
+        let yx = push(&mut ns, NodeKind::AtomAdd16(y0, x, false), 3.0);
+        assert!(compare_nodes(&ns, xy, yx).levels[0].holds);
+    }
+
+    /// MISS 143: only a flushing add carries the absolute flush term, and L2 compares it. A
+    /// non-flushing candidate against a flushing reference is L2; the reverse is L1 only (the
+    /// candidate flushes subnormals the reference keeps). Two non-flushing adds into +0 carry
+    /// no absolute term.
+    #[test]
+    fn l2_compares_the_flush_term() {
+        let mut ns = NumState::default();
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 1.0);
+        let y = push(&mut ns, NodeKind::Input((0, 1)), 2.0);
+        let z = push(&mut ns, NodeKind::Leaf, 0.0);
+        let ftz = push(&mut ns, NodeKind::AtomAdd(z, x, true), 1.0);
+        let bulk = push(&mut ns, NodeKind::AtomAdd(z, x, false), 1.0);
+        let fwd = compare_nodes(&ns, ftz, bulk);
+        assert!(fwd.levels[2].holds, "{fwd:?}");
+        let rev = compare_nodes(&ns, bulk, ftz);
+        assert!(rev.levels[1].holds && !rev.levels[2].holds, "{rev:?}");
+        assert_eq!(rev.per_output[0].level, "L1", "{rev:?}");
+        let b2 = push(&mut ns, NodeKind::AtomAdd(bulk, y, false), 3.0);
+        assert_eq!(compare_nodes(&ns, b2, b2).per_output[0].abs_extra, 0.0);
+        let f2 = push(&mut ns, NodeKind::AtomAdd(ftz, y, true), 3.0);
+        let a = compare_nodes(&ns, f2, f2).per_output[0].abs_extra;
+        assert!(
+            a >= 2.0 * 2.0 * 3.0 * FTZ_MIN && a < 2.0 * 2.0 * 3.0 * FTZ_MIN * 1.01,
+            "{a}"
+        );
+        let rev2 = compare_nodes(&ns, b2, f2);
+        assert!(rev2.levels[1].holds && !rev2.levels[2].holds, "{rev2:?}");
+    }
+
     /// MISS 135: x + (+0) is peeled (L0~0) only when x holds no NaN but the canonical one.
     /// An input (a copy) can hold a NaN payload, which x + (+0) turns into 0x7fffffff: neither
     /// L0 nor L0~0 there. A sum, a product, a MUFU op, an MMA step, a constant other than a
-    /// NaN payload, and a min / max of such keep L0~0.
+    /// NaN payload, and a min / max of such keep L0~0. A hardware FMNMX's max (the SASS front,
+    /// `NumState::fmnmx_hw`) keeps it whatever its operands hold, including one value twice;
+    /// another max of an input (a PTX max.f32, which ptxas can fold into a copy) does not.
     #[test]
     fn zero_peel_needs_canonical_nans() {
         let mut ns = NumState::default();
@@ -3272,10 +3631,27 @@ mod soundness_tests {
             },
             2.0,
         );
-        let max = |ns: &mut NumState, a, b| push(ns, NodeKind::Max { a, b, min: false }, 3.0);
+        let max = |ns: &mut NumState, a, b| {
+            let kind = MaxKind::FMNMX;
+            push(
+                ns,
+                NodeKind::Max {
+                    a,
+                    b,
+                    min: false,
+                    kind,
+                    fin: true,
+                },
+                3.0,
+            )
+        };
         let relu = max(&mut ns, sum, zero);
         let mixed = max(&mut ns, sum, x);
         let nested = max(&mut ns, relu, product);
+        let hw_mixed = max(&mut ns, sum, x);
+        let hw_same = max(&mut ns, x, x);
+        let ptx_same = max(&mut ns, x, x);
+        ns.fmnmx_hw.extend([hw_mixed, hw_same]);
         let round = push(
             &mut ns,
             NodeKind::Round {
@@ -3301,6 +3677,9 @@ mod soundness_tests {
             (relu, true),
             (mixed, false),
             (nested, true),
+            (hw_mixed, true),
+            (hw_same, true),
+            (ptx_same, false),
             (round, false),
         ] {
             assert_eq!(
@@ -3321,6 +3700,9 @@ mod soundness_tests {
         assert_ne!(report.per_output[0].level, "L0~0", "{report:?}");
         let mixed0 = plus0(&mut ns, mixed);
         assert_eq!(compare_nodes(&ns, mixed, mixed0).l0_zero_sign, 0);
+        let hw0 = plus0(&mut ns, hw_mixed);
+        let report = compare_nodes(&ns, hw_mixed, hw0);
+        assert_eq!(report.per_output[0].level, "L0~0", "{report:?}");
         for v in [sum, nested] {
             let v0 = plus0(&mut ns, v);
             let report = compare_nodes(&ns, v, v0);
@@ -3328,5 +3710,177 @@ mod soundness_tests {
             assert_eq!(report.l0_zero_sign, 1, "{report:?}");
             assert_eq!(report.per_output[0].level, "L0~0", "{report:?}");
         }
+    }
+
+    /// A max node of `kind` (both operands non-NaN for every admissible input: `fin`).
+    fn max_of(ns: &mut NumState, a: u32, b: u32, min: bool, kind: MaxKind, fin: bool) -> u32 {
+        let hw = kind.eval(min, ns.nodes[a as usize].hw, ns.nodes[b as usize].hw);
+        push(
+            ns,
+            NodeKind::Max {
+                a,
+                b,
+                min,
+                kind,
+                fin,
+            },
+            f32::from_bits(hw),
+        )
+    }
+
+    /// MISS 197, 202: a max's L0 form is its kind's. max.f32 against a > b ? a : b, a > b
+    /// against a >= b or a >u b, and FMNMX against FMNMX.NAN differ at zeros of opposite sign
+    /// or NaN operands (GB300, probes/equiv_claims): not L0. Where both operands are non-NaN
+    /// for every admissible input the value is the same: L2, relying on N-FINITE; otherwise
+    /// not even L1. The two orders of one select are one form.
+    #[test]
+    fn max_kinds_are_part_of_the_l0_form() {
+        let mut ns = NumState::default();
+        ns.segments = true;
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 1.0);
+        let y = push(&mut ns, NodeKind::Input((0, 1)), 2.0);
+        // setp.gt x, y + selp x, y: y at x < y, x == y and unordered.
+        let gt = MaxKind::Select(0b1110);
+        let ge = MaxKind::Select(0b1010);
+        let gtu = MaxKind::Select(0b0110);
+        let fmnmx = max_of(&mut ns, x, y, false, MaxKind::FMNMX, true);
+        let sel = max_of(&mut ns, x, y, false, gt, true);
+        let sel_swapped = max_of(&mut ns, y, x, false, gt.swapped(), true);
+        let sel_ge = max_of(&mut ns, x, y, false, ge, true);
+        let sel_gtu = max_of(&mut ns, x, y, false, gtu, true);
+        let nan = max_of(&mut ns, x, y, false, MaxKind::Fmnmx { nan: true }, true);
+        for other in [sel, sel_ge, sel_gtu, nan] {
+            let r = compare_nodes(&ns, fmnmx, other);
+            assert!(!r.levels[0].holds, "{r:?}");
+            assert!(r.levels[2].holds, "{r:?}");
+            assert_eq!(r.finite_max, 1, "{r:?}");
+        }
+        for other in [sel_ge, sel_gtu] {
+            assert!(!compare_nodes(&ns, sel, other).levels[0].holds);
+        }
+        let r = compare_nodes(&ns, sel, sel_swapped);
+        assert!(r.levels[0].holds, "{r:?}");
+        let r = compare_nodes(&ns, fmnmx, fmnmx);
+        assert!(r.levels[0].holds && r.finite_max == 0, "{r:?}");
+        // Operands that may be NaN (MUFU.SQRT of a finite a < 0): the kinds' values differ.
+        let s = push(
+            &mut ns,
+            NodeKind::Mufu {
+                arg: x,
+                func: MufuFunc::Sqrt,
+                ptx: false,
+                neg: false,
+                abs: false,
+            },
+            1.0,
+        );
+        let f = max_of(&mut ns, s, y, false, MaxKind::FMNMX, false);
+        for kind in [gt, MaxKind::Fmnmx { nan: true }] {
+            let other = max_of(&mut ns, s, y, false, kind, false);
+            let r = compare_nodes(&ns, f, other);
+            assert!(!r.levels[0].holds && !r.levels[1].holds, "{r:?}");
+        }
+    }
+
+    /// MISS 197: FMNMX without .NAN of -inf (+inf for a min) and x is -inf where x is NaN, and
+    /// FMNMX of x and x is NaN there (GB300: probes/equiv_claims/max_identity), so the dropped
+    /// identity is part of the L0 form; FMNMX.NAN gives NaN either way. Their values agree where
+    /// x is not NaN: L2, relying on N-FINITE.
+    #[test]
+    fn a_dropped_identity_is_part_of_the_l0_form() {
+        let mut ns = NumState::default();
+        ns.segments = true;
+        let x = push(&mut ns, NodeKind::Input((0, 0)), 1.0);
+        for (min, ident) in [(false, f32::NEG_INFINITY), (true, f32::INFINITY)] {
+            let inf = push(&mut ns, NodeKind::Leaf, ident);
+            for nan in [false, true] {
+                let kind = MaxKind::Fmnmx { nan };
+                let with = max_of(&mut ns, x, inf, min, kind, true);
+                let twice = max_of(&mut ns, x, x, min, kind, true);
+                let r = compare_nodes(&ns, with, twice);
+                assert_eq!(r.levels[0].holds, nan, "min {min} nan {nan}: {r:?}");
+                assert!(r.levels[2].holds, "{r:?}");
+                assert!(nan || r.finite_max == 1, "{r:?}");
+            }
+        }
+    }
+
+    /// MISS 201: an f32 product or fma rounded to a subnormal errs by up to 2^-150 absolute,
+    /// unless its exact result is a multiple of 2^-149 for every input (an f32 value times an
+    /// integer) or the product is exact (N-EXACT). A term that a later product scales by a
+    /// non-constant factor leaves no polynomial bound: (a * b) * c against a * (b * c) is L1,
+    /// neither L2 nor L3 (GB300: probes/equiv_claims/product_underflow, up to 3317x off).
+    #[test]
+    fn a_subnormal_product_rounding_carries_an_absolute_term() {
+        let mut ns = NumState::default();
+        ns.segments = true;
+        let [a, b, c, y] = [0, 1, 2, 3].map(|i| push(&mut ns, NodeKind::Input((0, i)), 1.0));
+        let fma = |ns: &mut NumState, a: u32, b: u32, c: Option<u32>| {
+            let kind = NodeKind::Fma {
+                a,
+                b,
+                c,
+                neg_ab: false,
+                neg_c: c.is_some(),
+            };
+            push(ns, kind, 1.0)
+        };
+        let side = |ns: &NumState, n: u32| -> (f64, bool) {
+            let s = Side {
+                ns,
+                outs: vec![(ns.nodes[n as usize].hw, Some(n))],
+                buf_id: vec![0],
+            };
+            let cx = s.canon(0);
+            (cx.abs_extra, cx.round_in_product)
+        };
+        let ab = fma(&mut ns, a, b, None);
+        let ab_y = fma(&mut ns, a, b, Some(y));
+        assert_eq!(side(&ns, ab), (F32_SUB, false));
+        assert_eq!(side(&ns, ab_y), (F32_SUB, false));
+        let [one, two, half] = [1.0f32, 2.0, 0.5].map(|v| push(&mut ns, NodeKind::Leaf, v));
+        // a * 1 - y and a * 2: multiples of 2^-149, exact where subnormal. a * 0.5: 2^-149
+        // times 0.5 is a tie.
+        let diff = fma(&mut ns, a, one, Some(y));
+        let twice = fma(&mut ns, a, two, None);
+        let halved = fma(&mut ns, a, half, None);
+        assert_eq!(side(&ns, diff), (0.0, false));
+        assert_eq!(side(&ns, twice), (0.0, false));
+        assert_eq!(side(&ns, halved), (F32_SUB, false));
+        // (a * b) * 2: the constant scales the term, and this rounding is on the grid.
+        let ab2 = fma(&mut ns, ab, two, None);
+        let (t, scaled) = side(&ns, ab2);
+        let want = 2.0 * F32_SUB * (1.0 + U32);
+        assert!(
+            !scaled && (t - want).abs() <= want * 1e-12,
+            "{t:e} vs {want:e}"
+        );
+        // e4m3 x e4m3 is exact (no term); e4m3 x f32 can round to a subnormal.
+        let e4m3 = |i: u64| NodeKind::Input((0, leaf_tagged(i, ptxv_ir::Lp::E4m3)));
+        let [p, q] = [4, 5].map(|i| push(&mut ns, e4m3(i), 1.0));
+        let pq = fma(&mut ns, p, q, None);
+        let pa = fma(&mut ns, p, a, None);
+        assert_eq!(side(&ns, pq), (0.0, false));
+        assert_eq!(side(&ns, pa), (F32_SUB, false));
+        // (a * b) * c: c scales the term.
+        let abc_l = fma(&mut ns, ab, c, None);
+        let bc = fma(&mut ns, b, c, None);
+        let abc_r = fma(&mut ns, a, bc, None);
+        assert!(side(&ns, abc_l).1 && side(&ns, abc_r).1);
+        let out = |n: u32| Side {
+            ns: &ns,
+            outs: vec![(ns.nodes[n as usize].hw, Some(n))],
+            buf_id: vec![0],
+        };
+        let r = compare(&out(abc_l), &out(abc_r), &["x".into()], Some(8.0));
+        assert!(r.levels[1].holds, "{r:?}");
+        assert!(!r.levels[2].holds && !r.levels[3].holds, "{r:?}");
+        let o = &r.per_output[0];
+        assert!(o.bound_u.is_none(), "{o:?}");
+        assert_eq!(o.no_bound.as_deref(), Some(ABS_IN_PRODUCT), "{o:?}");
+        // Against itself the output is L0: equal errors, so L2 and L3 hold.
+        let s = compare(&out(abc_l), &out(abc_l), &["x".into()], Some(8.0));
+        assert!(s.levels[0].holds, "{s:?}");
+        assert!(s.levels[2].holds && s.levels[3].holds, "{s:?}");
     }
 }

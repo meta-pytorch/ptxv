@@ -21,7 +21,13 @@ An FTZ add of a subnormal value into +0 gives 0 where the bulk add gives the val
 of both modes in opposite orders differ where a, b or the sum is subnormal: those pairs (i,
 mixA) are not L0; their bound, which covers every order, holds. Adds of one mode commute in
 pairs into +0: the controls (cftz, cblk) are L0. Before MISS 134 the canonical form dropped the
-flag, and i and mixA were proven L0.
+flag, and i and mixA were proven L0. The reversed pairs (MISS 143): the flushing kernel as the
+candidate against the non-flushing one (rev_i, rev_c2: two adds of each mode) is L1, not L2,
+since its absolute error term (3 * 2^-126 per flushing add) exceeds the reference's (0); as the
+reference (fwd_c2) the pair is L2. Before MISS 143 L2 compared the relative multipliers only and
+both modes carried the flush term, so rev_i and rev_c2 were L2. tau_i is i with an L3 tolerance
+of 4u: L3 holds up to the bound's absolute term A = 3 * 2^-126 (1 + u), which GB300's outputs
+need (they differ by up to 1.165e-38 where 4u sum|terms| is 0), so the L3 line says "+ A".
 Input sets: n (every a, b normal, |a|, |b| in [2^-20, 2^20], every sum normal) and s (n with 128
 special elements at 0 .. 127: subnormals, a cancellation to a subnormal sum, -0). On set s the
 GB300 outputs of i differ in 64 words, of mixA in 79; on set n they are equal. Each case dir is
@@ -190,13 +196,22 @@ def kernels():
     return k
 
 
-# pair: (reference, candidate, input sets, expected level)
+# pair: (reference, candidate, input sets, expected level, MISS)
 PAIRS = {
-    "i": ("ftz1_ref", "blk1_cand", "ns", "L2"),
-    "mixA": ("mixA_ref", "mixA_cand", "ns", "L2"),
-    "cftz": ("ftz2_ab", "ftz2_ba", "s", "L0"),
-    "cblk": ("blk2_ab", "blk2_ba", "s", "L0"),
+    "i": ("ftz1_ref", "blk1_cand", "ns", "L2", 134),
+    "mixA": ("mixA_ref", "mixA_cand", "ns", "L2", 134),
+    "cftz": ("ftz2_ab", "ftz2_ba", "s", "L0", 134),
+    "cblk": ("blk2_ab", "blk2_ba", "s", "L0", 134),
+    # MISS 143: the flushing kernel as the candidate is not L2 (its absolute term exceeds the
+    # non-flushing reference's, which is 0); as the reference it is (fwd_c2).
+    "rev_i": ("blk1_cand", "ftz1_ref", "ns", "L1", 143),
+    "rev_c2": ("blk2_ab", "ftz2_ab", "s", "L1", 143),
+    "fwd_c2": ("ftz2_ab", "blk2_ab", "s", "L2", 143),
+    # MISS 143: L3 holds up to the bound's absolute term, which the L3 line gives ("+ A").
+    "tau_i": ("ftz1_ref", "blk1_cand", "s", "L2+L3", 143),
 }
+# L3 tolerances (tau_k, units of u) of some pairs.
+TAU = {"tau_i": 4.0}
 
 
 def bits(x):
@@ -347,11 +362,12 @@ expect = ["clean"]
 
 
 def eq_toml(tag, sname):
-    ref, cand, _, level = PAIRS[tag]
+    ref, cand, _, level, miss = PAIRS[tag]
     k = kernels()
-    return f'''# MISS 134 (gen.py): {k[ref][2]} against {k[cand][2]}; input set {sname}.
+    tau = f"tau_k = {TAU[tag]}\n" if tag in TAU else ""
+    return f'''# MISS {miss} (gen.py): {k[ref][2]} against {k[cand][2]}; input set {sname}.
 max_states = 200000
-reference = {{ case = "{ref}_{sname}", variant = "good", front = "sass", certify = true }}
+{tau}reference = {{ case = "{ref}_{sname}", variant = "good", front = "sass", certify = true }}
 
 [[candidates]]
 case = "{cand}_{sname}"
@@ -366,7 +382,7 @@ def main():
     sets = inputs()
     if "--check" in sys.argv:
         bad = 0
-        for tag, (ref, cand, snames, _) in PAIRS.items():
+        for tag, (ref, cand, snames, _, _) in PAIRS.items():
             for sname in snames:
                 got = {}
                 for kern in (ref, cand):
@@ -384,7 +400,7 @@ def main():
             with open(os.path.join("data", f"{x}_{sname}.bin"), "wb") as f:
                 f.write(struct.pack(f"<{N}I", *v))
     k = kernels()
-    for tag, (ref, cand, snames, _) in PAIRS.items():
+    for tag, (ref, cand, snames, _, _) in PAIRS.items():
         for sname in snames:
             for kern in (ref, cand):
                 name = f"{kern}_{sname}"

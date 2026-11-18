@@ -1,0 +1,41 @@
+name = "c_num_mufu_top_f32"
+description = """
+MISS 206: out[t] = rcp.approx.f32(x[t]) (no .ftz) for probes/mufu_bound_top's 32 operands (16
+subnormals 2^-128 + k 2^-149, 8 subnormals just below 2^-126, 128 - 2^-17, 128 - 2^-16, 127.99,
+127.5, 2^-126, 2^-127, 2^-128 + 17 2^-149, 1). out[0] and out[1] are among the 16 largest finite
+magnitudes (0x7f7ffff8, 0x7f7ffff0), where |hw| (1 + 2^-20) rounds to infinity in f32.
+expected/out.bin: GB300."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "num_mufu_top"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

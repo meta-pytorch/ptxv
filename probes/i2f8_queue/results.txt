@@ -1,0 +1,37 @@
+# GB300 (one GPU), 2026-11-12, rev 72ca13cc + this probe: PTXV_GPUS=3 ptxv hw --runs 1000 --scrub
+# grid 1x1x1, block 256; out[2t] = I2F.S8 result, out[2t+1] = I2F.S16 result
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER_S2 [scrubbed smem] 199/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinct, firs
+hw NOWAIT_S2 [scrubbed smem] 209/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 11 distinct, fi
+hw OWN_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER_S4 [scrubbed smem] 535/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 13 distinct, fir
+hw NOWAIT_S4 [scrubbed smem] 174/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 12 distinct, fi
+hw OWN_S4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER_S8 [scrubbed smem] 44/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(956, 0), (44, 3
+hw NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw OWN_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+# COVER (the I2F.S8's reader waits on the later I2F.S16's scoreboard only) is wrong at every
+# stall: an I2F.S16 completes before an earlier I2F.S8 writes its register; the two are not one
+# queue (MISS 130's class: conversions keyed by base opcode). NOWAIT_S8 is correct (8 + 7 + 1
+# stall cycles cover the latency), NOWAIT_S2 / _S4 wrong: the S2 / S4 layouts discriminate.
+# Repeats and distances (GB300, GPU 3, 2026-11-12, rev d42af973 + this probe, the image checked by
+# --image-fnv; ptxv hw --runs 1000 --scrub, two passes each; "distance": stall cycles from the
+# I2F.S8 to the store, a lower bound on elapsed cycles; "gap": from the I2F.S8 to the I2F.S16):
+# COVER_S2 (gap 9)    162, 200, 191, 218 / 1000 wrong     NOWAIT_S2 (distance 10)  277, 229, 245, 282
+# COVER_S4 (gap 11)   570, 601, 537, 594                  NOWAIT_S4 (12)           198, 228, 104, 145
+# COVER_S6 (gap 13)    64, 148, 206,  56                  NOWAIT_S6 (14)           193, 227, 124, 134
+# COVER_S8 (gap 15)    49,  61,  57,  26                  NOWAIT_S8 (16)             0,   0,   0,   0
+# COVER_G19 (gap 19)    0,   0                            NOWAIT_G19 (20)            0,   0
+# COVER_G22 (gap 22)    0,   0                            NOWAIT_G22 (23)            0,   0
+# OWN_S2 / _S4 / _S8: 0 in every pass. (Earlier passes of the S variants: COVER_S8 44, 13, 29;
+# NOWAIT_S8 0, 1, 0.) Stalls above 8 on this I2F.S8 do not encode (nvdisasm rejects them); the
+# longer distances stretch the SHF after it.
+# Reading: the I2F.S8's result takes more than 14 stall cycles in some runs and is in its
+# register at 16 in all but 1 of 7000 runs, 0/2000 at 20 and at 23. COVER fails up to a gap of 15:
+# a wait on the later I2F.S16's scoreboard does not order the I2F.S8's write (the I2F.S16 can
+# complete first). That COVER_S8 fails more often than NOWAIT_S8 although its store waits at
+# least as long is not explained by these runs.
+# The captured dequantize_kv kernel (mslk/fa4.triton.dequantize_kv.mxint8_bf16.64x128_g32) reads
+# its unscoreboarded `I2F.S8 R12` (0x870) 33 stall cycles later (0x950, plus waits): ptxas's
+# schedule rests on the I2F.S8's latency, not on the I2F.S16 at 0x880. GB300: 0/1000 wrong at the
+# captured shape (ptxv hw --no-num), a bound.

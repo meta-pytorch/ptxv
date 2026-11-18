@@ -1,0 +1,35 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Atomics of ONE instruction by several lanes on one shared word whose results the lanes read
+// (MISS 74): tickets of atom.add (each lane writes its tid at its ticket), compare-and-swap,
+// exchange with the old value used, and float adds whose rounding depends on the order.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_lane_order_ticket(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .f32 %f<4>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 x;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra SKIP;
+    mov.u32 %r3, 0;
+    st.shared.u32 [%r2], %r3;
+SKIP:
+    bar.warp.sync -1;
+    atom.shared.add.u32 %r4, [%r2], 1;          // @ATOM
+    mul.wide.u32 %rd2, %r4, 4;                  // @OUT1
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r1;                  // @OUT3
+    ret;
+}

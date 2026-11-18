@@ -179,6 +179,12 @@ mod tests {
         fn add_bf16(old: u16, value: u16) -> u16 {
             old.wrapping_add(value)
         }
+        fn add_f32(old: u32, value: u32) -> u32 {
+            old.wrapping_add(value)
+        }
+        fn add_f16(old: u16, value: u16) -> u16 {
+            old.wrapping_add(value)
+        }
     }
 
     struct LateFailure;
@@ -197,6 +203,12 @@ mod tests {
         }
         fn add_bf16(_: u16, _: u16) -> u16 {
             panic!("not called")
+        }
+        fn add_f32(_: u32, _: u32) -> u32 {
+            panic!("unexpected floating arithmetic")
+        }
+        fn add_f16(_: u16, _: u16) -> u16 {
+            panic!("unexpected floating arithmetic")
         }
     }
 

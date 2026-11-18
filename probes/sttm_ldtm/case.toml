@@ -5,7 +5,11 @@ just before it, with no wait (ptxas: `STTM.x16 tmem[UR6], R20` with no read scor
 `LDTM.x16 R20, tmem[UR7+0x10]`; CUTLASS fmha_fwd, FA4 hd256). Each thread stores x ^ 0x5a5a5a5a
 to column 16, x to column 0, loads column 16 into the same registers, then reads column 0
 back; out = (column 0, column 16) per thread. The TMEM queue reads the store's registers
-before the load writes them (kernel.ptx, gen.py). expected/ is GB300's output."""
+before the load writes them (kernel.ptx, gen.py). expected/ is GB300's output. Not evidence
+for that order: the load writes the values the registers already hold. Q_S<n> (the STTM at
+stall n), CTL_S<n> (a LOP3 writing R20 in the load's slot, no wait: positive control) and
+REF_S8 (after a wait on the STTM's read scoreboard) run correctly on GB300 (results.txt): the
+control does not discriminate. CTL / REF compute something else than good: PTXV_HW_EXPECT=variant."""
 ptx = "kernel.ptx"
 entry = "sttm_ldtm"
 grid = [1, 1, 1]
@@ -37,11 +41,13 @@ buffer = "out"
 [[variants]]
 id = "good"
 expect = ["clean"]
+expect_sass = ["contract"]
 
 [[variants]]
 id = "permuted"
 summary = "the second tcgen05.ld lists its destinations out of order (pairs swapped), the stores follow"
 expect = ["clean"]
+expect_sass = ["contract"]
 [[variants.edits]]
 marker = "@PLD"
 find = "{%r60,%r61,%r62,%r63,%r64,%r65,%r66,%r67,%r68,%r69,%r70,%r71,%r72,%r73,%r74,%r75}"
@@ -62,3 +68,81 @@ replace = "{%r69,%r68,%r71,%r70}"
 marker = "@PST3"
 find = "{%r72,%r73,%r74,%r75}"
 replace = "{%r73,%r72,%r75,%r74}"
+
+[[variants]]
+id = "Q_S2"
+summary = "the STTM (no read scoreboard) with stall 2, the LDTM overwriting its source registers next (the queued write-after-read GB300 orders or not)"
+patch = [
+    { at = "@0x0700", stall = 2, rbar = 7, expect = "STTM.x16 tmem[UR6], R20" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "Q_S4"
+summary = "the STTM (no read scoreboard) with stall 4, the LDTM overwriting its source registers next (the queued write-after-read GB300 orders or not)"
+patch = [
+    { at = "@0x0700", stall = 4, rbar = 7, expect = "STTM.x16 tmem[UR6], R20" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "Q_S8"
+summary = "the STTM (no read scoreboard) with stall 8, the LDTM overwriting its source registers next (the queued write-after-read GB300 orders or not)"
+patch = [
+    { at = "@0x0700", stall = 8, rbar = 7, expect = "STTM.x16 tmem[UR6], R20" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "CTL_S2"
+summary = "positive control, same layout: an ALU write of R20 (LOP3) in the LDTM's slot, 2 cycles after the STTM, no wait"
+patch = [
+    { at = "@0x0700", stall = 2, rbar = 7, expect = "STTM.x16 tmem[UR6], R20" },
+    { at = "@0x0710", bits = [[0, 64, 0x5a5a5a5a14147812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LOP3.LUT R20, R20, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "CTL_S4"
+summary = "positive control, same layout: an ALU write of R20 (LOP3) in the LDTM's slot, 4 cycles after the STTM, no wait"
+patch = [
+    { at = "@0x0700", stall = 4, rbar = 7, expect = "STTM.x16 tmem[UR6], R20" },
+    { at = "@0x0710", bits = [[0, 64, 0x5a5a5a5a14147812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LOP3.LUT R20, R20, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "CTL_S8"
+summary = "positive control, same layout: an ALU write of R20 (LOP3) in the LDTM's slot, 8 cycles after the STTM, no wait"
+patch = [
+    { at = "@0x0700", stall = 8, rbar = 7, expect = "STTM.x16 tmem[UR6], R20" },
+    { at = "@0x0710", bits = [[0, 64, 0x5a5a5a5a14147812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LOP3.LUT R20, R20, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+
+[[variants]]
+id = "REF_S8"
+summary = "reference, same layout: the STTM with read scoreboard SB2, the LOP3 waits on it"
+patch = [
+    { at = "@0x0700", stall = 8, rbar = 2, expect = "STTM.x16 tmem[UR6], R20" },
+    { at = "@0x0710", bits = [[0, 64, 0x5a5a5a5a14147812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 4, expect = "LOP3.LUT R20, R20, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+]
+expect = ["clean"]
+
+
+[[variants]]
+id = "CTL_S1"
+summary = "as CTL_S2 with stall 1 (does not count, L-STALL): whether the STTM's read is pending at all"
+patch = [
+    { at = "@0x0700", stall = 1, rbar = 7, expect = "STTM.x16 tmem[UR6], R20" },
+    { at = "@0x0710", bits = [[0, 64, 0x5a5a5a5a14147812], [64, 41, 0x78e3cff]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LOP3.LUT R20, R20, 0x5a5a5a5a, RZ, 0x3c, !PT" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]

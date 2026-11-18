@@ -1,0 +1,15 @@
+# MISS 135 (gen.py): out[i] = a + b, then b where a > 0 (a guarded store)
+# against (a + b, then b where a > 0) + (+0).
+# The candidate is the reference plus +0, but the choice can be b, whose NaN
+# payloads x + (+0) turns into 0x7fffffff. Segment mode makes x + (+0) part of a slice
+# of the choice (one tracked operand), so nothing is peeled and L1 fails: level none.
+max_states = 200000
+segments = true
+reference = { case = "gsel_ref", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "gsel_cand"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none"

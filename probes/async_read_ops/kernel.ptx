@@ -1,0 +1,30 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+.shared .align 128 .b8 sm[4096];
+.shared .align 8 .b64 mb;
+.visible .entry a(.param .u64 g, .param .u64 tmap)
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<2>;
+    ld.param.u64 %rd1, [g];
+    ld.param.u64 %rd2, [tmap];
+    mov.u32 %r1, sm;
+    mov.u32 %r2, mb;
+    mov.u32 %r3, %tid.x;
+    mapa.shared::cluster.u32 %r4, %r1, 1;
+    mapa.shared::cluster.u32 %r5, %r2, 1;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.u32 [%r4], %r3, [%r5];
+    cp.async.bulk.prefetch.L2.global [%rd1], 256;
+    cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%rd2, {%r3, %r3}], [%r1];
+    cp.async.bulk.global.shared::cta.bulk_group [%rd1+512], [%r1], 256;
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group 0;
+    ret;
+}

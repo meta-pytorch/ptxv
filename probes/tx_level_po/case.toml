@@ -1,0 +1,29 @@
+name = "probe_tx_level_po"
+description = """
+Repro (MISS 273, RDP2 finding E2): one warp's complete_tx 8 then arrive.expect_tx 8 in program
+order, another warp's complete_tx 4. The default explorer and DPOR gave [deadlock] against the
+unreduced search's [deadlock, nondeterministic, race] (SASS [deadlock, nondeterministic]).
+"""
+ptx = "kernel.ptx"
+entry = "tx_level_po"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+# PTX: the unreduced search also has nondeterministic, which the reductions may lose past the
+# race (E-DRF); probes/txfuzz/run.sh compares against the unreduced classes.
+[[variants]]
+id = "good"
+summary = "D2, A complete phase 0 before D1 lands"
+expect = ["deadlock", "race"]
+expect_sass = ["deadlock", "nondeterministic"]

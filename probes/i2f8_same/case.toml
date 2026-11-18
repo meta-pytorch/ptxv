@@ -1,0 +1,278 @@
+name = "probe_i2f8_same"
+description = """
+Probe (L-OPCLASS; MISS 155, RVS2 W1) on GB300, the layout of probes/i2f8_queue: an I2F.S8 (or
+I2F.S16) with no write scoreboard and a later I2F of the same full opcode. ptxas: `I2F.S8 R5, R0`
+at 0x70, `SHF.R.U32.HI` (stall 7), `I2F.S16 R7, R4` at 0x90 (SAME_*: patched to `I2F.S8 R7, R4`;
+S16_*: both I2F.S16), `STG.E [R2.64], R5` at 0xa0. COVER_S<n>: the first I2F at stall n, its store
+waiting on the later I2F's SB1 (and the LDCU's SB0) only; NOWAIT_S<n>: on SB0 only (positive
+control); OWN_S<n>: its own SB2 (reference). GB300 (results.txt): SAME_COVER wrong in 195 to 547
+of 1000 runs at stalls 2 and 4, S16_COVER 159 and 599; OWN 0 / 1000. A narrow I2F is not covered
+by a later identical one: a violation at every level (the distance to the store is at most 16
+stall cycles here)."""
+ptx = "kernel.ptx"
+entry = "i2f8q"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2654435761
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SAME_COVER_S2"
+patch = [
+    { at = "@0x0070", stall = 2, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "SAME_NOWAIT_S2"
+patch = [
+    { at = "@0x0070", stall = 2, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "SAME_OWN_S2"
+patch = [
+    { at = "@0x0070", stall = 2, wbar = 2, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+
+[[variants]]
+id = "SAME_COVER_S4"
+patch = [
+    { at = "@0x0070", stall = 4, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "SAME_NOWAIT_S4"
+patch = [
+    { at = "@0x0070", stall = 4, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "SAME_OWN_S4"
+patch = [
+    { at = "@0x0070", stall = 4, wbar = 2, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+
+[[variants]]
+id = "SAME_COVER_S6"
+patch = [
+    { at = "@0x0070", stall = 6, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "SAME_NOWAIT_S6"
+patch = [
+    { at = "@0x0070", stall = 6, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "SAME_OWN_S6"
+patch = [
+    { at = "@0x0070", stall = 6, wbar = 2, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+
+[[variants]]
+id = "SAME_COVER_S8"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "SAME_NOWAIT_S8"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 7, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "SAME_OWN_S8"
+patch = [
+    { at = "@0x0070", stall = 8, wbar = 2, expect = "I2F.S8 R5, R0" },
+    { at = "@0x0080", stall = 7, expect = "SHF.R.U32.HI R4, RZ, 0x7, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x0000000400077306], [64, 41, 0x1400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S8 R7, R4" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+
+[[variants]]
+id = "S16_COVER_S2"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 2, wbar = 7, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "S16_NOWAIT_S2"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 2, wbar = 7, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "S16_OWN_S2"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 2, wbar = 2, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+
+[[variants]]
+id = "S16_COVER_S4"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "S16_NOWAIT_S4"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "S16_OWN_S4"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 4, wbar = 2, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+
+
+[[variants]]
+id = "S16_COVER_S8"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 8, wbar = 7, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 3, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "S16_NOWAIT_S8"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 8, wbar = 7, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 1, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+
+[[variants]]
+id = "S16_OWN_S8"
+patch = [
+    { at = "@0x0070", bits = [[0, 64, 0x57306], [64, 41, 0x101400]], stall = 8, wbar = 2, rbar = 7, wait = 0, expect = "I2F.S16 R5, R0" },
+    { at = "@0x0090", bits = [[0, 64, 0x400077306], [64, 41, 0x101400]], stall = 1, wbar = 1, rbar = 7, wait = 0, expect = "I2F.S16 R7, R4" },
+    { at = "@0x00a0", wait = 5, expect = "STG.E desc[UR4][R2.64], R5" },
+]
+expect = ["clean"]
+expect_sass = ["clean"]
+

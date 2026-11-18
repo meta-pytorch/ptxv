@@ -1,0 +1,22 @@
+name = "mbar_peek_selfloop"
+description = "RMK277 S1 (MISS 283): t0 initializes an mbarrier and stores out[0]; t32 peeks it and stores out[0]. Before the init the peek reports mbar-uninit and leaves the state as it was (a self-loop); the exhaustive search must still reach the stores of both orders and report the write-write race."
+ptx = "kernel.ptx"
+entry = "mbar_peek_selfloop"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "see description"
+expect = ["violation", "race"]

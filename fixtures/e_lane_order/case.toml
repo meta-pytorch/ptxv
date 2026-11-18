@@ -1,0 +1,100 @@
+name = "e_lane_order"
+description = """
+The lanes of one instruction store different values to one shared word, and lane 0 reads it
+after bar.warp.sync (soundness audit repro; grid 1, block 32). Under the PTX model the lanes
+are threads, so any lane's store may remain: good (st.volatile of tid), RELAXED, EXCH
+(atom.exch, result unused), V100 (tid + 100) and PAIR (tid & 1: two values) are
+nondeterministic on the PTX front, which explores one lane order per distinct value (MISS 74;
+before, lane order only: clean with lane 31's value). PLAIN (st.shared) and PLAIN100 race;
+SAME (one value) and RED (red.add, a reduction that commutes, after a zero init) have one
+outcome. The strict SASS level takes the same orders for the lanes of one STS, plain ones too
+(MISS 75; before, lane order: lane 31's value, clean); GB300 keeps lane 0's value (500 of 500
+runs of good, RELAXED, PLAIN, V100, PLAIN100), which the gb300 profile models
+(E-HW-STS-LOWEST)."""
+ptx = "kernel.ptx"
+entry = "e_lane_order"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "st.volatile of tid by every lane"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "RELAXED"
+summary = "st.relaxed.cta of tid by every lane"
+marker = "@ST"
+find = "st.volatile.shared.u32"
+replace = "st.relaxed.cta.shared.u32"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "PLAIN"
+summary = "plain st.shared of tid by every lane: a race"
+marker = "@ST"
+find = "st.volatile.shared.u32"
+replace = "st.shared.u32"
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "EXCH"
+summary = "atom.exch of tid by every lane, result unused"
+marker = "@ST"
+find = "st.volatile.shared.u32 [%r2], %r1;"
+replace = "atom.shared.exch.b32 %r6, [%r2], %r1;"
+expect = ["nondeterministic"]
+expect_sass = ["unlifted"]
+
+[[variants]]
+id = "V100"
+summary = "st.volatile of tid + 100 by every lane (no value equals the scrubbed memory)"
+marker = "@ST"
+find = "st.volatile.shared.u32 [%r2], %r1;"
+replace = "add.u32 %r7, %r1, 100; st.volatile.shared.u32 [%r2], %r7;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "PLAIN100"
+summary = "plain st.shared of tid + 100 by every lane: a race"
+marker = "@ST"
+find = "st.volatile.shared.u32 [%r2], %r1;"
+replace = "add.u32 %r7, %r1, 100; st.shared.u32 [%r2], %r7;"
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "PAIR"
+summary = "st.volatile of tid & 1: two values"
+marker = "@ST"
+find = "st.volatile.shared.u32 [%r2], %r1;"
+replace = "and.b32 %r7, %r1, 1; st.volatile.shared.u32 [%r2], %r7;"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "SAME"
+summary = "st.volatile of 7 by every lane: one value"
+marker = "@ST"
+find = "st.volatile.shared.u32 [%r2], %r1;"
+replace = "mov.u32 %r7, 7; st.volatile.shared.u32 [%r2], %r7;"
+expect = ["clean"]
+
+[[variants]]
+id = "RED"
+summary = "red.shared.add of tid by every lane after a zero init: one sum"
+marker = "@ST"
+find = "st.volatile.shared.u32 [%r2], %r1;"
+replace = "mov.u32 %r7, 0; setp.eq.u32 %p2, %r1, 0; @%p2 st.shared.u32 [%r2], %r7; bar.warp.sync -1; red.shared.add.u32 [%r2], %r1;"
+expect = ["clean"]

@@ -1,0 +1,43 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-HW-STS-LOWEST shapes: the active lanes of ONE shared store write lane-dependent bytes to
+// one location; after bar.warp.sync lane 0 copies the 16-byte area to out. good:
+// st.volatile.shared.v2.u32 {tid, tid + 100} by every lane (STS.64). V4: a 16-byte store
+// {tid, tid+100, tid+200, tid+300} (STS.128). U8 / U16: tid + 1 (STS.U8 / STS.U16). The other
+// variants guard the store to a subset of the lanes (case.toml).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_sts_shapes(.param .u64 out_p)
+.maxntid 32, 1, 1
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 16 .b8 w[32];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, w;
+    add.u32 %r3, %r1, 100;
+    add.u32 %r4, %r1, 200;
+    add.u32 %r5, %r1, 300;
+    mov.u32 %r9, 0;
+    setp.eq.u32 %p2, %r1, 0;
+    @!%p2 bra INIT_DONE;
+    st.volatile.shared.v4.u32 [%r2], {%r9, %r9, %r9, %r9};
+    st.volatile.shared.v4.u32 [%r2+16], {%r9, %r9, %r9, %r9};
+INIT_DONE:
+    bar.warp.sync -1;
+    st.volatile.shared.v2.u32 [%r2], {%r1, %r3};   // @ST
+    bar.warp.sync -1;
+    @!%p2 bra DONE;
+    ld.volatile.shared.v4.u32 {%r10, %r11, %r12, %r13}, [%r2];
+    st.global.v4.u32 [%rd1], {%r10, %r11, %r12, %r13};
+DONE:
+    ret;
+}

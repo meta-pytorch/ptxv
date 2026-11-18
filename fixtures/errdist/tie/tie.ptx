@@ -1,0 +1,119 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 66 follow-up (the fifth review's D1): an exact value at the output format's overflow
+// tie, max + half its spacing, with a low part z of either sign. RN of the exact value is max
+// where z has the other sign than the tie, and the infinity where it has the same sign or is 0.
+// round_out gave the infinity at the tie whatever z was: equal to a kernel that rounds the tie
+// first (an overflow), P(differ) 0 [0, 1.22e-2] where GB300 differs on 1/6 of the outputs, and
+// different from a kernel that rounds once (one FFMA, max), a false alarm of 0.0835.
+
+// rE_tieb: y = RN_bf16(RN_f32(x + z)): x = (2 - 2^-8) 2^127 (bf16's tie, an f32), z = +-2^-80 or
+// 0: RN_f32(x + z) = x, which ties to Inf in bf16; the exact x + z with z of the other sign is
+// below the tie (RN_bf16 max). Exact P(differ) 1/6 (x at the tie w.p. 1/2, z of the other sign
+// w.p. 1/3; GB300: 2115 of 12800, and 2177 of 12800 at the negative tie).
+.visible .entry rE_tieb(.param .u64 px, .param .u64 pz, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b16 %h<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pz];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    add.rn.f32 %f3, %f1, %f2;
+    cvt.rn.bf16.f32 %h1, %f3;
+    mul.wide.u32 %rd7, %r1, 2;
+    add.s64 %rd8, %rd3, %rd7;
+    st.global.b16 [%rd8], %h1;
+    ret;
+}
+
+// rE_tieh: the same with an f16 output, x = 65520 (f16's tie), z = +-2^-50 or 0: exact P 1/6
+// (GB300 2115 of 12800).
+.visible .entry rE_tieh(.param .u64 px, .param .u64 pz, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b16 %h<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pz];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    add.rn.f32 %f3, %f1, %f2;
+    cvt.rn.f16.f32 %h1, %f3;
+    mul.wide.u32 %rd7, %r1, 2;
+    add.s64 %rd8, %rd3, %rd7;
+    st.global.b16 [%rd8], %h1;
+    ret;
+}
+
+// rE_tief: y = RN_f32(x w + z), one FFMA, x w = 2^128 - 2^103 (f32's tie), z = +-2^-60 or 0: the
+// kernel rounds the exact value, so P(differ) is 0 (GB300: 0 of 12800).
+.visible .entry rE_tief(.param .u64 px, .param .u64 pw, .param .u64 pz, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd9, [pz];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd10, %rd9, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    ld.global.f32 %f3, [%rd10];
+    fma.rn.f32 %f4, %f1, %f2, %f3;
+    st.global.f32 [%rd7], %f4;
+    ret;
+}
+
+// rE_tiefm: p = RN_f32(x w), y = RN_f32(p + z) (mul.rn and add.rn are not contracted): p ties to
+// +Inf and so does y, while x w + z with z = -2^-60 is below the tie (RN max). Exact P(differ)
+// 1/12 (x and w at the tie w.p. 1/4, z negative w.p. 1/3; GB300 1058 of 12800).
+.visible .entry rE_tiefm(.param .u64 px, .param .u64 pw, .param .u64 pz, .param .u64 py)
+{
+    .reg .f32 %f<8>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pw];
+    ld.param.u64 %rd9, [pz];
+    ld.param.u64 %rd3, [py];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    add.s64 %rd6, %rd2, %rd4;
+    add.s64 %rd10, %rd9, %rd4;
+    add.s64 %rd7, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+    ld.global.f32 %f2, [%rd6];
+    ld.global.f32 %f3, [%rd10];
+    mul.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    st.global.f32 [%rd7], %f5;
+    ret;
+}

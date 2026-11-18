@@ -1,0 +1,50 @@
+name = "e_remote_pipe_order"
+description = """
+S-REMOTE-INFLIGHT (MISS 154): one warp's remote operations on one mbarrier land in issue
+order, not in (actor, clock) order. Lane 1 issues st.async to x, releases a flag; lane 0
+acquires it and issues st.async to y; both complete_tx on rank 1's mbarrier, whose phase 0
+rank 1 waits for before reading x. good: clean (raced while the pipe was ordered by lane).
+REV: the first store writes y, the second x: race (and the racy read's outcomes). DRN: lane 0's
+cluster fence after its store lands lane 1's store, the pipe's head, first: clean (MISS 184)."""
+ptx = "kernel.ptx"
+entry = "e_remote_pipe_order"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the first-issued store writes x"
+expect = ["clean"]
+
+[[variants]]
+id = "REV"
+summary = "the first-issued store writes y, the second x"
+edits = [
+    { marker = "@FIRST", find = "[%r10]", replace = "[%r11]" },
+    { marker = "@SECOND", find = "[%r11]", replace = "[%r10]" },
+]
+expect = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "DRN"
+summary = "lane 0 alone drains its store with fence.acq_rel.cluster while lane 1's, ahead of it in the pipe, is pending"
+marker = "@SECOND"
+find = "[%r9];"
+replace = "[%r9]; fence.acq_rel.cluster;"
+# MISS 184: lane 0's drain lands the pipe's head (lane 1's store, x) first, as its own async
+# step would, then its own: phase 0 still completes with x written: clean. A drain of lane 0's
+# ops alone (in pending order, not seq) landed y first: a false race once the store has its
+# own async actor.
+expect = ["clean"]

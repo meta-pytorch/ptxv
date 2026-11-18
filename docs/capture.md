@@ -142,6 +142,24 @@ How it works. This generalizes `fixtures/r3_grouped_mm/capture.py` and
   2 x 1 x 1). launchcap and the Python API's `ptxvcap.c` record it as `preferred_cluster`, and
   the case gets `preferred_cluster = [...]` beside `cluster` (S-CGA-SHAPE). Earlier captures
   dropped it.
+- **Cluster attribute 1 x 1 x 1 (2026-11-12).** A launch with the cluster dimension attribute
+  is a cluster launch even at 1 x 1 x 1: st.async runs there, and traps on GB300 outside one
+  (MISS 209). launchcap and `ptxvcap.c` record a nonzero attribute as `"cluster_attr": 1`, and
+  the case gets `cluster = [1, 1, 1]`. Earlier captures recorded it as a launch without the
+  attribute, and the case faulted where the application ran (MISS 259).
+- **Required cluster (2026-11-13).** A kernel whose cluster shape comes from its function
+  attributes (cudaFuncAttributeRequiredClusterWidth / Height / Depth, set by
+  cudaFuncSetAttribute or cuFuncSetAttribute, or compiled in by `__cluster_dims__`) runs every
+  launch as a cluster launch of that shape, triple-chevron ones included. launchcap and
+  `ptxvcap.c` read the shape at each launch (cuFuncGetAttribute / cuKernelGetAttribute). A
+  launch without a nonzero cluster dimension attribute (none, or 0 x 0 x 0) records it as its
+  `cluster` with `"cluster_attr": 1`, so the case gets `cluster`. A launch with the attribute
+  keeps the attribute's shape; where the kernel requires another one, the record has it as
+  `"required_cluster"` and the case description names it (GB300's driver rejects such a launch,
+  "cluster misconfiguration", so no capture has met one). Earlier captures recorded a launch
+  without the attribute as one without a cluster, so the kernel was checked with clusters of
+  one CTA (MISS 281). Not captured: a graph kernel node with the cluster dimension attribute,
+  and a stream capture of a launch with it (no case is staged for either).
 - **Architecture (2026-11-07).** `case.toml` gets `arch = "sm_XYa"`, the device the capture
   ran on (`PTXV_ARCH` overrides; tools/capture_dist.py writes it too). ptxv compiles a PTX
   case's kernel for that architecture, so a capture made on a GB200 is checked as sm_100a
@@ -457,9 +475,11 @@ what that needs and write only the order CUDA enforces (`python/ptxv/_order.py`)
   after the `t1` of every earlier record of another thread (the driver may have taken the two
   calls in the other order). Threads that take turns (a backward thread launching while the
   calling thread waits) keep a recorded order. ptxv checks such a case under the strict
-  reading: no grid is ordered after another, so any two may run at the same time
-  (ASSUMPTIONS.md E-LAUNCH-ORDER; `PTXV_UNRECORDED_ORDER=ordered` keeps the list's order and
-  only drops the launch-order exclusions). An older capture whose order other evidence
+  reading: no grid is ordered after another, so any two may run at the same time; it also
+  checks the list's order for deadlocks, which a GPU running the list on one stream hits when a
+  grid waits for a later one (ASSUMPTIONS.md E-LAUNCH-ORDER, MISS 189;
+  `PTXV_UNRECORDED_ORDER=ordered` keeps the list's order and only drops the launch-order
+  exclusions). An older capture whose order other evidence
   establishes, such as a re-capture with the order recorded, can carry
   `launch_order = "declared"` instead, with the evidence in a comment.
 - Not recorded, so no edge: host synchronization, the legacy default stream's implicit

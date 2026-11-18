@@ -1,0 +1,210 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPCLASS, MISS 151): the result latency of a DADD with no write scoreboard under a
+// saturated f64 pipe. Two warp pools per CTA, warp w of the CTA saturating if w & 1 (the odd
+// warps; gen.py's _Q variants patch the mask to 4: warps 4..7 of every 8). The saturating pool
+// runs `iters` rounds of 8 independent f64 ops (4 DADD, 4 DFMA); the probe pool sleeps `delay` ns
+// (nanosleep: the saturating pool is running), then issues probes/f64_lat's window: a
+// DADD, K DADD followers, a LOP3 reading the DADD's hi word D stall cycles later. gen.py
+// (probes/f64_lat/gen.py sat) rewrites the probe pool's window per variant; its padding slots
+// come from the 44 extra stores here. clk (not compared): per warp the SM id, %warpid and the
+// clock at the start / end of the saturating loop, or before / after the probe window (the
+// overlap check in results.txt, satclk.py). .maxnreg 32: two CTAs of 1024 threads per SM.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry f64s(.param .u64 out_p, .param .u32 seed, .param .u32 iters, .param .u32 delay, .param .u64 clk_p)
+.maxnreg 32
+{
+    .reg .b32 %r<90>;
+    .reg .f64 %fd<60>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd5, [clk_p];
+    cvta.to.global.u64 %rd5, %rd5;
+    ld.param.u32 %r2, [seed];
+    ld.param.u32 %r60, [iters];
+    ld.param.u32 %r61, [delay];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r30, %ctaid.x;
+    mov.u32 %r32, %ntid.x;
+    mad.lo.u32 %r31, %r30, %r32, %r1;
+    mul.wide.u32 %rd2, %r31, 256;
+    add.s64 %rd3, %rd1, %rd2;
+    // clk slot of this warp (lane 0 writes it): 8 words per warp
+    shr.u32 %r62, %r31, 5;
+    mul.wide.u32 %rd6, %r62, 32;
+    add.s64 %rd7, %rd5, %rd6;
+    and.b32 %r63, %r1, 31;
+    setp.eq.u32 %p2, %r63, 0;
+    mov.u32 %r64, %smid;
+    mov.u32 %r70, %warpid;
+    shr.u32 %r65, %r1, 5;
+    and.b32 %r66, %r65, 1;
+    setp.ne.u32 %p1, %r66, 0;
+    @%p1 bra SAT;
+    // The probe pool: sleeps `delay` ns (so the saturating pool is running), then the window.
+    nanosleep.u32 %r61;
+    mov.u32 %r67, %clock;
+    @%p2 st.global.v4.u32 [%rd7], {%r64, %r70, %r67, %r61};
+    mul.lo.u32 %r3, %r31, %r2;
+    and.b32 %r4, %r3, 1048575;
+    or.b32 %r5, %r4, 1072693248;     // hi word: an f64 in [1, 2)
+    mov.b64 %fd1, {%r3, %r5};
+    add.f64 %fd2, %fd1, %fd1;        // DADD: the producer
+    add.f64 %fd3, %fd1, 0d3FF0000000000000;  // followers
+    add.f64 %fd4, %fd1, 0d4000000000000000;
+    add.f64 %fd5, %fd1, 0d4008000000000000;
+    add.f64 %fd6, %fd1, 0d4010000000000000;
+    add.f64 %fd7, %fd1, 0d4014000000000000;
+    add.f64 %fd8, %fd1, 0d4018000000000000;
+    add.f64 %fd9, %fd1, 0d401C000000000000;
+    add.f64 %fd10, %fd1, 0d4020000000000000;
+    mov.b64 {%r10, %r11}, %fd2;
+    xor.b32 %r12, %r11, %r2;         // LOP3: the reader (hi word)
+    st.global.u32 [%rd3], %r12;
+    st.global.f64 [%rd3+8], %fd3;
+    st.global.f64 [%rd3+16], %fd4;
+    st.global.f64 [%rd3+24], %fd5;
+    st.global.f64 [%rd3+32], %fd6;
+    st.global.f64 [%rd3+40], %fd7;
+    st.global.f64 [%rd3+48], %fd8;
+    st.global.f64 [%rd3+56], %fd9;
+    st.global.f64 [%rd3+64], %fd10;
+    // padding slots for the window (rewritten by gen.py)
+    xor.b32 %r20, %r12, 1;
+    st.global.u32 [%rd3+72], %r20;
+    xor.b32 %r20, %r12, 2;
+    st.global.u32 [%rd3+76], %r20;
+    xor.b32 %r20, %r12, 3;
+    st.global.u32 [%rd3+80], %r20;
+    xor.b32 %r20, %r12, 4;
+    st.global.u32 [%rd3+84], %r20;
+    xor.b32 %r20, %r12, 5;
+    st.global.u32 [%rd3+88], %r20;
+    xor.b32 %r20, %r12, 6;
+    st.global.u32 [%rd3+92], %r20;
+    xor.b32 %r20, %r12, 7;
+    st.global.u32 [%rd3+96], %r20;
+    xor.b32 %r20, %r12, 8;
+    st.global.u32 [%rd3+100], %r20;
+    xor.b32 %r20, %r12, 9;
+    st.global.u32 [%rd3+104], %r20;
+    xor.b32 %r20, %r12, 10;
+    st.global.u32 [%rd3+108], %r20;
+    xor.b32 %r20, %r12, 11;
+    st.global.u32 [%rd3+112], %r20;
+    xor.b32 %r20, %r12, 12;
+    st.global.u32 [%rd3+116], %r20;
+    xor.b32 %r20, %r12, 13;
+    st.global.u32 [%rd3+120], %r20;
+    xor.b32 %r20, %r12, 14;
+    st.global.u32 [%rd3+124], %r20;
+    xor.b32 %r20, %r12, 15;
+    st.global.u32 [%rd3+128], %r20;
+    xor.b32 %r20, %r12, 16;
+    st.global.u32 [%rd3+132], %r20;
+    xor.b32 %r20, %r12, 17;
+    st.global.u32 [%rd3+136], %r20;
+    xor.b32 %r20, %r12, 18;
+    st.global.u32 [%rd3+140], %r20;
+    xor.b32 %r20, %r12, 19;
+    st.global.u32 [%rd3+144], %r20;
+    xor.b32 %r20, %r12, 20;
+    st.global.u32 [%rd3+148], %r20;
+    xor.b32 %r20, %r12, 21;
+    st.global.u32 [%rd3+152], %r20;
+    xor.b32 %r20, %r12, 22;
+    st.global.u32 [%rd3+156], %r20;
+    xor.b32 %r20, %r12, 23;
+    st.global.u32 [%rd3+160], %r20;
+    xor.b32 %r20, %r12, 24;
+    st.global.u32 [%rd3+164], %r20;
+    xor.b32 %r20, %r12, 25;
+    st.global.u32 [%rd3+168], %r20;
+    xor.b32 %r20, %r12, 26;
+    st.global.u32 [%rd3+172], %r20;
+    xor.b32 %r20, %r12, 27;
+    st.global.u32 [%rd3+176], %r20;
+    xor.b32 %r20, %r12, 28;
+    st.global.u32 [%rd3+180], %r20;
+    xor.b32 %r20, %r12, 29;
+    st.global.u32 [%rd3+184], %r20;
+    xor.b32 %r20, %r12, 30;
+    st.global.u32 [%rd3+188], %r20;
+    xor.b32 %r20, %r12, 31;
+    st.global.u32 [%rd3+192], %r20;
+    xor.b32 %r20, %r12, 32;
+    st.global.u32 [%rd3+196], %r20;
+    xor.b32 %r20, %r12, 33;
+    st.global.u32 [%rd3+200], %r20;
+    xor.b32 %r20, %r12, 34;
+    st.global.u32 [%rd3+204], %r20;
+    xor.b32 %r20, %r12, 35;
+    st.global.u32 [%rd3+208], %r20;
+    xor.b32 %r20, %r12, 36;
+    st.global.u32 [%rd3+212], %r20;
+    xor.b32 %r20, %r12, 37;
+    st.global.u32 [%rd3+216], %r20;
+    xor.b32 %r20, %r12, 38;
+    st.global.u32 [%rd3+220], %r20;
+    xor.b32 %r20, %r12, 39;
+    st.global.u32 [%rd3+224], %r20;
+    xor.b32 %r20, %r12, 40;
+    st.global.u32 [%rd3+228], %r20;
+    xor.b32 %r20, %r12, 41;
+    st.global.u32 [%rd3+232], %r20;
+    xor.b32 %r20, %r12, 42;
+    st.global.u32 [%rd3+236], %r20;
+    xor.b32 %r20, %r12, 43;
+    st.global.u32 [%rd3+240], %r20;
+    xor.b32 %r20, %r12, 44;
+    st.global.u32 [%rd3+244], %r20;
+    mov.u32 %r68, %clock;
+    @%p2 st.global.u32 [%rd7+16], %r68;
+    ret;
+SAT:
+    // The saturating pool: `iters` rounds of 8 independent f64 ops (4 DADD, 4 DFMA).
+    mov.u32 %r67, %clock;
+    mul.lo.u32 %r50, %r31, %r2;
+    and.b32 %r51, %r50, 1048575;
+    or.b32 %r52, %r51, 1072693248;
+    mov.b64 %fd20, {%r50, %r52};
+    add.f64 %fd21, %fd20, 0d3FF0000000000000;
+    add.f64 %fd22, %fd20, 0d4000000000000000;
+    add.f64 %fd23, %fd20, 0d4008000000000000;
+    mov.f64 %fd30, %fd20;
+    mov.f64 %fd31, %fd21;
+    mov.f64 %fd32, %fd22;
+    mov.f64 %fd33, %fd23;
+    mov.u32 %r53, 0;
+SLOOP:
+    add.f64 %fd20, %fd20, 0d3FB0000000000000;
+    add.f64 %fd21, %fd21, 0d3FB0000000000000;
+    add.f64 %fd22, %fd22, 0d3FB0000000000000;
+    add.f64 %fd23, %fd23, 0d3FB0000000000000;
+    fma.rn.f64 %fd30, %fd30, 0d3FEFFFFFFFFFFFFF, 0d3FB0000000000000;
+    fma.rn.f64 %fd31, %fd31, 0d3FEFFFFFFFFFFFFF, 0d3FB0000000000000;
+    fma.rn.f64 %fd32, %fd32, 0d3FEFFFFFFFFFFFFF, 0d3FB0000000000000;
+    fma.rn.f64 %fd33, %fd33, 0d3FEFFFFFFFFFFFFF, 0d3FB0000000000000;
+    add.u32 %r53, %r53, 1;
+    setp.lt.u32 %p3, %r53, %r60;
+    @%p3 bra SLOOP;
+    mov.u32 %r68, %clock;
+    @%p2 st.global.v4.u32 [%rd7], {%r64, %r70, %r67, %r68};
+    @%p2 st.global.u32 [%rd7+16], %r53;
+    add.f64 %fd20, %fd20, %fd21;
+    add.f64 %fd22, %fd22, %fd23;
+    add.f64 %fd30, %fd30, %fd31;
+    add.f64 %fd32, %fd32, %fd33;
+    add.f64 %fd20, %fd20, %fd22;
+    add.f64 %fd30, %fd30, %fd32;
+    add.f64 %fd20, %fd20, %fd30;
+    st.global.f64 [%rd3+248], %fd20;
+    ret;
+}

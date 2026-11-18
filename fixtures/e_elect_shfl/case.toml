@@ -1,0 +1,39 @@
+name = "e_elect_shfl"
+description = """
+E-ELECT (MISS 79): warp 0 shuffles elect's predicate from lane 5 (shfl.sync.idx, a warp-uniform source
+lane): 1 everywhere when lane 5 leads. The leader stores out[1] before bar.sync 0 unless lane 5
+leads, after it otherwise, where thread 32 reads out[1]: racy for leader 5 only. shfl.idx from
+a warp-uniform lane was not lane-varying in the leader-sensitivity taint, so neither gate fired
+and the two end-lane policies made the PTX verdict clean (also certified). A collective of a
+leader-dependent pattern is lane-varying now: every leader is explored. GB300 elects the lowest
+lane: SASS clean. LANE0: shuffle from lane 0, a race under the end-lane policies already."""
+ptx = "kernel.ptx"
+entry = "e_elect_shfl"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for leader 5"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "LANE0"
+summary = "shuffle from lane 0: racy unless lane 0 leads (the highest-lane policy shows it)"
+marker = "@SRC"
+find = "shfl.sync.idx.b32 %r9, %r10, 5, 31, -1;"
+replace = "shfl.sync.idx.b32 %r9, %r10, 0, 31, -1;"
+expect = ["race"]
+expect_sass = ["race"]

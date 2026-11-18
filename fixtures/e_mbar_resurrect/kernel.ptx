@@ -1,0 +1,45 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// RMK4 A8: an mbarrier initialized through a per-thread address (SASS: STS.64 of the state
+// word, so its bytes hold the word), invalidated by t0, then used by t32 (ordered after the
+// inval by a bar.sync unless deleted). PTX: a use after the inval reaches no object.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_resurrect(.param .u64 out_p)
+.maxntid 64, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b8 a[8];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, a;
+    shl.b32 %r21, %r1, 3;
+    add.u32 %r22, %r2, %r21;                           // a + 8*tid: a for t0
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra AFTER_INIT;
+    mbarrier.init.shared::cta.b64 [%r22], 2;           // @INIT
+AFTER_INIT:
+    bar.sync 0;
+    @%p2 bra NOINV;
+    mbarrier.inval.shared::cta.b64 [%r2];              // @INV
+NOINV:
+    bar.sync 0;                                        // @B2
+    setp.eq.u32 %p4, %r1, 32;
+    @!%p4 bra NOUSE;
+    mbarrier.arrive.shared::cta.b64 %rd6, [%r2];       // @USE
+NOUSE:
+    bar.sync 0;
+    @%p2 bra DONE;
+    mov.u32 %r9, 1;
+    st.global.u32 [%rd1], %r9;
+DONE:
+    ret;
+}

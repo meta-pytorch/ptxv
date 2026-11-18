@@ -1,0 +1,51 @@
+name = "r8m_mma"
+description = """
+MISS 258 repro: D = A B with A[r][k] = bf16(sqrt.approx.ftz(x_l)) for the lane l holding it (x_0 = -3 2^-149,
+GB300 -0, no real true value; x_l = 1 otherwise), B = bf16 ones (input bm), C = 0. out[4 l + j] = lane l's
+D fragment j: out[0..16) (rows 0 and 8) = 4 (s_0 + s_1 + s_2 + s_3) = 12 on GB300 with no real exact
+value; out[16..128) = 16 exactly.
+"""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "r8m_mma"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "bm"
+dtype = "bf16"
+shape = [128]
+init = "file"
+file = "data/bm.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "bm"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

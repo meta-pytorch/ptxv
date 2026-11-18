@@ -1,0 +1,159 @@
+# GB300 (two GPUs, one variant at a time per GPU), 2026-11-12, rev d2a4ee90 binary: PTXV_HW_EXPECT=variant
+# ptxv hw --runs 200 --scrub (the patched image checked by --image-fnv). Grid 304 x 1024 (2 CTAs of 1024 threads
+# per SM on 152 SMs, .maxnreg 32: 64 warps per SM). Pools: the saturating warps (the odd warps of each CTA; _Q:
+# warps 4..7 of every 8) run 128 rounds of 4 DADD + 4 DFMA (8 independent chains); the probe warps sleep 60000
+# ns (nanosleep) and run probes/f64_lat's window (gen.py sat). A run is wrong if any of its 155,648 probe
+# threads is. Another user's compute processes held the GPUs at times; each variant waited for its GPU to be
+# free before it started.
+# Overlap check (ptxv probe, clk buffer as the output; satclk.py here; per warp SM id, %warpid and SR_CLOCKLO
+# before / after the window or at the loop's start / end):
+#   == K0_D16_NOWAIT (mask 1)
+#   SMs 152; probe warps 4864; window (clock before, clock after) inside every saturating warp's loop on its SM: 4864/4864
+#   margin to the nearer loop edge (cycles): min 2167 median 2468
+#   window elapsed (clock after - before, cycles): min 76 median 1038 max 29448
+#   saturating warp cycles per f64 op: min 279.6 median 304.4 max 306.9
+#   (SM, warp slot mod 4) groups holding both pools: 608/608
+#   == K1_D1536_NOWAIT (mask 1)
+#   SMs 152; probe warps 4864; window (clock before, clock after) inside every saturating warp's loop on its SM: 4864/4864
+#   margin to the nearer loop edge (cycles): min 68126 median 68763
+#   window elapsed (clock after - before, cycles): min 1676 median 23021 max 35631
+#   saturating warp cycles per f64 op: min 281.0 median 304.7 max 307.2
+#   (SM, warp slot mod 4) groups holding both pools: 608/608
+#   == K0_D1536_NOWAIT_Q (mask 4)
+#   SMs 152; probe warps 4864; window (clock before, clock after) inside every saturating warp's loop on its SM: 4864/4864
+#   margin to the nearer loop edge (cycles): min 55465 median 55625
+#   window elapsed (clock after - before, cycles): min 1611 median 2400 max 33631
+#   saturating warp cycles per f64 op: min 145.6 median 297.8 max 306.9
+#   (SM, warp slot mod 4) groups holding both pools: 608/608
+#   (every probe window, clock before and after, lies inside the loop of every saturating warp on its SM;
+#   window elapsed >= D; each (SM, %warpid mod 4) group holds warps of both pools in both layouts)
+# Summary (NOWAIT wrong runs of 200; first pass):
+#   odd layout  K0: D16, 128, 256: 200   D384..D1536: 0      K1: D16, 128, 256: 200   D384..D1536: 0
+#   _Q layout   K0: D16, 128, 256: 200   D384..D1536: 0      K1: D16, 256: 200   D512, 768: 0 (others: second pass)
+#   OWN (K0_D8, K1_D8, both layouts): 0.
+# Reading: with the f64 pipe saturated (about 300 cycles per f64 op per saturating warp), a DADD with no write
+# scoreboard read by an ALU op (LOP3) is still outstanding at D = 256 stall cycles, 0 / 200 from 384. Without
+# the saturating pool at full occupancy (probes/f64_lat_occ): wrong to 320. A bound at this shape (one GPU,
+# these layouts, an ALU reader, 200 runs), not a latency. The 1000-run boundary pass (D 256..512 step 32, both
+# layouts; f64_lat_occ D 320..512) is below.
+# Raw rows:
+hw K0_D8_OWN [scrubbed smem] matches simulator bitwise (200 runs, 6.9s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D8_OWN [scrubbed smem] matches simulator bitwise (200 runs, 10.5s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D16_NOWAIT [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 12.8s) distinct outputs (count, words differing): 200 distinct, first: [(1, 146944), (1, 142816), (1, 140800), (
+hw K0_D256_NOWAIT [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 12.9s) distinct outputs (count, words differing): 200 distinct, first: [(1, 58112), (1, 58048), (1, 42400), (1,
+hw K0_D512_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 7.5s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D768_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 6.6s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1024_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 7.2s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1280_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 10.4s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1536_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 10.5s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D128_NOWAIT [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 10.6s) distinct outputs (count, words differing): 200 distinct, first: [(1, 23296), (1, 23488), (1, 23392), (1,
+hw K1_D384_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 10.1s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D640_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 5.4s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D896_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 7.8s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D1152_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 6.2s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D1408_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 6.5s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D16_NOWAIT_Q [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 11.8s) distinct outputs (count, words differing): 14 distinct, first: [(187, 155648), (1, 155648), (1, 155392)
+hw K0_D256_NOWAIT_Q [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 10.9s) distinct outputs (count, words differing): 200 distinct, first: [(1, 92192), (1, 86400), (1, 83808), (
+hw K0_D512_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 6.3s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D768_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 5.5s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1024_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 7.2s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1280_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 8.6s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1536_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 4.7s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D8_OWN_Q [scrubbed smem] matches simulator bitwise (200 runs, 7.7s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D8_OWN_Q [scrubbed smem] matches simulator bitwise (200 runs, 7.0s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D128_NOWAIT [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 12.7s) distinct outputs (count, words differing): 200 distinct, first: [(1, 97920), (1, 97792), (1, 98208), (1,
+hw K0_D384_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 6.1s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D640_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 10.6s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D896_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 4.9s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1152_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 4.9s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1408_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 6.5s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D16_NOWAIT [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 12.4s) distinct outputs (count, words differing): 200 distinct, first: [(1, 49184), (1, 48800), (1, 48928), (1, 
+hw K1_D256_NOWAIT [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 10.5s) distinct outputs (count, words differing): 200 distinct, first: [(1, 1952), (1, 1376), (1, 1888), (1, 19
+hw K1_D512_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 4.9s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D768_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 7.0s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D1024_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 9.9s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D1280_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 6.2s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D1536_NOWAIT [scrubbed smem] matches simulator bitwise (200 runs, 5.6s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D128_NOWAIT_Q [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 11.5s) distinct outputs (count, words differing): 200 distinct, first: [(1, 148448), (1, 139008), (1, 140448)
+hw K0_D384_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 5.8s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D640_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 5.8s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D896_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 9.2s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1152_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 8.4s) distinct outputs (count, words differing): [(200, 0)]
+hw K0_D1408_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 5.0s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D16_NOWAIT_Q [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 10.5s) distinct outputs (count, words differing): 200 distinct, first: [(1, 111552), (1, 82464), (1, 85856), (
+hw K1_D256_NOWAIT_Q [scrubbed smem] 200/200 runs differ from the correct output (200 runs, 11.3s) distinct outputs (count, words differing): 200 distinct, first: [(1, 1248), (1, 2144), (1, 1376), (1, 
+hw K1_D512_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 6.5s) distinct outputs (count, words differing): [(200, 0)]
+hw K1_D768_NOWAIT_Q [scrubbed smem] matches simulator bitwise (200 runs, 7.6s) distinct outputs (count, words differing): [(200, 0)]
+# 1000-run boundary pass (2026-11-12, three GPUs, one variant at a time per GPU, each waiting for its GPU to be free;
+# ptxv hw --runs 1000 --scrub --timeout 900; case regenerated with D 544 / 576 / 608 / 704 added, the other variants unchanged):
+hw K0_D256_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 95.8s) distinct outputs (count, words differing): 1000 distinct, first: [(1, 58048), (1, 57888), (1, 58112), (1, 58080)] first f
+hw K0_D288_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 66.6s) distinct outputs (count, words differing): 1000 distinct, first: [(1, 49952), (1, 50976), (1, 51040), (1, 50944)] first f
+hw K0_D320_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 106.0s) distinct outputs (count, words differing): 1000 distinct, first: [(1, 38912), (1, 40064), (1, 33408), (1, 38912)] first 
+hw K0_D352_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 99.2s) distinct outputs (count, words differing): 1000 distinct, first: [(1, 35936), (1, 34912), (1, 34048), (1, 32064)] first f
+hw K0_D384_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 39.2s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D416_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 36.1s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D448_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 33.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D480_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 30.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D256_NOWAIT_Q [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 67.4s) distinct outputs (count, words differing): 1000 distinct, first: [(1, 85248), (1, 86880), (1, 94048), (1, 91424)] first
+hw K0_D288_NOWAIT_Q [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 52.2s) distinct outputs (count, words differing): 1000 distinct, first: [(1, 48576), (1, 56864), (1, 64064), (1, 87072)] first
+hw K0_D320_NOWAIT_Q [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 54.9s) distinct outputs (count, words differing): 1000 distinct, first: [(1, 53088), (1, 55552), (1, 51360), (1, 50784)] first
+hw K0_D352_NOWAIT_Q [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 53.1s) distinct outputs (count, words differing): 1000 distinct, first: [(1, 46240), (1, 46624), (1, 44576), (1, 49248)] first
+hw K0_D384_NOWAIT_Q [scrubbed smem] 2/1000 runs differ from the correct output (1000 runs, 44.5s) distinct outputs (count, words differing): [(998, 0), (1, 160), (1, 160)] first failing runs: [316, 464]
+hw K0_D416_NOWAIT_Q [scrubbed smem] 1/1000 runs differ from the correct output (1000 runs, 40.9s) distinct outputs (count, words differing): [(999, 0), (1, 32)] first failing runs: [90]
+hw K0_D448_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 25.3s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D480_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 23.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D512_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 41.0s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D384_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 33.3s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D416_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 40.3s) distinct outputs (count, words differing): [(1000, 0)]
+# Summary (1000 runs): _Q layout K0: 1000 / 1000 wrong at D 256..352, 2 / 1000 at 384, 1 / 1000 at 416, 0 at
+# 448, 480, 512; odd layout K0: 1000 / 1000 at 256..352, 0 at 384..480; _Q K1: 0 at 384, 416. The worst wrong D is
+# 416 (_Q, K0), the first clean D in that layout 448: F64_LAT = 624 = 1.5 x 416 (scoreboard.rs).
+# The rest of the pass, run once the GPUs were free (same shape, 1000 runs each):
+hw K0_D544_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 37.2s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D576_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 30.9s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D608_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 31.2s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D704_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 35.0s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D448_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 28.9s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D480_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 37.2s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D576_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 28.8s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D640_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 37.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D704_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 28.9s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D576_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 35.1s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D416_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 19.8s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D448_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 25.1s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D480_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 20.8s) distinct outputs (count, words differing): [(1000, 0)]
+# Summary of the pass so far (1000-run rows only): _Q K0 0 / 1000 at 448, 480, 512, 544, 576, 608, 704 (640: 200
+# runs only); _Q K1 0 / 1000 at 384, 416, 448, 480, 576, 640, 704 (512: 200 runs; 544, 608 not run); odd K0
+# 0 / 1000 at 384, 416, 448, 480, 576 (512, 640: 200 runs; 544, 608, 704 not run); odd K1 0 / 1000 at 416, 448,
+# 480 (384: 200 runs). No wrong run above 416.
+# The odd layout's K1 rows at D 512 to 640 (same case_v3 shape, 1000 runs each, GB300, 2026-11-12):
+hw K1_D512_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 41.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D576_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 41.8s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D640_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 40.2s) distinct outputs (count, words differing): [(1000, 0)]
+# The 1000-run rows still missing (review pass, same case_v3 shape, ptxv hw --runs 1000 --scrub --timeout 900,
+# GB300, 2026-11-13):
+hw K0_D512_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 23.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D544_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 24.1s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D608_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 23.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D640_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 23.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D704_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 23.9s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D384_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 23.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D544_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 23.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D608_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 24.2s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D704_NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 23.3s) distinct outputs (count, words differing): [(1000, 0)]
+hw K0_D640_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 23.2s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D512_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 24.1s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D544_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 23.9s) distinct outputs (count, words differing): [(1000, 0)]
+hw K1_D608_NOWAIT_Q [scrubbed smem] matches simulator bitwise (1000 runs, 19.5s) distinct outputs (count, words differing): [(1000, 0)]
+# Summary (1000 runs): every layout (odd, _Q; K0, K1) is 0 / 1000 at every 32-step D from 448 to 640 and at 704,
+# odd also from 384, _Q K1 also from 384. The worst wrong D is 416 (_Q K0, 1 / 1000; 2 / 1000 at 384), so
+# F64_LAT = 624 = 1.5 x 416 stands. A 0 / 1000 row bounds the per-run rate at about 3e-3 (95%) only.
+# D >= 768 has 200-run rows only in every layout (_Q K1 896 to 1536 not run): above F64_LAT, bounds only.
+# The tail past 416 (_Q K0, the only layout with wrong runs at 384 / 416), 10000 runs each (2 x 5000, same case_v3
+# shape, ptxv hw --runs 5000 --scrub --timeout 3000, GB300, 2026-11-13; the raw per-GPU output files are listed
+# in fb/probes/f64_lat_sat/raw_output.txt, internal):
+hw K0_D448_NOWAIT_Q [scrubbed smem] matches simulator bitwise (5000 runs, 115.1s) distinct outputs (count, words differing): [(5000, 0)]
+hw K0_D448_NOWAIT_Q [scrubbed smem] matches simulator bitwise (5000 runs, 113.7s) distinct outputs (count, words differing): [(5000, 0)]
+hw K0_D480_NOWAIT_Q [scrubbed smem] matches simulator bitwise (5000 runs, 116.4s) distinct outputs (count, words differing): [(5000, 0)]
+hw K0_D480_NOWAIT_Q [scrubbed smem] matches simulator bitwise (5000 runs, 112.7s) distinct outputs (count, words differing): [(5000, 0)]
+# 0 / 10000 at 448 and 480: the per-run rate there is below about 3e-4 (95%); the worst wrong D is 416.

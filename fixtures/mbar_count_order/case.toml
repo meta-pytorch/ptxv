@@ -41,5 +41,5 @@ summary = "warp 2 arrives with count 3 twice: phase 0 can complete, flip and tak
 marker = "@COUNT"
 find = "mbarrier.arrive.shared::cta.b64 _, [%r3], %r6; // @COUNT"
 replace = "mbarrier.arrive.shared::cta.b64 _, [%r3], %r6;\n    mbarrier.arrive.shared::cta.b64 _, [%r3], %r6;"
-expect = ["deadlock", "fault", "race"]
+expect = ["deadlock", "fault", "nondeterministic", "race"]
 expect_sass = ["deadlock", "fault", "nondeterministic"]

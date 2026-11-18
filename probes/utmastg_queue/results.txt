@@ -1,0 +1,13 @@
+# GB300 (one GPU), 2026-11-11: ptxv hw --runs 1000 --scrub
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER  [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw NOWAIT [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw OWN    [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw NOWAIT_T [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw BUSY   [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw BUSY_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+# BUSY / BUSY_NOWAIT also store rows 32..39 (256 words the good variant leaves NaN), so both differ
+# from the good variant's output by construction, by exactly those words and identically: BUSY_NOWAIT
+# stores what BUSY does. No variant reads a rewritten coordinate: no positive control, the probe
+# does not decide whether TMA stores read their URs in issue order (they read them within 5 cycles
+# of issue here, with 24 stores queued ahead too).

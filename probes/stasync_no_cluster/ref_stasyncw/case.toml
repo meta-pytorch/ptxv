@@ -1,0 +1,57 @@
+name = "r5e_ref_stasyncw"
+description = """
+MISS 209 probe (no cluster launch): S[t] = x by st.shared; st.async bits(w) into S[t]; out = S[t] (w; equal to x where w = x). Input: w = x = 1.5 + (t + 1)/128."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "r5e_ref_stasyncw"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data_cap/x.bin"
+
+[[buffers]]
+name = "w"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "../data_cap/w.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "z"
+dtype = "u32"
+shape = [128]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "z"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["fault"]

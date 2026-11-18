@@ -1,0 +1,58 @@
+name = "probe_dpor_aba_wait"
+description = """
+DPOR repro (MISS 230): a blocking try_wait.parity that passes at init and again two phases
+later (parity ABA). The race check skipped the releaser's whole history, so DPOR never ran
+the wait before the producer's arrivals. run.sh pins every explorer's classes
+(expected/classes.txt); fixtures.rs `dpor_explores_a_blocking_wait_before_earlier_phases`
+cross-checks DPOR against the stateful search.
+"""
+ptx = "kernel.ptx"
+entry = "dpor_aba_wait"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "the consumer may pass at init: x unordered"
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "NODELAY"
+summary = "without the consumer's independent store first (the wait is blocked at the start)"
+marker = "@DL"
+find = "st.global.u32 [%rd1+4], 5;"
+replace = ""
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "TESTWAIT"
+summary = "the spin uses test_wait (a blocking wait by E-SPIN, not a peek)"
+marker = "@TW"
+find = "mbarrier.try_wait.parity"
+replace = "mbarrier.test_wait.parity"
+expect = ["race"]
+expect_sass = ["nondeterministic"]
+
+[[variants]]
+id = "HINT"
+summary = "try_wait with a suspend-time hint"
+marker = "@TW"
+find = "[%r4], 1;"
+replace = "[%r4], 1, 100000;"
+expect = ["race"]
+# SASS: the hinted wait's lowering is reported unmodeled by the stateful search (DPOR does not
+# report it); expected/classes.txt pins PTX only for this variant.
+expect_sass = ["nondeterministic", "unmodeled"]

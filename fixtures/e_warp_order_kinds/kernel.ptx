@@ -1,0 +1,45 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-WARP-ORDER strong pairs of a converged warp beyond e_warp_order_div CONV: on global memory
+// (good: lane 0 stores a global word twice with st.volatile, lane 1 loads it after each store)
+// and write-write only (WW: lane 0 and lane 1 store different values to one shared word on
+// consecutive instructions; lane 0 reads it after bar.warp.sync).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_warp_order_kinds(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 x;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, x;
+    setp.eq.u32 %p1, %r1, 0;
+    setp.eq.u32 %p2, %r1, 1;
+    mov.u32 %r10, 1;
+    mov.u32 %r11, 2;
+    mov.u32 %r12, 0;
+    mov.u32 %r13, 0;
+    mov.u32 %r14, 0;
+    st.volatile.shared.u32 [%r2], %r12;
+    bar.warp.sync -1;
+    @%p1 st.volatile.global.u32 [%rd1+8], %r10;    // @A1
+    @%p2 ld.volatile.global.u32 %r12, [%rd1+8];    // @A2
+    @%p1 st.volatile.global.u32 [%rd1+8], %r11;    // @A3
+    @%p2 ld.volatile.global.u32 %r13, [%rd1+8];    // @A4
+    bar.warp.sync -1;
+    @%p1 ld.volatile.shared.u32 %r14, [%r2];
+    @%p1 st.global.u32 [%rd1+12], %r14;
+    @!%p2 bra DONE;
+    st.global.u32 [%rd1], %r12;
+    st.global.u32 [%rd1+4], %r13;
+DONE:
+    ret;
+}

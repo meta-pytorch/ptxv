@@ -113,10 +113,22 @@ impl Machine {
         let inst = &self.k.code[pc as usize];
         let t = members[0];
         match &inst.op {
-            Op::TmemAlloc { ncols, .. } => {
+            Op::TmemAlloc { ncols, pair, .. } => {
                 let n = self.rd(t, ncols).ok()? as u32;
-                (n >= 32 && n.is_power_of_two() && n <= 512)
-                    .then(|| (vec![self.threads[t].cta], n / 32))
+                let cta = self.threads[t].cta;
+                let ctas = if *pair {
+                    // E-PAIR: only the second warp of a paired alloc allocates, in both CTAs.
+                    let p = self.pair_peer(cta).ok()?;
+                    let second = self.tmem[cta as usize].pair.is_none()
+                        && matches!(self.tmem[p as usize].pair, Some(PairAlloc::Arrived { .. }));
+                    if !second {
+                        return None;
+                    }
+                    vec![cta, p]
+                } else {
+                    vec![cta]
+                };
+                (n >= 32 && n.is_power_of_two() && n <= 512).then(|| (ctas, n / 32))
             }
             Op::TmemAllocRaw { units, pair, .. } => {
                 if !members.iter().any(|&m| self.prd(m, inst.guard)) {

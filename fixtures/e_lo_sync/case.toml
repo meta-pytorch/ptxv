@@ -1,0 +1,100 @@
+name = "e_lo_sync"
+description = """
+MISS 74 gap B (review repro; also a repro of MISS 140): two lanes of one converged warp store
+data[lane], perform one atom.acq_rel.gpu.add on one word with a dead result, then lane 1 reads
+data[0]. Under the PTX model the order of the two lanes' atomics decides who acquires whose
+release: where lane 1's atomic is first, its read races with lane 0's store. The lane orders took
+a dead-result integer add as commuting (lane order only), so the read was always ordered: good
+clean on the stateful explorer, --certify and DPOR. An atomic whose lanes' writes publish a
+clock of their own (a release atomic, or a release fence before it) now takes the lane orders
+whatever its result: good races. LIVE: the result is used (orders explored before too); LANE0:
+lane 0 reads lane 1's data (the race in lane order, control); FENCED: a relaxed atom.add between
+fence.sc fences (MISS 140's converged-lane repro shape: clean before, races now); FENCED_NOREAD,
+RELAXED_NOREAD: no read (clean; the first explores the two orders, the second commutes).
+SASS: one ATOMG keeps lane order (E-LOCKSTEP). grid 1, block 2."""
+ptx = "kernel.ptx"
+entry = "e_lo_sync"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "sem"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "sem"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "dead-result acq_rel atom.add, lane 1 reads lane 0's data: a race where lane 1's atomic is first"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "LIVE"
+summary = "the atomic's result is used (added to the output): every lane order explored"
+expect = ["nondeterministic", "race"]
+expect_sass = ["clean"]
+marker = "@USE"
+find = "mov.u32 %r6, 0;"
+replace = "mov.u32 %r6, %r3;"
+
+[[variants]]
+id = "LANE0"
+summary = "lane 0 reads lane 1's data: a race in lane order (control); SASS orders the lanes instruction by instruction (E-LOCKSTEP)"
+expect = ["race"]
+expect_sass = ["clean"]
+marker = "@WHO"
+find = "setp.ne.u32 %p1, %r1, 1;"
+replace = "setp.ne.u32 %p1, %r1, 0;"
+
+[[variants]]
+id = "FENCED"
+summary = "a relaxed dead-result atom.add between fence.sc.gpu fences (MISS 140's converged-lane repro shape): a race where lane 1's atomic is first"
+expect = ["race"]
+expect_sass = ["clean"]
+marker = "@ATOM"
+find = "atom.acq_rel.gpu.global.add.u32 %r3, [%rd2], 1;"
+replace = "fence.sc.gpu; atom.global.add.u32 %r3, [%rd2], 1; fence.sc.gpu;"
+
+[[variants]]
+id = "FENCED_NOREAD"
+summary = "FENCED without the read: clean, the two lane orders explored (the extra exploration's cost)"
+expect = ["clean"]
+marker = "@ATOM"
+find = "atom.acq_rel.gpu.global.add.u32 %r3, [%rd2], 1;"
+replace = "fence.sc.gpu; atom.global.add.u32 %r3, [%rd2], 1; fence.sc.gpu;"
+edits = [{ marker = "@WHO", find = "setp.ne.u32 %p1, %r1, 1;", replace = "setp.ne.u32 %p1, %r1, 99;" }]
+
+[[variants]]
+id = "RELAXED_NOREAD"
+summary = "a relaxed dead-result atom.add, no fence, no read: nothing to synchronize, the lanes commute (lane order only)"
+expect = ["clean"]
+marker = "@ATOM"
+find = "atom.acq_rel.gpu.global.add.u32 %r3, [%rd2], 1;"
+replace = "atom.global.add.u32 %r3, [%rd2], 1;"
+edits = [{ marker = "@WHO", find = "setp.ne.u32 %p1, %r1, 1;", replace = "setp.ne.u32 %p1, %r1, 99;" }]

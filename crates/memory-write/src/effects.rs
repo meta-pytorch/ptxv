@@ -40,6 +40,8 @@ pub enum ResourceSpace {
     TensorCoreACollector,
     MbarOverArrival,
     NicQueue,
+    /// Remote-operation pipes (`SPACE_REMOTE_PIPE`, MISS 222 / 232).
+    RemotePipe,
     CtaAll,
 }
 
@@ -70,6 +72,7 @@ pub fn resource_tag(space: ResourceSpace) -> u8 {
         ResourceSpace::TensorCoreACollector => 24,
         ResourceSpace::MbarOverArrival => 25,
         ResourceSpace::NicQueue => 26,
+        ResourceSpace::RemotePipe => 27,
         ResourceSpace::CtaAll => 98,
     }
 }
@@ -503,6 +506,7 @@ mod tests {
             (ResourceSpace::TensorCoreACollector, 24),
             (ResourceSpace::MbarOverArrival, 25),
             (ResourceSpace::NicQueue, 26),
+            (ResourceSpace::RemotePipe, 27),
             (ResourceSpace::CtaAll, 98),
         ];
         for &(left, expected) in &spaces {

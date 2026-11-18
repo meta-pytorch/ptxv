@@ -1,0 +1,66 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-MBAR-SCOPE, what a bulk copy's complete-tx releases: PTX ISA 9.5 8.9.1.1, "The implicit
+// mbarrier complete-tx operation that is part of all variants of cp.async.bulk and
+// cp.reduce.async.bulk instructions is ordered only with respect to the memory operations
+// performed by the same asynchronous instruction, and in particular it does not transitively
+// establish ordering with respect to prior instructions from the issuing thread."
+// Thread 0 stores 0x42 to a word, arrives on mb with expect_tx(16), and copies in[0..3] into a
+// shared slot with a 1D bulk copy whose complete-tx goes to mb; thread 32 waits on mb (try_wait,
+// acquire.cta), then reads the word into out[0] and slot word 1 into out[1].
+//   good:    the arrive is .release (default) and the store precedes it: clean.
+//   RELAXED: the arrive is .relaxed: only the complete-tx could release the store.
+//   AFTER:   the release arrive first, then the store, then the bulk copy.
+//   GLOBAL:  RELAXED with the word in global memory (st.global / ld.global).
+//   NOWAIT:  good without the wait loop (one try_wait): the positive control.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_bulk_ctx_release(.param .u64 out_p, .param .u64 in_p, .param .u64 g_p)
+{
+    .shared .align 16 .b8 slot[16];
+    .shared .align 8 .b64 mb;
+    .shared .align 4 .b32 xw;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [in_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd4, [g_p];
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, slot;
+    mov.u32 %r5, mb;
+    mov.u32 %r8, xw;
+    setp.ne.u32 %p1, %r1, 32;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra INIT_DONE;
+    mbarrier.init.shared::cta.b64 [%r5], 1;
+    fence.mbarrier_init.release.cluster;
+INIT_DONE:
+    bar.sync 0;
+    @%p2 bra WAITER;
+    mov.u32 %r3, 0x42;
+    st.shared.u32 [%r8], %r3;     // @ST1
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r5], 16;     // @ARR
+    // @ST2
+    cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%r2], [%rd2], 16, [%r5];
+    bra DONE;
+WAITER:
+    @%p1 bra DONE;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r5], 0;
+    @!%p3 bra WAIT;     // @LOOP
+    ld.shared.u32 %r6, [%r8];     // @LD1
+    st.global.u32 [%rd1], %r6;
+    ld.shared.u32 %r7, [%r2+4];
+    st.global.u32 [%rd1+4], %r7;
+DONE:
+    ret;
+}

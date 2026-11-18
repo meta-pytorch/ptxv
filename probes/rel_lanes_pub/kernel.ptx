@@ -1,0 +1,50 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 223 repro (PTX lane orders of one store instruction, equal-valued publishing stores):
+// every lane of warp 0 stores its data word, then all 32 lanes run one st.release.gpu of the
+// same value 1 to flag. Thread 32 polls flag with ld.acquire.gpu and then reads one lane's data
+// word. Under the PTX model the 32 release stores are 32 writes in some coherence order; the
+// poll may read from any one of them and synchronizes with that lane only, so the read of
+// another lane's data word races. The lane orders skip equal stored values (lane order only),
+// so the location's synchronization source is always lane 31's store: reading data[31] looks
+// ordered.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry rel_lanes(.param .u64 data_p, .param .u64 flag_p, .param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<12>;
+    .reg .pred %p<6>;
+    ld.param.u64 %rd1, [data_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [flag_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [out_p];
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r1, %tid.x;
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra OBS;
+    add.u32 %r2, %r1, 100;
+    mul.wide.u32 %rd4, %r1, 4;
+    add.s64 %rd5, %rd1, %rd4;
+    st.global.u32 [%rd5], %r2;                     // @DATA
+    mov.u32 %r3, 1;
+    st.release.gpu.global.u32 [%rd2], %r3;          // @REL
+    bra DONE;
+OBS:
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+WAIT:
+    ld.acquire.gpu.global.u32 %r4, [%rd2];
+    setp.eq.u32 %p3, %r4, 0;
+    @%p3 bra WAIT;
+    ld.global.u32 %r5, [%rd1+124];                  // @WHO
+    st.global.u32 [%rd3], %r5;
+DONE:
+    ret;
+}

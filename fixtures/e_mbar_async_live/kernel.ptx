@@ -1,0 +1,65 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Writes over a live mbarrier by something other than a plain store (MISS 256). Thread 0
+// initializes mbarriers `a` (count 1) and `b` (count 1), bar.sync; thread 32 writes over `a`'s
+// bytes (@WRITE), ordered after the init and before the later uses, with no mbarrier.inval;
+// bar.sync; thread 0 arrives on `a`, waits on its phase 0 and writes out. PTX requires an inval
+// before an mbarrier object's memory is reused (from the ISA text as remembered, not checked
+// offline), so every variant that writes `a`'s bytes is the contract violation MISS 218
+// reports for a plain store over a live mbarrier.
+//   PLAIN  (control): st.shared.u64 of zero over `a` (reported since MISS 218).
+//   ATOM:  atom.shared.add.u32 on `a`'s low word (returns the old value).
+//   RED:   red.shared.add.u32 on `a`'s low word.
+//   CPASYNC: cp.async.ca.shared.global of 8 bytes into `a`, committed and waited for.
+//   BULK:  cp.async.bulk (TMA bulk copy) of 16 bytes into `a`, completing on `b`, waited for.
+//   NEAR   (control): the atom.shared.add.u32 on `c`, next to `a`: clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_async_live(.param .u64 out_p, .param .u64 src_p)
+.maxntid 64, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 16 .b8 a[16];
+    .shared .align 8 .b8 b[8];
+    .shared .align 8 .b8 c[8];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [src_p];
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, a;
+    mov.u32 %r3, b;
+    mov.u32 %r4, c;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra AFTER_INIT;
+    mov.u32 %r20, 0;
+    st.shared.u32 [a+8], %r20;
+    st.shared.u32 [a+12], %r20;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+    fence.proxy.async.shared::cta;
+AFTER_INIT:
+    bar.sync 0;
+    setp.ne.u32 %p3, %r1, 32;
+    @%p3 bra AFTER_WRITE;
+    mov.b64 %rd5, 0;
+    st.shared.u64 [%r2], %rd5;                         // @WRITE
+AFTER_WRITE:
+    bar.sync 0;
+    @%p2 bra DONE;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+W:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r2], 0;
+    @!%p4 bra W;
+    mov.u32 %r9, 1;
+    st.global.u32 [%rd1], %r9;
+DONE:
+    ret;
+}

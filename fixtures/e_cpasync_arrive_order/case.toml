@@ -1,0 +1,48 @@
+name = "e_cpasync_arrive_order"
+description = """
+E-CPASYNC-MBAR: a cp.async.mbarrier.arrive's arrive-on is ordered after the memory operations of
+the thread's prior cp.async operations (PTX ISA 8.9.1.1), not after an earlier
+cp.async.mbarrier.arrive's arrive-on. Thread 96 arrives on x, then on y; a thread that observed
+y arrives on x, and another waits on x's phase 1 after y. The later arrive-on releases the
+earlier copies (fixtures/e_cpasync_arrive_prior), but a release that also covered the earlier
+arrive-on let the certificate place the arrive in phase 1 in every schedule (NOWAIT). See
+kernel.ptx."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_arrive_order"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u8"
+shape = [32]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[variants]]
+id = "good"
+summary = "thread 96 waits on x's phase 0 before its second copy: the second arrive-on is ordered after the first"
+expect = ["clean"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "thread 96 waits on thread 0's arrive instead: the second arrive-on is ordered after the first copy, not after the first arrive-on"
+marker = "@PW"
+find = "mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r5], 0;"
+replace = "mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r7], 0;"
+expect = ["race", "violation"]
+expect_sass = ["nondeterministic", "violation"]

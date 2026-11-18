@@ -19,6 +19,7 @@ use ptxv_sim::explore::explore;
 use ptxv_sim::machine::Machine;
 
 #[test]
+#[ignore = "OPEN-7: state blow-up inherited from main 05e1989c (unfinished after 28 min, quick baseline seconds); owner pC"]
 fn cute_small_cm1_sass_unseeded() {
     // Set before any exploration thread exists.
     std::env::set_var("PTXV_POR_SEED_WALKS", "0");

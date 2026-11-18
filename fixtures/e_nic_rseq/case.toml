@@ -1,0 +1,318 @@
+name = "e_nic_rseq"
+description = """
+S-NIC-ATOMIC / S-SCOPE (MISS 166, the NIC sibling of MISS 100 and MISS 112): two GPUs in one NVLink
+domain. Rank 1's pre-writer stores d2, then W on the signal word, then go; rank 0 polls go, posts
+an RDMA write and an atomic fetch-add of 1 on the signal word (mlx5 WQEs as DOCA GPUNetIO builds
+them), rings the doorbell and polls the completion; rank 1's receiver polls the signal with
+ld.acquire.sys until 6 and reads dst and d2. The NIC atomic continues W's release sequence only
+when the two are morally strong, and W's pattern keeps its first operation's thread and scope (PTX
+ISA 9.5 sections 8.9.2, 8.9.4; docs/nic.md). NICHEAD: a NIC atomic heads the sequence and a second
+NIC atomic, posted on rank 1's loopback QP 0x43, continues it. SYSREL_PART (MISS 194): W writes
+4 bytes of the 8-byte signal word, not one location with the NIC atomic, which does not continue
+it."""
+ptx = "kernel.ptx"
+entry = "ibgda"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+domains = [0, 0]
+
+[[nic_qps]]
+name = "qp0"
+device = 0
+peer = 1
+qpn = 0x42
+sq = "sq"
+sq_wqes = 2
+cq = "cq"
+cq_cqes = 2
+db = "uar"
+
+[[nic_qps]]
+name = "qp1"
+device = 1
+peer = 1
+qpn = 0x43
+sq = "sq1"
+sq_wqes = 2
+cq = "cq1"
+cq_cqes = 2
+db = "uar1"
+
+[[nic_mrs]]
+key = 0x100
+buffer = "src"
+
+[[nic_mrs]]
+key = 0x101
+buffer = "sink"
+
+[[nic_mrs]]
+key = 0x200
+buffer = "dst"
+
+[[nic_mrs]]
+key = 0x201
+buffer = "sig"
+
+[[nic_mrs]]
+key = 0x102
+buffer = "sink1"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+device = 0
+
+# CQEs start owned by the hardware: opcode invalid (0xf), owner bit 1.
+[[buffers]]
+name = "cq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+values = [[63, 241], [127, 241]]
+device = 0
+
+# The doorbell register (UAR page).
+[[buffers]]
+name = "uar"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dbr"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sink"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dst"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "sig"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "go"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "d2"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "sq1"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "cq1"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+values = [[63, 241], [127, 241]]
+device = 1
+
+[[buffers]]
+name = "uar1"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 1
+
+[[buffers]]
+name = "sink1"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 1
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "sq"
+
+[[params]]
+kind = "ptr"
+buffer = "cq"
+
+[[params]]
+kind = "ptr"
+buffer = "uar"
+
+[[params]]
+kind = "ptr"
+buffer = "dbr"
+
+[[params]]
+kind = "ptr"
+buffer = "sink"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "sig"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "go"
+
+[[params]]
+kind = "ptr"
+buffer = "d2"
+
+[[params]]
+kind = "ptr"
+buffer = "sq1"
+
+[[params]]
+kind = "ptr"
+buffer = "uar1"
+
+[[params]]
+kind = "ptr"
+buffer = "sink1"
+
+[[launches]]
+entry = "ibgda"
+grid = [2, 1, 1]
+block = [32, 1, 1]
+device = 1
+params = [
+    { kind = "u32", value = 1 },
+    { kind = "ptr", buffer = "src" },
+    { kind = "ptr", buffer = "sq" },
+    { kind = "ptr", buffer = "cq" },
+    { kind = "ptr", buffer = "uar" },
+    { kind = "ptr", buffer = "dbr" },
+    { kind = "ptr", buffer = "sink" },
+    { kind = "ptr", buffer = "dst" },
+    { kind = "ptr", buffer = "sig" },
+    { kind = "ptr", buffer = "out" },
+    { kind = "ptr", buffer = "go" },
+    { kind = "ptr", buffer = "d2" },
+    { kind = "ptr", buffer = "sq1" },
+    { kind = "ptr", buffer = "uar1" },
+    { kind = "ptr", buffer = "sink1" },
+]
+
+[[variants]]
+id = "good"
+summary = "W = st.release.gpu by rank 1 CTA 0: W and the NIC atomic are not morally strong (8.9.2), so the atomic does not continue W's sequence: d2 races (and W races with the atomic on the signal word); W is not ordered before the atomic (S-NIC-ATOMIC): unmodeled"
+expect = ["race", "unmodeled"]
+
+[[variants]]
+id = "FREL"
+summary = "W = fence.acq_rel.cta; st.relaxed.sys: the NIC atomic continues the pattern, but its first operation (the .cta fence) and the receiver in CTA 1 are not morally strong (8.9.4): d2 races; unmodeled (S-NIC-ATOMIC). Until 2026-11-12 the atomic took the pattern at system scope: unmodeled only"
+marker = "@HEADW"
+find = "st.release.gpu.global.u64 [%rd2], %rd63;"
+replace = "fence.acq_rel.cta; st.relaxed.sys.global.u64 [%rd2], %rd63;"
+expect = ["race", "unmodeled"]
+
+[[variants]]
+id = "SYSREL"
+summary = "W = st.release.sys: the NIC atomic continues W's pattern, and the receiver synchronizes with it (no race on d2); unmodeled (S-NIC-ATOMIC)"
+marker = "@HEADW"
+find = "st.release.gpu.global.u64"
+replace = "st.release.sys.global.u64"
+expect = ["unmodeled"]
+
+[[variants]]
+id = "SYSREL_PART"
+summary = "SYSREL with W a 4-byte st.release.sys.u32 of the low half of the 8-byte sig: W and the NIC atomic are not one location (PTX ISA 9.5 8.2.1, 8.7), so the atomic does not continue W's sequence (8.9.2): d2 races, and W and the atomic are a mixed-size data race (8.7.2); W and the receiver's 8-byte poll are a mixed-size race between threads either way; unmodeled (S-NIC-ATOMIC) (MISS 194; until 2026-11-12 the atomic continued W's sequence and d2 did not race). SASS: overlap not decided: unmodeled"
+marker = "@HEADW"
+find = "st.release.gpu.global.u64 [%rd2], %rd63;"
+replace = "cvt.u32.u64 %r19, %rd63; st.release.sys.global.u32 [%rd2], %r19;"
+expect = ["race", "unmodeled"]
+expect_sass = ["unmodeled"]
+
+[[variants]]
+id = "FREL_SYS"
+summary = "W = fence.acq_rel.sys; st.relaxed.sys: the receiver synchronizes with the pattern through the NIC atomic (no race on d2); unmodeled (S-NIC-ATOMIC)"
+marker = "@HEADW"
+find = "st.release.gpu.global.u64 [%rd2], %rd63;"
+replace = "fence.acq_rel.sys; st.relaxed.sys.global.u64 [%rd2], %rd63;"
+expect = ["unmodeled"]
+
+[[variants]]
+id = "GOREL"
+summary = "good with go = st.release.sys, acquired by rank 0 before it posts: W and d2 happen before the NIC atomic and reach the receiver through rank 0's doorbell: clean"
+marker = "@GOW"
+find = "st.relaxed.sys.global.u32"
+replace = "st.release.sys.global.u32"
+edits = [{ marker = "@GOPOLL", find = "ld.relaxed.sys.global.u32", replace = "ld.acquire.sys.global.u32" }]
+expect = ["clean"]
+
+[[variants]]
+id = "FREL_GOREL"
+summary = "FREL with the go hand-off of GOREL: d2 reaches the receiver through rank 0's doorbell, not through the continued .cta pattern: clean"
+marker = "@HEADW"
+find = "st.release.gpu.global.u64 [%rd2], %rd63;"
+replace = "fence.acq_rel.cta; st.relaxed.sys.global.u64 [%rd2], %rd63;"
+edits = [{ marker = "@GOW", find = "st.relaxed.sys.global.u32", replace = "st.release.sys.global.u32" }, { marker = "@GOPOLL", find = "ld.relaxed.sys.global.u32", replace = "ld.acquire.sys.global.u32" }]
+expect = ["clean"]
+
+[[variants]]
+id = "NICHEAD"
+summary = "a NIC write heads the sequence: rank 0's NIC atomic A1 (after its RDMA write of dst, doorbell thread on GPU 0) is continued by A2, a fetch-add that rank 1 CTA 0 posts on its loopback QP 0x43 once A1 has landed; the receiver polls sig with ld.relaxed.sys until 2 and acquires with fence.acq_rel.gpu, whose scope leaves out A1's doorbell thread: dst races on the PTX front (until 2026-11-12 A2 took A1's release into its own: clean). SASS: the fence's CCTL.IVALL takes every pending release: clean"
+marker = "@HEADW"
+find = "st.release.gpu.global.u64 [%rd2], %rd63;"
+replace = "mov.u64 %rd63, 0;"
+edits = [{ marker = "@T2GO", find = "bra             DONE;", replace = "bra             T2;" }, { marker = "@RMODE", find = "bra        SIGPOLL;", replace = "bra        RFPOLL;" }]
+expect = ["race"]
+expect_sass = ["clean"]

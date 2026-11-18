@@ -1,0 +1,84 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Fixture for MISS 194 (S-SCOPE, complete overlap with the NIC's accesses): two loopback QPs whose
+// CQs are one buffer at one offset, so each QP's first completion lands in CQE slot 0 of the same
+// 64 bytes. CTA 0 t0 posts one signaled RDMA write of 16 bytes on each QP (src -> dst0 on QP
+// 0x42, src -> dst1 on QP 0x43), rings both doorbells and polls byte 63 of slot 0. The two CQE
+// writes come from two QPs and are unordered: the pair exercises overlap_with_nic's "two CQE
+// writes of one CQE" rule (bytes 0-55 are outside the modeled CQE fields).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry ibgda2(
+    .param .u64 src,
+    .param .u64 sq0,
+    .param .u64 sq1,
+    .param .u64 cq,
+    .param .u64 uar0,
+    .param .u64 uar1,
+    .param .u64 dst0,
+    .param .u64 dst1
+)
+.maxntid 32, 1, 1
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<24>;
+    .reg .b64   %rd<40>;
+
+    mov.u32         %r0, %tid.x;
+    setp.ne.u32     %p0, %r0, 0;
+    @%p0 bra        DONE;
+    ld.param.u64    %rd1, [src];
+    ld.param.u64    %rd2, [sq0];
+    ld.param.u64    %rd3, [sq1];
+    ld.param.u64    %rd4, [cq];
+    ld.param.u64    %rd5, [uar0];
+    ld.param.u64    %rd6, [uar1];
+    ld.param.u64    %rd7, [dst0];
+    ld.param.u64    %rd8, [dst1];
+    // big-endian copies of the three addresses
+    mov.b64         {%r1, %r2}, %rd1;
+    prmt.b32        %r3, %r1, 0, 0x0123;
+    prmt.b32        %r4, %r2, 0, 0x0123;
+    mov.b64         %rd11, {%r4, %r3};                              // BE(src)
+    mov.b64         {%r1, %r2}, %rd7;
+    prmt.b32        %r3, %r1, 0, 0x0123;
+    prmt.b32        %r4, %r2, 0, 0x0123;
+    mov.b64         %rd12, {%r4, %r3};                              // BE(dst0)
+    mov.b64         {%r1, %r2}, %rd8;
+    prmt.b32        %r3, %r1, 0, 0x0123;
+    prmt.b32        %r4, %r2, 0, 0x0123;
+    mov.b64         %rd13, {%r4, %r3};                              // BE(dst1)
+    // QP 0x42, WQE 0: RDMA write (opcode 8), ds 3, CQ update; raddr dst0 (rkey 0x200);
+    // 16 bytes from src (lkey 0x100)
+    mov.u64         %rd20, 0x0342000008000000;
+    mov.u64         %rd21, 0x0000000008000000;
+    st.global.v2.b64 [%rd2], {%rd20, %rd21};
+    mov.u64         %rd22, 0x0000000000020000;
+    st.global.v2.b64 [%rd2+16], {%rd12, %rd22};
+    mov.u64         %rd23, 0x0001000010000000;
+    st.global.v2.b64 [%rd2+32], {%rd23, %rd11};
+    // QP 0x43, WQE 0: the same into dst1 (rkey 0x201)
+    mov.u64         %rd24, 0x0343000008000000;
+    st.global.v2.b64 [%rd3], {%rd24, %rd21};
+    mov.u64         %rd25, 0x0000000001020000;
+    st.global.v2.b64 [%rd3+16], {%rd13, %rd25};
+    st.global.v2.b64 [%rd3+32], {%rd23, %rd11};
+    fence.release.gpu;
+    mov.u64         %rd26, 0x0042000000010000;
+    st.mmio.relaxed.sys.global.b64 [%rd5], %rd26;
+    mov.u64         %rd27, 0x0043000000010000;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd27;
+CQPOLL:
+    ld.relaxed.sys.global.u8 %r5, [%rd4+63];
+    and.b32         %r6, %r5, 1;
+    setp.ne.u32     %p1, %r6, 0;
+    @%p1 bra        CQPOLL;
+    fence.acquire.sys;
+DONE:
+    ret;
+}

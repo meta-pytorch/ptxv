@@ -1,0 +1,172 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-SCOPE / S-NIC-ATOMIC (MISS 193): the NIC is in no CTA or cluster. One GPU, a loopback QP.
+// CTA 0 t0 (T) posts an RDMA write of src into dst and a fetch-add of 1 on sig (mlx5 WQEs as
+// DOCA GPUNetIO builds them), after a bar.sync with t32 (R), rings the doorbell and polls the
+// CQ. R read dst once before the barrier (on GB300 the line can stay in its SM's L1),
+// then polls sig with ld.acquire.cta until 1 and reads dst again.
+//
+//   CTA: R is in the doorbell thread's CTA; the NIC is not, so R's .cta acquire and the
+//   fetch-add are not morally strong (PTX ISA 9.5 section 8.7): R's poll races with it (until
+//   2026-11-12 the NIC took the doorbell thread's CTA: clean on the PTX front). The SASS front:
+//   ld.acquire.cta is LDG.E.64.STRONG.SM with no CCTL.IVALL: race (before: a race on dst; the
+//   GB300 profile: a stale L1 read). CLUSTER: ld.acquire.cluster, the same on the PTX front
+//   (the SASS load is .STRONG.GPU, then CCTL.IVALL: clean). GPU, SYS: the NIC's GPU is the
+//   doorbell thread's: clean. OTHERCTA: R in CTA 1 (no early read): race.
+//
+//   MISS 194, complete overlap with the NIC's accesses (PTX front; the SASS front does not
+//   decide overlap): PART / PART_OTHERCTA poll the low 4 bytes of the 8-byte sig, a mixed-size
+//   data race with the fetch-add. WORDPART: a thread of CTA 1 polls 4 bytes of an 8-byte word
+//   the RDMA write lands (S-NIC-WORD): a mixed-size data race; WORDFULL, the whole word: clean.
+//   CQEPART: it reads bytes 60-63 of a CQE, spanning three of the model's CQE fields: unmodeled.
+//   PART_SRC: PART, then R reads src, which T wrote before the doorbell: the partial poll does
+//   not observe the fetch-add (8.9.2), so the read races with T's store. WORD4: the RDMA write
+//   lands 12 bytes at dst+4 (a 4-byte chunk, then an 8-byte one) and a thread polls the 4-byte
+//   chunk at its width: clean. FLAGHALF (DeepEP's notify shape): the RDMA write is a lone
+//   8-byte flag write and a thread polls its lower 4 bytes with ld.acquire.sys.u32, then reads
+//   src: the poll races and acquires nothing, so the src read races; FLAGFULL, an 8-byte poll:
+//   clean. CQECTA: CQEPART at .cta scope: a race, not unmodeled.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry ibgda(
+    .param .u64 src,
+    .param .u64 sq,
+    .param .u64 cq,
+    .param .u64 uar,
+    .param .u64 dbr,
+    .param .u64 sink,
+    .param .u64 dst,
+    .param .u64 sig,
+    .param .u64 out
+)
+.maxntid 64, 1, 1
+{
+    .reg .pred  %p<12>;
+    .reg .b32   %r<40>;
+    .reg .b64   %rd<64>;
+
+    mov.u32         %r0, %tid.x;
+    mov.u32         %r21, %ctaid.x;
+    ld.param.u64    %rd1, [dst];
+    ld.param.u64    %rd2, [sig];
+    ld.param.u64    %rd42, [out];
+    setp.eq.u32     %p7, %r0, 32;
+    setp.eq.u32     %p8, %r21, 0;                                   // @ECTA
+    and.pred        %p9, %p7, %p8;
+    @!%p9 bra       BAR;
+    ld.global.u32   %r30, [%rd1];                                   // @EARLY
+    st.global.u32   [%rd42+16], %r30;
+BAR:
+    bar.sync        0;
+    setp.eq.u32     %p0, %r0, 0;
+    setp.eq.u32     %p1, %r21, 0;
+    and.pred        %p2, %p0, %p1;
+    @%p2 bra        SENDER;
+    setp.eq.u32     %p3, %r0, 32;
+    setp.eq.u32     %p4, %r21, 0;                                   // @RCTA
+    and.pred        %p5, %p3, %p4;
+    @%p5 bra        RECV;
+    bra             DONE;
+
+SENDER:
+    ld.param.u64    %rd3, [src];
+    ld.param.u64    %rd4, [sq];
+    ld.param.u64    %rd5, [cq];
+    ld.param.u64    %rd6, [uar];
+    ld.param.u64    %rd7, [dbr];
+    ld.param.u64    %rd8, [sink];
+    mov.u32         %r2, 256;
+    st.global.u32   [%rd3], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+4], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+8], %r2;
+    add.u32         %r2, %r2, 1;
+    st.global.u32   [%rd3+12], %r2;
+    mov.u64         %rd40, %rd1;                                    // @RADDR
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd10, %rd50, %rd51;         // BE(dst)
+    mov.u64         %rd40, %rd3;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd11, %rd50, %rd51;         // BE(src)
+    mov.u64         %rd40, %rd2;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd12, %rd50, %rd51;         // BE(sig)
+    mov.u64         %rd40, %rd8;
+    shl.b64 %rd50, %rd40, 56;
+    and.b64 %rd51, %rd40, 0xff00;      shl.b64 %rd51, %rd51, 40;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff0000;    shl.b64 %rd51, %rd51, 24;   or.b64 %rd50, %rd50, %rd51;
+    and.b64 %rd51, %rd40, 0xff000000;  shl.b64 %rd51, %rd51, 8;    or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 8;   and.b64 %rd51, %rd51, 0xff000000;   or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 24;  and.b64 %rd51, %rd51, 0xff0000;     or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 40;  and.b64 %rd51, %rd51, 0xff00;       or.b64 %rd50, %rd50, %rd51;
+    shr.b64 %rd51, %rd40, 56;  or.b64 %rd13, %rd50, %rd51;         // BE(sink)
+
+    add.u64         %rd20, %rd4, 0;
+    add.u64         %rd21, %rd4, 64;
+    mov.u64         %rd30, 0x0342000008000000;
+    mov.u64         %rd31, 0x0000000008000000;
+    st.global.v2.b64 [%rd20], {%rd30, %rd31};
+    mov.u64         %rd32, 0x0000000000020000;
+    st.global.v2.b64 [%rd20+16], {%rd10, %rd32};
+    mov.u64         %rd33, 0x0001000010000000;                      // @WBC
+    st.global.v2.b64 [%rd20+32], {%rd33, %rd11};
+    mov.u64         %rd34, 0x0442000012010000;
+    st.global.v2.b64 [%rd21], {%rd34, %rd31};
+    mov.u64         %rd35, 0x0000000001020000;
+    st.global.v2.b64 [%rd21+16], {%rd12, %rd35};
+    mov.u64         %rd36, 0x0100000000000000;
+    mov.u64         %rd37, 0;
+    st.global.v2.b64 [%rd21+32], {%rd36, %rd37};
+    mov.u64         %rd38, 0x0101000008000000;
+    st.global.v2.b64 [%rd21+48], {%rd38, %rd13};
+    fence.release.gpu;
+    mov.u64         %rd39, 0x0042000000020000;
+    st.mmio.relaxed.sys.global.b64 [%rd6], %rd39;
+CQPOLL:
+    ld.relaxed.sys.global.u8 %r4, [%rd5+127];
+    and.b32         %r5, %r4, 1;
+    setp.ne.u32     %p6, %r5, 0;
+    @%p6 bra        CQPOLL;
+    fence.acquire.sys;
+    bra             DONE;
+
+RECV:
+SIGPOLL:
+    ld.acquire.cta.global.u64 %rd41, [%rd2];                        // @SIGPOLL
+    setp.ne.u64     %p10, %rd41, 1;
+    @%p10 bra       SIGPOLL;
+    ld.global.u32   %r10, [%rd1];
+    ld.global.u32   %r11, [%rd1+4];
+    ld.global.u32   %r12, [%rd1+8];
+    ld.global.u32   %r13, [%rd1+12];
+    st.global.u32   [%rd42], %r10;
+    st.global.u32   [%rd42+4], %r11;
+    st.global.u32   [%rd42+8], %r12;
+    st.global.u32   [%rd42+12], %r13;
+DONE:
+    ret;
+}

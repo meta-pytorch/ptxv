@@ -1,0 +1,63 @@
+name = "probe_sb_mio_gap_sat"
+description = """
+Probe for the long-gap memory-queue windows (MISS 170, R10 to R12): an earlier memory op A (STS,
+STS.64, STS.128, STS.U8, STS.U16, STG.E, STSM.16.M88.4) whose read scoreboard is never waited on,
+a delay chain of G stall cycles (dependent LOP3, stall 15 each; G = 4 .. 2048), then the later op
+under test (patch.py). Not a
+plain `ptxv probe`: run.sh builds the windows and runs each with `ptxv hw-worker`. Thread t's
+output {region 0, 1, 2, x, W[0..3]}: an STS that read its address after it was rewritten misses
+its slot (LDC: bogus = 0x3000, smem 0x2c00); one that read a data register after it was
+rewritten stores another value (slot 0, the W slot, or aux[gid], folded into x).
+Saturated memory pipe: the same grid (64 warps per SM) with nsat rounds of eight 32-way
+bank-conflicted STS.128 before the window (run.sh substitutes NSAT, default 8), so A waits
+behind them."""
+ptx = "../kernel.ptx"
+entry = "sb_mio_gap"
+grid = [1184, 1, 1]
+block = [256, 1, 1]
+dynamic_smem = 18432
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2424832]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4096]
+init = "zeros"
+
+[[buffers]]
+name = "aux"
+dtype = "u32"
+shape = [303104]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "u32"
+value = 12288
+
+[[params]]
+kind = "u32"
+value = NSAT
+
+[[params]]
+kind = "ptr"
+buffer = "aux"
+
+
+[[variants]]
+id = "good"
+summary = "the unpatched skeleton"
+expect = ["clean"]

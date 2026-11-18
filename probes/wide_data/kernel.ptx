@@ -1,0 +1,38 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (MISS 181, the review repro): wide data operands read late (STG.E.ENL2.256, REDG.E.ADD.F32x4).
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry wide(.param .u64 in_p, .param .u64 out_p, .param .u64 acc_p)
+{
+    .reg .b32 %r<20>;
+    .reg .f32 %f<20>;
+    .reg .b64 %rd<12>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    ld.param.u64 %rd9, [acc_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd9, %rd9;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 32;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.v8.f32 {%f0,%f1,%f2,%f3,%f4,%f5,%f6,%f7}, [%rd4];
+    st.global.v8.f32 [%rd5], {%f0,%f1,%f2,%f3,%f4,%f5,%f6,%f7};
+    mul.wide.u32 %rd6, %r1, 16;
+    add.s64 %rd7, %rd9, %rd6;
+    red.global.add.v4.f32 [%rd7], {%f0,%f1,%f2,%f3};
+    mad.lo.u32 %r10, %r1, 3, 7;
+    mad.lo.u32 %r11, %r1, 5, 9;
+    mad.lo.u32 %r12, %r1, 7, 11;
+    mad.lo.u32 %r13, %r1, 9, 13;
+    mul.wide.u32 %rd10, %r1, 16;
+    add.s64 %rd11, %rd2, %rd10;
+    st.global.v4.u32 [%rd11+8192], {%r10,%r11,%r12,%r13};
+    ret;
+}

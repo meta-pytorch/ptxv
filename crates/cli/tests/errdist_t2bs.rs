@@ -61,8 +61,15 @@ fn p(e: &serde_json::Value) -> f64 {
     e["p_differ"][0].as_f64().unwrap()
 }
 
+/// tier2bs is 0.966x of Tier 3 here (§5.3.1: against a 20,000-input Tier 3), and its
+/// cross-check takes 5% of p3 less Tier 3's half-width (MISS 91). Since MISS 139 Tier 3's
+/// interval takes the input-level bound at any count: the default growth stops at 7033 inputs
+/// (the 30 s budget) with a half-width of 1.9% of P, and the tolerance, 3.1%, is below
+/// tier2bs's 3.5%, so the headline falls back to Tier 3 there (until MISS 139, 300 inputs and a
+/// half-width of 1.5% over outputs left 3.5%: 1.50e-3 within 1.58e-3). At 20,000 inputs the
+/// half-width is 0.7% and tier2bs stands.
 #[test]
-#[ignore = "heavy: 40 s"]
+#[ignore = "heavy: 70 s"]
 fn mxf8_normal_is_applicable() {
     if vendor_missing(&["r3_cute_mxf8"]) {
         return;
@@ -73,6 +80,8 @@ fn mxf8_normal_is_applicable() {
             "fixtures/r3_cute_mxf8",
             "--inputs",
             "fixtures/errdist/mxf8_gauss.json",
+            "--mc",
+            "20000",
         ],
     );
     let e = bs(&j).expect("tier2bs estimate");

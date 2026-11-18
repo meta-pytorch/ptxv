@@ -1,0 +1,29 @@
+# run.sh, 2026-11-12.
+# agentSC2 ebfacb16:
+C0     ptx  expected [contract,nondeterministic,race,violation] stateful [contract,race]    no-local-por [contract,race]    dpor [contract,race]    certify [contract]         MISMATCH
+C0     sass expected [nondeterministic,race,violation] stateful [clean]            no-local-por [race]             dpor [race]             certify [clean]            MISMATCH
+C1     ptx  expected [contract]         stateful [contract,nondeterministic,race,violation] no-local-por [contract,nondeterministic,race,violation] dpor [contract,nondeterministic,race,violation] certify [contract,nondeterministic,race,violation] MISMATCH
+C1     sass expected [clean]            stateful [nondeterministic,race,violation] no-local-por [nondeterministic,race,violation] dpor [nondeterministic,race,violation] certify [nondeterministic,race,violation] MISMATCH
+rc=1
+
+# agentSC2 53ef07ac:
+C0     ptx  expected [contract,nondeterministic,race,violation] stateful [contract]         no-local-por [contract]         dpor [contract]         certify [contract]         MISMATCH
+C0     sass expected [nondeterministic,race,violation] stateful [clean]            no-local-por [clean]            dpor [clean]            certify [clean]            MISMATCH
+C1     ptx  expected [contract]         stateful [contract,nondeterministic,race,violation] no-local-por [contract,nondeterministic,race,violation] dpor [contract,nondeterministic,race,violation] certify [contract,nondeterministic,race,violation] MISMATCH
+C1     sass expected [clean]            stateful [nondeterministic,race,violation] no-local-por [nondeterministic,race,violation] dpor [nondeterministic,race,violation] certify [nondeterministic,race,violation] MISMATCH
+rc=1
+
+# agentSC2 62e6a560:
+C0     ptx  expected [contract,nondeterministic,race,violation] stateful [contract,race]    no-local-por [contract,race]    dpor [contract,race]    certify [contract,race]    MISMATCH
+C0     sass expected [nondeterministic,race,violation] stateful [race]             no-local-por [race]             dpor [race]             certify [race]             MISMATCH
+C1     ptx  expected [contract]         stateful [contract]         no-local-por [contract]         dpor [contract]         certify [contract]         ok
+C1     sass expected [clean]            stateful [clean]            no-local-por [clean]            dpor [clean]            certify [clean]            ok
+rc=1
+
+# With a lane's drain landing only its own part of a coalesced operation (the commit after this one's):
+C0     ptx  expected [contract,nondeterministic,race,violation] stateful [contract,nondeterministic,race,violation] no-local-por [contract,nondeterministic,race,violation] dpor [contract,nondeterministic,race,violation] certify [contract,nondeterministic,race,violation] ok
+C0     sass expected [nondeterministic,race,violation] stateful [nondeterministic,race,violation] no-local-por [nondeterministic,race,violation] dpor [nondeterministic,race,violation] certify [nondeterministic,race,violation] ok
+C1     ptx  expected [contract]         stateful [contract]         no-local-por [contract]         dpor [contract]         certify [contract]         ok
+C1     sass expected [clean]            stateful [clean]            no-local-por [clean]            dpor [clean]            certify [clean]            ok
+rc=0
+

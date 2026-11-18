@@ -8,6 +8,7 @@
 # nothing for the F2FP encodings, so kernel.cubin is checked in and the case is binary-only.
 #   1. kernel.cubin:    $PTXAS13_1 -arch=sm_103a kernel.ptx -o kernel.cubin
 #   2. expected/:       PTXV_GPUS=<idle> ptxv hw-worker probes/s2f6_cvt kernel.cubin --runs 3 \
+#                         --image-fnv <FNV-1a of kernel.cubin> \
 #                         --dump expected/out.bin
 #   3. exhaustive check (2^32 pairs vs. the model, independent of ptxv):
 set -e

@@ -291,6 +291,249 @@ fn errdist_every_input_out_of_domain_is_refused() {
     assert_eq!(t3["applicable"], false, "{t3}");
 }
 
+/// The estimates of a report, by tier.
+fn tier(r: &serde_json::Value, t: u64) -> Vec<&serde_json::Value> {
+    r["estimates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["tier"] == t)
+        .collect()
+}
+
+/// [p, lo, hi] of an estimate's P(differ).
+fn p_of(e: &serde_json::Value) -> [f64; 3] {
+    let p = &e["p_differ"];
+    [0, 1, 2].map(|i| p[i].as_f64().unwrap())
+}
+
+/// MISS 66 (N-ERRDIST-NONFINITE): an intermediate overflow at 0.5% of the elements
+/// (fixtures/errdist/nonfinite/ovf, y = RN(RN(x x) 2^-64), x ~ spec_mix.json): the kernel stores
+/// +Inf where the exact value is finite, so P(differ) is 0.005. Tier 3 and the elementwise law
+/// compare those outputs; a linearized tier, which models rounding errors only, is refused, and
+/// its validation does not agree. Until 2026-11-11 the outputs were left out: Tier 3 headlined
+/// P(differ) 0 [0, 1.45e-5] and the elementwise law a conditional P.
+#[test]
+fn errdist_nonfinite_outputs_that_differ_are_counted() {
+    let (text, r, ok) = errdist_json(
+        "ovf",
+        "fixtures/errdist/nonfinite/ovf",
+        "fixtures/errdist/nonfinite/spec_mix.json",
+        &["--mc", "3000", "--sim-trials", "50"],
+    );
+    assert!(ok, "{text}");
+    let t3 = tier(&r, 3);
+    let [p, lo, hi] = p_of(t3[0]);
+    assert!(
+        lo <= 0.005 && 0.005 <= hi && p > 0.003,
+        "{}",
+        t3[0]["p_differ"]
+    );
+    assert!(
+        text.contains("are NaN / Inf in Tier 3 and compared in P(differ)"),
+        "{text}"
+    );
+    // The elementwise law (f32 quadrature) counts the overflow's mass itself.
+    let el: Vec<_> = r["estimates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["method"].as_str().unwrap().starts_with("elementwise"))
+        .collect();
+    assert_eq!(el.len(), 1, "{text}");
+    let [pe, _, _] = p_of(el[0]);
+    assert!((pe - 0.005).abs() < 2.5e-4, "{}", el[0]["p_differ"]);
+    // A linearized tier is refused, and its simulator validation disagrees.
+    let lin: Vec<_> = r["estimates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["method"].as_str().unwrap().starts_with("linearized"))
+        .collect();
+    assert!(!lin.is_empty(), "{text}");
+    for e in &lin {
+        assert_eq!(e["applicable"], false, "{e}");
+        assert!(
+            e["applicability"].as_array().unwrap().iter().any(|l| l
+                .as_str()
+                .unwrap()
+                .contains("NaN / Inf outputs that differ")),
+            "{e}"
+        );
+    }
+    assert!(
+        r["validation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["source"] == "sim"
+                && v["against"] == "tier 2"
+                && v["agree"] == false
+                && v["notes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|n| n.as_str().unwrap().contains("which tier 2 does not model"))),
+        "{}",
+        r["validation"]
+    );
+    // The headline covers the overflow.
+    let best = &r["estimates"][r["best"].as_u64().unwrap() as usize];
+    let [_, blo, bhi] = p_of(best);
+    assert!(blo <= 0.005 && 0.005 <= bhi, "{best}");
+    assert!(
+        r["assumptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "N-ERRDIST-NONFINITE")
+    );
+}
+
+/// MISS 66: y = RN(x x) at the same inputs (fixtures/errdist/nonfinite/ovf_sq): where x^2
+/// overflows, RN of the exact value is +Inf too, so the +Inf output equals it. Tier 3 compares
+/// it, and P(differ) is 0 (the product of two f32 values is correctly rounded), with nothing
+/// out of the domain. Until 2026-11-11 those outputs were left out of the domain.
+#[test]
+fn errdist_nonfinite_outputs_equal_to_rn_exact_match() {
+    let (text, r, ok) = errdist_json(
+        "ovfsq",
+        "fixtures/errdist/nonfinite/ovf_sq",
+        "fixtures/errdist/nonfinite/spec_mix.json",
+        &["--mc", "3000"],
+    );
+    assert!(ok, "{text}");
+    let t3 = tier(&r, 3);
+    let [p, _, hi] = p_of(t3[0]);
+    assert!(p == 0.0 && hi < 2e-3, "{}", t3[0]["p_differ"]);
+    assert!(text.contains("compared in P(differ) (0 differ"), "{text}");
+    assert_eq!(r["out_of_domain"]["mass"], 0.0, "{}", r["out_of_domain"]);
+}
+
+/// The out-of-domain causes of a report.
+fn causes(r: &serde_json::Value) -> Vec<String> {
+    r["out_of_domain"]["by_cause"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// The applicability lines of an estimate that contain `pat`.
+fn lines<'a>(e: &'a serde_json::Value, pat: &str) -> Vec<&'a str> {
+    e["applicability"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .filter(|l| l.contains(pat))
+        .collect()
+}
+
+const UNIDENT: &str = "no exact value: a slice without an identified real function";
+
+/// MISS 88: a slice whose guard the identification probes take both ways
+/// (fixtures/errdist/nonfinite/unident): no output has an exact value, though every output is
+/// finite. The out-of-domain cause names the unidentified slice and P(output NaN / Inf) is 0;
+/// with no output compared Tier 3 is refused (MISS 64). Until 2026-11-11 the cause read
+/// "non-finite output (NaN / Inf)" and Tier 3 headlined P(differ) 0 over [0, 1].
+#[test]
+fn errdist_unidentified_slice_is_not_nonfinite() {
+    let (text, r, ok) = errdist_json(
+        "unident",
+        "fixtures/errdist/nonfinite/unident",
+        "fixtures/errdist/normal.json",
+        &["--mc", "300", "--sim-trials", "0"],
+    );
+    assert!(!ok, "{text}");
+    assert_eq!(causes(&r), [UNIDENT], "{text}");
+    assert_eq!(r["p_nonfinite"]["element"][0], 0.0, "{}", r["p_nonfinite"]);
+    assert!(r["best"].is_null(), "{}", r["best"]);
+}
+
+/// MISS 88: the same slice under a maximum (fixtures/errdist/nonfinite/unident_max,
+/// y = max(a', v)). The slice's exact value is unknown, and a maximum must not pass on v as the
+/// exact value because the other child is NaN: no output has an exact value, and Tier 3 is
+/// refused. Until 2026-11-11 the exact value was v, and errdist compared max(a', v) against it.
+#[test]
+fn errdist_unidentified_slice_is_not_passed_over_by_a_maximum() {
+    let (text, r, ok) = errdist_json(
+        "unidentmax",
+        "fixtures/errdist/nonfinite/unident_max",
+        "fixtures/errdist/normal.json",
+        &["--mc", "300", "--sim-trials", "0"],
+    );
+    assert!(!ok, "{text}");
+    assert_eq!(causes(&r), [UNIDENT], "{text}");
+    assert_eq!(r["out_of_domain"]["mass"], 1.0, "{}", r["out_of_domain"]);
+    assert!(r["best"].is_null(), "{}", r["best"]);
+}
+
+/// MISS 66: outputs left out of P(differ) widen its interval. In
+/// fixtures/errdist/nonfinite/unident_one only output 0 is above the unidentified slice: 1 of 64
+/// outputs per input is left out, and Tier 3's P(differ) over the other outputs (about 0.24) is
+/// widened by the share's bound q, within 10% of P, so Tier 3 stands. Until 2026-11-11 the
+/// interval covered the compared outputs only. Since MISS 139 q is the input-level bound at
+/// any count, which cannot exclude a rare input that leaves out more than its one output: at
+/// 300 inputs q is about 3.8e-2, above 10% of P, and 1500 inputs bring it under.
+#[test]
+fn errdist_outputs_left_out_widen_the_interval() {
+    let (text, r, ok) = errdist_json(
+        "unidentone",
+        "fixtures/errdist/nonfinite/unident_one",
+        "fixtures/errdist/normal.json",
+        &["--mc", "1500", "--sim-trials", "0"],
+    );
+    assert!(ok, "{text}");
+    assert_eq!(causes(&r), [UNIDENT], "{text}");
+    let t3 = tier(&r, 3)[0];
+    assert_ne!(t3["applicable"], false, "{t3}");
+    let l = lines(t3, "outputs left out of P(differ)");
+    assert!(l.len() == 1 && l[0].ends_with(" ok"), "{t3}");
+    // The share left out widens the interval by q a side.
+    let [p, lo, hi] = p_of(t3);
+    assert!(p > 0.15 && hi - lo > 0.04, "{}", t3["p_differ"]);
+    let best = &r["estimates"][r["best"].as_u64().unwrap() as usize];
+    assert_eq!(best["tier"], 3, "{best}");
+}
+
+/// MISS 66: a share left out that is more than 10% of P(differ) refuses the estimates. The
+/// f16 exp kernel at x ~ N(0, 1) w.p. 0.999 and N(1000, 1) w.p. 0.001
+/// (fixtures/errdist/exp_mix_rare.json): e^x has no determined exact value on 0.1% of the
+/// outputs, and P(differ) over the others is about 4e-5. Tier 3 and the exact elementwise law
+/// are refused, and errdist reports no headline. Until 2026-11-11 Tier 3 and the elementwise
+/// law reported P(differ) over the other outputs.
+#[test]
+fn errdist_a_large_share_left_out_is_refused() {
+    let (text, r, ok) = errdist_json(
+        "exprare",
+        "fixtures/c_nonfinite_exp_f16",
+        "fixtures/errdist/exp_mix_rare.json",
+        &["--mc", "300"],
+    );
+    assert!(!ok, "{text}");
+    assert_eq!(
+        causes(&r),
+        ["non-finite exact value (NaN / Inf in the exact arithmetic)"],
+        "{text}"
+    );
+    let t3 = tier(&r, 3)[0];
+    let l = lines(t3, "outputs left out of P(differ)");
+    assert!(l.len() == 1 && l[0].ends_with("FAILS"), "{t3}");
+    let t0 = tier(&r, 0);
+    assert!(
+        t0.iter()
+            .any(|e| e["method"].as_str().unwrap().starts_with("elementwise")
+                && e["applicable"] == false
+                && lines(e, "has no determined outcome")
+                    .iter()
+                    .any(|l| l.ends_with("FAILS"))),
+        "{t0:?}"
+    );
+    assert!(r["best"].is_null(), "{}", r["best"]);
+}
+
 #[test]
 fn packed_f32_births_report_the_actual_high_and_low_lanes() {
     let dir = std::env::temp_dir().join(format!("ptxv-packed-nonfinite-{}", std::process::id()));

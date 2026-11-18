@@ -1,0 +1,65 @@
+name = "miss189_dupsig"
+description = """
+E-LAUNCH-ORDER, MISS 189: a deadlock that both the strict reading of an unknown launch order and
+the list's order reach, at the same place. The kernels are miss189_order_hang's. set_flag
+(launch 0) writes `other`, a flag no grid waits on; wait_flag (launch 1) spins on `flag`, which
+no grid sets. The launch order is unknown (no `launch_order`). Every schedule of the strict
+reading ends with wait_flag blocked, and so does the list's order (set_flag ends, then wait_flag
+runs and blocks), with the same deadlock signature. The list-order pass adds the deadlocks the
+strict reading does not report; here it adds none (repro.sh: before the fix it added the strict
+reading's deadlock again as `list-order:`, noted that the strict reading does not reach it, and
+dropped E-WELLSYNC)."""
+ptx = "kernel.ptx"
+entry = "set_flag"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "other"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+# Not reached: wait_flag never sees the flag.
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "other"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[launches]]
+entry = "wait_flag"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+params = [
+    { kind = "ptr", buffer = "flag" },
+    { kind = "ptr", buffer = "data" },
+    { kind = "ptr", buffer = "out" },
+]
+
+[[variants]]
+id = "good"
+summary = "launch order unknown; wait_flag waits for a flag no grid sets: a deadlock in every order, reported once"
+expect = ["deadlock"]

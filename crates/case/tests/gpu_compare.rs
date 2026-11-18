@@ -88,9 +88,10 @@ fn results(c: &[ptxv_case::GpuCompare]) -> Vec<(&str, GpuMatch)> {
 fn each_comparison_has_its_result() {
     let (case, dir) = case("tol");
     let one_ulp_up = f32::from_bits(2.0f32.to_bits() + 0x1_0000);
-    // With the tolerance: b's bytes (16 to 20 of the output) hold calibrated bf16 lanes.
+    // With the tolerance: b's bytes (16 to 20 of the output) hold calibrated bf16 lanes, each
+    // simulated one encoding above the other rounding of its sum.
     let marks: Vec<Option<Round16>> = (0..28)
-        .map(|i| (16..20).contains(&i).then_some(Round16::Bf16))
+        .map(|i| (16..20).contains(&i).then_some(Round16::Bf16Prev))
         .collect();
     for (a, b, ulp_ok, want) in [
         (
@@ -160,7 +161,7 @@ fn nan_payloads_are_a_mismatch() {
     // b captured as (NaN 0x7fc0, 2.0).
     std::fs::write(dir.join("b.bin"), [0xc0, 0x7f, 0x00, 0x40]).unwrap();
     let marks: Vec<Option<Round16>> = (0..28)
-        .map(|i| (16..20).contains(&i).then_some(Round16::Bf16))
+        .map(|i| (16..20).contains(&i).then_some(Round16::Bf16Next))
         .collect();
     for (b0, want) in [
         (0x7fc1u16, GpuMatch::Mismatch),
@@ -172,6 +173,36 @@ fn nan_payloads_are_a_mismatch() {
         let c = case.expect_compare_tol(&out, Some(&marks)).unwrap();
         assert_eq!(c[1].result, want, "{b0:#x}: {:?}", c[1].line);
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MISS 162: a calibrated lane is within one ulp only of the other rounding of its sum. b's
+/// second element is simulated as the encoding above 2.0 against the captured 2.0: within one
+/// ulp when the mark puts the other rounding below (`Bf16Prev`), a mismatch when it puts it above
+/// (`Bf16Next`: 2.0 is then no rounding of the sum).
+#[test]
+fn only_the_other_rounding_of_the_sum_is_within_one_ulp() {
+    let (case, dir) = case("dir");
+    let one_ulp_up = f32::from_bits(2.0f32.to_bits() + 0x1_0000);
+    let out = output(&[1, 2, 3, 4], &[1.0, one_ulp_up]);
+    for (m, want) in [
+        (Round16::Bf16Prev, GpuMatch::WithinUlp),
+        (Round16::Bf16Next, GpuMatch::Mismatch),
+        (Round16::F16Prev, GpuMatch::Mismatch),
+    ] {
+        let marks: Vec<Option<Round16>> = (0..28)
+            .map(|i| (16..20).contains(&i).then_some(m))
+            .collect();
+        let c = case.expect_compare_tol(&out, Some(&marks)).unwrap();
+        assert_eq!(c[1].result, want, "{m:?}: {:?}", c[1].line);
+    }
+    // The two bytes of an element must hold the same mark.
+    let mut marks: Vec<Option<Round16>> = (0..28)
+        .map(|i| (16..20).contains(&i).then_some(Round16::Bf16Prev))
+        .collect();
+    marks[19] = Some(Round16::Bf16Next);
+    let c = case.expect_compare_tol(&out, Some(&marks)).unwrap();
+    assert_eq!(c[1].result, GpuMatch::Mismatch, "{:?}", c[1].line);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

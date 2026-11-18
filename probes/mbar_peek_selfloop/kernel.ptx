@@ -1,0 +1,40 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// RMK277 S1 (MISS 283): t0 (warp 0) initializes mbarrier a and stores out[0]; t32 (warp 1) peeks
+// a and stores out[0]. Run first, the peek reports mbar-uninit and leaves the state unchanged.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry mbar_peek_selfloop(.param .u64 out_p)
+.maxntid 64, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b8 a[8];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, a;
+    setp.eq.u32 %p1, %r1, 32;
+    setp.eq.u32 %p2, %r1, 0;
+    @%p1 bra W0;
+    @%p2 bra W1;
+    bra DONE;
+W0:
+    mbarrier.test_wait.parity.shared::cta.b64 %p6, [%r2], 0;
+    selp.u32 %r9, 1, 2, %p6;
+    st.global.u32 [%rd1], %r9;
+    bra DONE;
+W1:
+    mov.u32 %r3, 1;
+    mbarrier.init.shared::cta.b64 [%r2], %r3;
+    mov.u32 %r4, 7;
+    st.global.u32 [%rd1], %r4;
+DONE:
+    ret;
+}

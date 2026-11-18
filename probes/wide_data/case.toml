@@ -1,0 +1,150 @@
+name = "probe_wide_data"
+description = """Probe (MISS 181, the review repro): the data registers of STG.E.ENL2.256 (8) and REDG.E.ADD.F32x4 (4) are read late;
+an overwrite of a non-first register right after the store (no wait) changes what is stored.
+S256_*: 0x0120 (REDG) replaced by `MOV Rk, 0x7777` (no wait). RED_*: STG.256 a NOP, 0x0130 replaced by
+`MOV Rk, 0x7777`. *_REF: the store gets rd=SB5 and the MOV waits on it. GB300 counts in results.txt."""
+ptx = "kernel.ptx"
+entry = "wide"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out", "acc"]
+ptxas_args = ["-maxrregcount", "24"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [2048]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [3072]
+init = "zeros"
+
+[[buffers]]
+name = "acc"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "acc"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "S256_R5"
+expect = ["violation"]
+patch = [
+  { at = "@0x0120", bits = [[0, 64, 131352985171970], [64, 64, 4470614278541056]], expect = "MOV R5, 0x7777" },
+]
+
+[[variants]]
+id = "S256_R6"
+expect = ["violation"]
+patch = [
+  { at = "@0x0120", bits = [[0, 64, 131352985237506], [64, 64, 4470614278541056]], expect = "MOV R6, 0x7777" },
+]
+
+[[variants]]
+id = "S256_R7"
+expect = ["violation"]
+patch = [
+  { at = "@0x0120", bits = [[0, 64, 131352985303042], [64, 64, 4470614278541056]], expect = "MOV R7, 0x7777" },
+]
+
+[[variants]]
+id = "S256_R9"
+expect = ["violation"]
+patch = [
+  { at = "@0x0120", bits = [[0, 64, 131352985434114], [64, 64, 4470614278541056]], expect = "MOV R9, 0x7777" },
+]
+
+[[variants]]
+id = "S256_R10"
+expect = ["violation"]
+patch = [
+  { at = "@0x0120", bits = [[0, 64, 131352985499650], [64, 64, 4470614278541056]], expect = "MOV R10, 0x7777" },
+]
+
+[[variants]]
+id = "S256_R11"
+expect = ["violation"]
+patch = [
+  { at = "@0x0120", bits = [[0, 64, 131352985565186], [64, 64, 4470614278541056]], expect = "MOV R11, 0x7777" },
+]
+
+[[variants]]
+id = "S256_R4"
+expect = ["violation"]
+patch = [
+  { at = "@0x0120", bits = [[0, 64, 131352985106434], [64, 64, 4470614278541056]], expect = "MOV R4, 0x7777" },
+]
+
+[[variants]]
+id = "S256_R8"
+expect = ["violation"]
+patch = [
+  { at = "@0x0120", bits = [[0, 64, 131352985368578], [64, 64, 4470614278541056]], expect = "MOV R8, 0x7777" },
+]
+
+[[variants]]
+id = "S256_REF"
+expect = ["clean"]
+patch = [
+  { at = "@0x0110", rbar = 5, expect = "STG.E.ENL2.256 desc[UR4][R16.64], R4, R8" },
+  { at = "@0x0120", bits = [[0, 64, 131352985171970], [64, 64, 148585802354396928]], expect = "MOV R5, 0x7777" },
+]
+
+[[variants]]
+id = "RED_R5"
+expect = ["violation"]
+patch = [
+  { at = "@0x0110", nop = true },
+  { at = "@0x0130", bits = [[0, 64, 131352985171970], [64, 64, 4470614278541056]], expect = "MOV R5, 0x7777" },
+]
+
+[[variants]]
+id = "RED_R6"
+expect = ["violation"]
+patch = [
+  { at = "@0x0110", nop = true },
+  { at = "@0x0130", bits = [[0, 64, 131352985237506], [64, 64, 4470614278541056]], expect = "MOV R6, 0x7777" },
+]
+
+[[variants]]
+id = "RED_R7"
+expect = ["violation"]
+patch = [
+  { at = "@0x0110", nop = true },
+  { at = "@0x0130", bits = [[0, 64, 131352985303042], [64, 64, 4470614278541056]], expect = "MOV R7, 0x7777" },
+]
+
+[[variants]]
+id = "RED_R4"
+expect = ["violation"]
+patch = [
+  { at = "@0x0110", nop = true },
+  { at = "@0x0130", bits = [[0, 64, 131352985106434], [64, 64, 4470614278541056]], expect = "MOV R4, 0x7777" },
+]
+
+[[variants]]
+id = "RED_REF"
+expect = ["clean"]
+patch = [
+  { at = "@0x0110", nop = true },
+  { at = "@0x0120", rbar = 5, expect = "REDG.E.ADD.F32x4.FTZ.RN.STRONG.GPU desc[UR4][R18.64], R4" },
+  { at = "@0x0130", bits = [[0, 64, 131352985171970], [64, 64, 148585802354396928]], expect = "MOV R5, 0x7777" },
+]

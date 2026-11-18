@@ -9,7 +9,7 @@ from pathlib import Path
 
 import ptxv
 import pytest
-from conftest import FIX, needs_binary, vendor_skip
+from conftest import assert_clean_but_scoreboard_contracts, FIX, needs_binary, vendor_skip
 from ptxv._jobs import argv, JobSpec
 
 
@@ -34,7 +34,50 @@ def test_case_object_and_session_context():
     with ptxv.Session(workers=1) as s:
         assert ptxv.session() is s
         v = c.check()
-    assert v.clean
+    # SASS: E-HW-SB-QUEUE contracts (fixtures/c_cumsum expect_sass), nothing else.
+    assert_clean_but_scoreboard_contracts(v)
+    assert v.sim_equals_gpu
+
+
+
+def test_result_returns_after_the_cache_write(monkeypatch, tmp_path):
+    """The result cache is written before `result()` returns. The write ran in a done
+    callback, which `concurrent.futures` invokes after waking the waiters: a job resubmitted
+    as soon as the first returned could miss the cache and run again
+    (test_local_check_verdict_and_cache failed so in some GB300 runs). A slow cache write
+    makes the order deterministic."""
+    import sys
+    import threading
+
+    sm = sys.modules["ptxv.session"]  # the module (ptxv.session is also a function)
+
+    monkeypatch.setenv("PTXV_CACHE", str(tmp_path))
+    ran = []
+
+    class Backend:
+        def ptxv_hash(self) -> str:
+            return "fake-binary"
+
+        def submit(self, spec, job) -> None:
+            ran.append(spec.kind)
+            job.set_running_or_notify_cancel()
+            def finish():
+                time.sleep(0.2)  # after submit returned, as a real run
+                job.set_result({"rows": [{"pass": True}]})
+
+            threading.Thread(target=finish).start()
+
+    store = sm.store_cache
+
+    def slow_store(path, result):
+        time.sleep(0.5)
+        store(path, result)
+
+    monkeypatch.setattr(sm, "store_cache", slow_store)
+    s = ptxv.Session(Backend())
+    assert s.submit("check", [FIX / "c_cat"]).result(timeout=10)["rows"][0]["pass"]
+    j2 = s.submit("check", [FIX / "c_cat"])
+    assert j2.cached and j2.result(timeout=10)["rows"][0]["pass"] and ran == ["check"], ran
 
 
 @needs_binary

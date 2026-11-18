@@ -53,6 +53,9 @@ static __thread int cur_pdl;
 // With it, the hardware launches each group of CTAs either as one cluster of this shape or as
 // clusters of the regular (fallback) shape (probes/cga_size).
 static __thread unsigned cur_pref[3];
+// Whether the launch being recorded gives the cluster dimension attribute (a nonzero one): a
+// cluster launch even at 1 x 1 x 1, where st.async runs (MISS 259; without one GB300 traps).
+static __thread int cur_cattr;
 // The stream of the launch being recorded (multi-process captures order launches per stream).
 static __thread unsigned long long cur_stream;
 // Inside a runtime launch (__cudaLaunchKernel / cudaLaunchKernelExC), which records the launch
@@ -337,6 +340,36 @@ static void dump_k(CUkernel k, CUfunction f, unsigned gx, unsigned gy, unsigned 
         kname_t kn = (kname_t)dlsym(cuda, "cuKernelGetName");
         if (kn) kn(&nm, k);
     }
+    // A cluster shape the kernel requires (cudaFuncAttributeRequiredClusterWidth / Height /
+    // Depth, set at run time or compiled in by __cluster_dims__) makes every launch of it a
+    // cluster launch of that shape, triple-chevron ones and ones without the launch attribute
+    // included (MISS 281: recorded as launches without a cluster). Where the launch attribute
+    // gives a shape too, it wins, and a different required shape is recorded beside it.
+    int cattr = cur_cattr, rq[3] = {0, 0, 0};
+    {
+        typedef CUresult (*fattr_t)(int *, CUfunction_attribute, CUfunction);
+        typedef CUresult (*kattr_t)(int *, CUfunction_attribute, CUkernel, CUdevice);
+        static const CUfunction_attribute req[3] = {CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_WIDTH,
+                                                    CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_HEIGHT,
+                                                    CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_DEPTH};
+        fattr_t fa = (fattr_t)dlsym(cuda, "cuFuncGetAttribute");
+        kattr_t ka = (kattr_t)dlsym(cuda, "cuKernelGetAttribute");
+        int dv = cur_device(), r[3] = {0, 0, 0}, ok = 1;
+        for (int i = 0; i < 3 && ok; i++) {
+            if (k) ok = ka && dv >= 0 && ka(&r[i], req[i], k, (CUdevice)dv) == CUDA_SUCCESS;
+            else ok = f && fa && fa(&r[i], req[i], f) == CUDA_SUCCESS;
+        }
+        if (ok && r[0] > 0 && r[1] > 0 && r[2] > 0) {
+            if (!cattr) {
+                cx = (unsigned)r[0];
+                cy = (unsigned)r[1];
+                cz = (unsigned)r[2];
+                cattr = 1;
+            } else if ((unsigned)r[0] != cx || (unsigned)r[1] != cy || (unsigned)r[2] != cz) {
+                memcpy(rq, r, sizeof rq);
+            }
+        }
+    }
     // The launched kernel's module (CUfunction) or library (CUkernel) handle: the process can
     // look up the module's data globals in it (cuModuleGetGlobal / cuLibraryGetGlobal,
     // tools/capture_dist.py).
@@ -374,6 +407,8 @@ static void dump_k(CUkernel k, CUfunction f, unsigned gx, unsigned gy, unsigned 
     if (cur_cev) fprintf(fp, "\"completion_event\": %llu, ", cur_cev);
     if (cur_pref[0])
         fprintf(fp, "\"preferred_cluster\": [%u, %u, %u], ", cur_pref[0], cur_pref[1], cur_pref[2]);
+    if (cattr) fprintf(fp, "\"cluster_attr\": 1, ");
+    if (rq[0]) fprintf(fp, "\"required_cluster\": [%d, %d, %d], ", rq[0], rq[1], rq[2]);
     fprintf(fp, "\"params\": [");
     if (!params && cur_extra) {
         const unsigned char *buf = 0;
@@ -536,6 +571,7 @@ static CUresult launchex_hook(int ptsz, const CUlaunchConfig *c, CUfunction f, v
             cx = c->attrs[i].value.clusterDim.x;
             cy = c->attrs[i].value.clusterDim.y;
             cz = c->attrs[i].value.clusterDim.z;
+            cur_cattr = cx != 0;
         } else if (c->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION) {
             cur_pdl = c->attrs[i].value.programmaticStreamSerializationAllowed != 0;
         } else if (c->attrs[i].id == CU_LAUNCH_ATTRIBUTE_PREFERRED_CLUSTER_DIMENSION) {
@@ -556,6 +592,7 @@ static CUresult launchex_hook(int ptsz, const CUlaunchConfig *c, CUfunction f, v
     cur_pdl = 0;
     cur_ptsz = 0;
     memset(cur_pref, 0, sizeof cur_pref);
+    cur_cattr = 0;
     reset_order_attrs();
     snap_pre();
     unsigned long long t0 = now_ns();
@@ -1279,6 +1316,7 @@ cudaError_t _cudaLaunchKernelEx(const cudaLaunchConfig_t *c, const void *k, void
             cx = c->attrs[i].val.clusterDim.x;
             cy = c->attrs[i].val.clusterDim.y;
             cz = c->attrs[i].val.clusterDim.z;
+            cur_cattr = cx != 0;
         } else if (c->attrs[i].id == cudaLaunchAttributeProgrammaticStreamSerialization) {
             cur_pdl = c->attrs[i].val.programmaticStreamSerializationAllowed != 0;
         } else if (c->attrs[i].id == cudaLaunchAttributePreferredClusterDimension) {
@@ -1295,6 +1333,7 @@ cudaError_t _cudaLaunchKernelEx(const cudaLaunchConfig_t *c, const void *k, void
     snap_allowed = 0;
     cur_pdl = 0;
     memset(cur_pref, 0, sizeof cur_pref);
+    cur_cattr = 0;
     reset_order_attrs();
     snap_pre();
     unsigned long long t0 = now_ns();
@@ -1406,6 +1445,7 @@ cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *c, const void *k, void
             cx = c->attrs[i].val.clusterDim.x;
             cy = c->attrs[i].val.clusterDim.y;
             cz = c->attrs[i].val.clusterDim.z;
+            cur_cattr = cx != 0;
         } else if (c->attrs[i].id == cudaLaunchAttributeProgrammaticStreamSerialization) {
             cur_pdl = c->attrs[i].val.programmaticStreamSerializationAllowed != 0;
         } else if (c->attrs[i].id == cudaLaunchAttributePreferredClusterDimension) {
@@ -1427,6 +1467,7 @@ cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *c, const void *k, void
             snap_allowed = 0;
             cur_pdl = 0;
             memset(cur_pref, 0, sizeof cur_pref);
+            cur_cattr = 0;
             reset_order_attrs();
             snap_pre();
             unsigned long long t0 = now_ns();
@@ -1456,6 +1497,7 @@ cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *c, const void *k, void
     }
     cur_pdl = 0;
     memset(cur_pref, 0, sizeof cur_pref);
+    cur_cattr = 0;
     reset_order_attrs();
     return r;
 }

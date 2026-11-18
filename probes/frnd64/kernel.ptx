@@ -1,0 +1,32 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// RVS2 probe: FRND.F64 and FRND (f32), same base opcode FRND.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry frnd64(.param .u64 out_p, .param .u64 seed)
+{
+    .reg .b32 %r<16>;
+    .reg .f32 %f<16>;
+    .reg .f64 %fd<16>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [seed];
+    mov.u32 %r1, %tid.x;
+    cvt.rn.f64.u32 %fd1, %r1;
+    mul.f64 %fd1, %fd1, 0d3FF5EB851EB851EC;
+    cvt.rn.f32.u32 %f1, %r1;
+    mul.f32 %f2, %f1, 0f3FC00000;
+    cvt.rni.f64.f64 %fd2, %fd1;     // FRND.F64
+    cvt.rni.f32.f32 %f3, %f2;       // FRND
+    mul.wide.u32 %rd6, %r1, 32;
+    add.s64 %rd7, %rd1, %rd6;
+    st.global.f64 [%rd7], %fd2;
+    st.global.f32 [%rd7+8], %f3;
+    st.global.f64 [%rd7+16], %fd1;
+    ret;
+}

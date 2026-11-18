@@ -30,6 +30,17 @@ pub fn rev() -> Option<&'static str> {
     (!r.is_empty()).then_some(r)
 }
 
+/// The schedule explorer this process runs (`PTXV_EXPLORER`): "dpor" for `PTXV_EXPLORER=dpor`
+/// (crates/sim/src/dpor.rs), else "stateful" (the default explorer with its reductions; any
+/// other value selects it too, as `ptxv check` does). Every document carries it, so a DPOR
+/// verdict cannot pass for a stateful one (fb/kernel_db run.py `parse_check` refuses it).
+pub fn explorer() -> &'static str {
+    match std::env::var("PTXV_EXPLORER").as_deref() {
+        Ok("dpor") => "dpor",
+        _ => "stateful",
+    }
+}
+
 /// "<crate version> (rev <rev>)" / "<crate version> (rev unknown)", for `--version`.
 pub const VERSION: &str = env!("PTXV_VERSION");
 
@@ -59,7 +70,7 @@ pub fn fail(err: &str) {
 }
 
 impl JsonOut {
-    /// Write the document (with `ptxv` version, `ptxv_rev` and schema stamped in) to the
+    /// Write the document (with `ptxv` version, `ptxv_rev`, `explorer` and schema stamped in) to the
     /// original stdout. The version is this crate's, i.e. the workspace version every ptxv
     /// crate shares; `ptxv_rev` the build's commit ([`rev`], null when unknown).
     pub fn emit(self, command: &str, v: serde_json::Value) {
@@ -74,6 +85,7 @@ impl JsonOut {
             o.insert("schema".into(), SCHEMA.into());
             o.insert("ptxv".into(), env!("CARGO_PKG_VERSION").into());
             o.insert("ptxv_rev".into(), rev().into());
+            o.insert("explorer".into(), explorer().into());
         }
         let mut f = unsafe { std::fs::File::from_raw_fd(self.saved) };
         let _ = writeln!(f, "{}", serde_json::to_string(&v).unwrap_or_default());

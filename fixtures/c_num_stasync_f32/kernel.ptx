@@ -1,0 +1,53 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry r5_stasync_co_c1(.param .u64 px, .param .u64 pout, .param .u64 pz)
+.reqnctapercluster 1, 1, 1
+{
+    .reg .pred %p<8>;
+    .reg .b16 %rs<40>;
+    .reg .b32 %r<80>;
+    .reg .f32 %f<80>;
+    .reg .b64 %rd<64>;
+    .shared .align 16 .b8 S[256];
+    .shared .align 8 .b64 MB;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd15, [pz];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd15, %rd15;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    mul.wide.u32 %rd9, %r0, 16;
+    add.s64 %rd10, %rd15, %rd9;
+    ld.global.f32 %f4, [%rd4];
+    ld.param.u64 %rd40, [pout];
+    cvta.to.global.u64 %rd40, %rd40;
+    add.s64 %rd5, %rd40, %rd3;
+    cvt.rn.f32.u32 %f1, %r0;
+    add.rn.f32 %f2, %f1, 0f3DCCCCCD;
+    mov.b32 %r30, %f2;
+    mov.u32 %r20, S;
+    mad.lo.u32 %r21, %r0, 4, %r20;
+    mov.u32 %r22, MB;
+    st.shared.f32 [%r21], %f4;
+    setp.eq.u32 %p2, %r0, 0;
+    @%p2 mbarrier.init.shared::cta.b64 [%r22], 1;
+    fence.mbarrier_init.release.cluster;
+    bar.sync 0;
+    @%p2 mbarrier.arrive.expect_tx.shared::cta.b64 %rd20, [%r22], 128;
+    bar.sync 0;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [%r21], %r30, [%r22];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r22], 0;
+    @!%p1 bra WAIT;
+    ld.shared.f32 %f9, [%r21];
+    st.global.f32 [%rd5], %f9;
+    ret;
+}

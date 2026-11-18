@@ -1,0 +1,43 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// MISS 226 repro: E-RACE-DEAD against PTX ISA 9.5 section 8.7.2. CTA 0 writes a 4-byte word
+// with st.relaxed.gpu; CTA 1 reads one byte of it, unordered: a data race whose operations
+// overlap partially, a mixed-size data race. good (a strong u8 read) and PLAIN (a weak u8 read)
+// mask the loaded byte to 0 before storing it, so E-RACE-DEAD drops the race (race-dead, no
+// verdict class). 8.7.2: "The axioms in the memory consistency model do not apply if a PTX
+// program contains one or more mixed-size data-races", so a dead loaded value does not make the
+// program race-free. Controls: LIVE uses the byte in a predicate (a race either way); SAME reads
+// the whole word at .gpu scope (morally strong, no race); UNIFORM (a .cta-scope read) and
+// UNIFORM_PLAIN (a weak read) read the whole word, masked: uniform-size data races, which the
+// axioms describe, with a dead value (race-dead, clean). See expected/verdicts.csv.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 x,
+    .param .u64 out
+)
+.maxntid 1, 1, 1
+{
+    .reg .pred  %p<2>;
+    .reg .b32   %r<4>;
+    .reg .b64   %rd<4>;
+
+    mov.u32         %r0, %ctaid.x;
+    ld.param.u64    %rd1, [x];
+    ld.param.u64    %rd2, [out];
+    setp.eq.u32     %p0, %r0, 0;
+    @%p0 bra        WRITER;
+    ld.relaxed.gpu.global.u8 %r1, [%rd1];                           // @READ
+    and.b32         %r1, %r1, 0;                                    // @MASK
+    st.global.u32   [%rd2], %r1;
+    ret;
+WRITER:
+    mov.u32         %r2, 257;
+    st.relaxed.gpu.global.u32 [%rd1], %r2;
+    ret;
+}

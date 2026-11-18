@@ -1,0 +1,39 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPCLASS): MUFU covered by a later F2I's scoreboard (ptxas's radix-sort order: a
+// `MUFU.RCP` with no write scoreboard read after a wait on a later `F2I`'s). MUFU.RCP R4 runs
+// before two F2Is; the variants take MUFU's write scoreboard away and let the FMUL that reads R4
+// wait on the later F2I's scoreboard only (COVER) or on nothing (NOWAIT, the positive control).
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry xu_queue_rev(.param .u64 in_p, .param .u64 out_p)
+{
+    .reg .b32 %r<32>;
+    .reg .f32 %f<64>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [in_p];
+    ld.param.u64 %rd2, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 16;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.v4.f32 {%f1, %f2, %f3, %f4}, [%rd4];
+    rcp.approx.ftz.f32 %f5, %f1;
+    add.f32 %f6, %f2, %f1;
+    add.f32 %f7, %f3, %f1;
+    cvt.rzi.s32.f32 %r6, %f6;
+    cvt.rzi.s32.f32 %r7, %f7;
+    mul.f32 %f8, %f5, %f4;
+    add.f32 %f9, %f8, %f8;
+    add.s32 %r10, %r6, %r7;
+    cvt.rn.f32.s32 %f10, %r10;
+    add.f32 %f11, %f10, %f5;
+    st.global.v4.f32 [%rd5], {%f5, %f9, %f10, %f11};
+    ret;
+}

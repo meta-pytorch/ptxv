@@ -124,6 +124,9 @@ marker = "@BULK"
 find = "%rd20"
 replace = "%rd15"
 expect = ["violation"]
+# SASS: the lanes waiting at the elected lane's plain BSYNC B0 pass it (E-BSYNC, MISS 81) and
+# run the .nc loads ptxas placed before the barrier while the bulk copy is in flight.
+expect_sass = ["nondeterministic", "race", "violation"]
 
 [[variants]]
 id = "XCTA"
@@ -132,3 +135,6 @@ marker = "@XCTA"
 find = "[%rd5]"
 replace = "[%rd1]"
 expect = ["violation"]
+# SASS: CTA 0's lanes waiting at the elected lane's plain BSYNC B0 pass it (E-BSYNC, MISS 81)
+# and run the .nc loads ptxas placed before the barrier while lane 0 still polls the flag.
+expect_sass = ["nondeterministic", "race", "violation"]

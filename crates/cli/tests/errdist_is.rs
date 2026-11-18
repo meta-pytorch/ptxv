@@ -188,6 +188,26 @@ fn is_known_answer() {
     assert!(j["p_nonfinite"]["element"][0].as_f64().unwrap() < 1e-3);
 }
 
+/// MISS 66: an importance-sampled input's weighted fraction over the outputs with a
+/// determined outcome is not its own fraction. A proposal at x ~ N(800, 1), where e^x has no
+/// determined exact value, leaves outputs out of P(differ): the IS estimate is refused, and
+/// the plain Tier 3 estimate stands.
+#[test]
+fn is_refuses_outputs_left_out() {
+    let j = run(
+        "noexact",
+        "fixtures/c_exp_one",
+        "fixtures/errdist/is/exp80.json",
+        "fixtures/errdist/is/exp800_noexact.json",
+        2_000,
+        &[],
+    );
+    assert!(j["is_estimate"].is_null(), "{}", j["is_estimate"]);
+    let r = j["is_refused"].as_str().unwrap();
+    assert!(r.contains("left out of P(differ)"), "{r}");
+    assert!(j["best"].is_u64(), "{}", j["best"]);
+}
+
 /// A proposal concentrated in a 0.1-wide window (scale 0.05) with alpha 0.001: the
 /// effective sample size collapses and the ESS gate refuses it (the share gate would too; the
 /// test pins the ESS gate).

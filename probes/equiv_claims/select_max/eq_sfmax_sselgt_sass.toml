@@ -1,0 +1,10 @@
+# max.f32(s, b) vs s > b ? s : b, s = sqrt.approx(a) (sass front). The model's claim, run without captures (check.py).
+max_states = 200000
+segments = true
+reference = { case = "sfmax_p", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "sselgt_p"
+variant = "good"
+front = "sass"
+certify = true

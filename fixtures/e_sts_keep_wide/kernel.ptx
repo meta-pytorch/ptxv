@@ -1,0 +1,37 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// The 32 lanes of ONE 64-bit shared store write {tid, tid + 100} to one 8-byte location; every
+// lane then reads the low word and traps if lane 16's value remains (GB300's outcome for
+// STS.64: 500 of 500 runs). V4: a 128-bit store (STS.128) {tid, tid+100, tid+200, tid+300},
+// trap if lane 24's value remains (GB300's outcome).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_sts_keep_wide(.param .u64 out_p)
+.maxntid 32, 1, 1
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<4>;
+    .shared .align 16 .b8 w[16];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, w;
+    add.u32 %r3, %r1, 100;
+    add.u32 %r4, %r1, 200;
+    add.u32 %r5, %r1, 300;
+    st.volatile.shared.v2.u32 [%r2], {%r1, %r3};   // @ST
+    bar.warp.sync -1;
+    ld.volatile.shared.u32 %r6, [%r2];
+    setp.eq.u32 %p1, %r6, 16;                      // @CMP
+    @%p1 trap;
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r6;
+    ret;
+}

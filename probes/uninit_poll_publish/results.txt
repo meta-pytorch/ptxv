@@ -1,0 +1,37 @@
+# run.sh, 2026-11-13, on agentDP-278 a71f29df (before the fix): exit 1
+good     ptx  unreduced expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+good     ptx  stateful  expected [race]                     observed [race]                     ok
+good     ptx  certify   expected [race]                     observed [race]                     ok
+good     ptx  dpor      expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+good     sass unreduced expected [nondeterministic,race,violation] observed [nondeterministic,race,violation] ok
+good     sass stateful  expected [nondeterministic,race,violation] observed [violation]                MISMATCH
+good     sass certify   expected [nondeterministic,race,violation] observed [violation]                MISMATCH
+good     sass dpor      expected [nondeterministic,race,violation] observed [violation]                MISMATCH
+NOSPIN   ptx  unreduced expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+NOSPIN   ptx  stateful  expected [race]                     observed [race]                     ok
+NOSPIN   ptx  certify   expected [race]                     observed [race]                     ok
+NOSPIN   ptx  dpor      expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+NOSPIN   sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+NOSPIN   sass stateful  expected [nondeterministic]         observed [nondeterministic]         ok
+NOSPIN   sass certify   expected [nondeterministic]         observed [nondeterministic]         ok
+NOSPIN   sass dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+rc=1
+
+# After the fix (the poll of an uninitialized mbarrier reads its word and init key): exit 0
+good     ptx  unreduced expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+good     ptx  stateful  expected [race]                     observed [race]                     ok
+good     ptx  certify   expected [race]                     observed [race]                     ok
+good     ptx  dpor      expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+good     sass unreduced expected [nondeterministic,race,violation] observed [nondeterministic,race,violation] ok
+good     sass stateful  expected [nondeterministic,race,violation] observed [nondeterministic,race,violation] ok
+good     sass certify   expected [nondeterministic,race,violation] observed [nondeterministic,race,violation] ok
+good     sass dpor      expected [nondeterministic,race,violation] observed [nondeterministic,race,violation] ok
+NOSPIN   ptx  unreduced expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+NOSPIN   ptx  stateful  expected [race]                     observed [race]                     ok
+NOSPIN   ptx  certify   expected [race]                     observed [race]                     ok
+NOSPIN   ptx  dpor      expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+NOSPIN   sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+NOSPIN   sass stateful  expected [nondeterministic]         observed [nondeterministic]         ok
+NOSPIN   sass certify   expected [nondeterministic]         observed [nondeterministic]         ok
+NOSPIN   sass dpor      expected [nondeterministic]         observed [nondeterministic]         ok
+rc=0

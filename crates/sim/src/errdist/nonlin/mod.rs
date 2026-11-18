@@ -316,7 +316,7 @@ pub fn prepare(p: &mut Prog, m: &Machine) -> Result<(Vec<String>, ident::Idents)
         .launch
         .allocs
         .iter()
-        .map(|a| (a.name.clone(), a.init.clone()))
+        .map(|a| (a.name.clone(), (*a.init).clone()))
         .collect();
     let base = p.leaves(&bytes)?;
     let ids = ident::identify_prog(p, &base, 24, 1);
@@ -325,7 +325,7 @@ pub fn prepare(p: &mut Prog, m: &Machine) -> Result<(Vec<String>, ident::Idents)
         let (pc, n) = (info.pc, info.count);
         notes.push(match &info.result {
             Ok(f) => format!(
-                "slice @{pc} (x{n}): {}{} [max rel dev {:.2e} on {} probes]",
+                "slice @{pc} (x{n}): {}{} [max rel dev {:.2e} on {} probes]{}",
                 f.show(),
                 if f.snapped {
                     ""
@@ -333,7 +333,19 @@ pub fn prepare(p: &mut Prog, m: &Machine) -> Result<(Vec<String>, ident::Idents)
                     " (constants fitted, not snapped)"
                 },
                 f.fit_err,
-                f.probes
+                f.probes,
+                if f.alts.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; as close on the probes: {} (where they disagree its exact value is not established: outputs left out, MISS 147)",
+                        f.alts
+                            .iter()
+                            .map(|a| format!("{} [{:.2e}]", a.show(), a.fit_err))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
             ),
             Err(e) => format!("slice @{pc} (x{n}): not identified: {e}"),
         });
@@ -369,7 +381,7 @@ pub fn mismatches(p: &Prog, m: &Machine, max: usize) -> Vec<String> {
         .launch
         .allocs
         .iter()
-        .map(|a| (a.name.clone(), a.init.clone()))
+        .map(|a| (a.name.clone(), (*a.init).clone()))
         .collect();
     let Ok(lv) = p.leaves(&bytes) else {
         return vec![];
@@ -432,7 +444,7 @@ pub fn captured_mismatch(p: &Prog, m: &Machine) -> Result<(usize, usize), String
         .launch
         .allocs
         .iter()
-        .map(|a| (a.name.clone(), a.init.clone()))
+        .map(|a| (a.name.clone(), (*a.init).clone()))
         .collect();
     let v = p.eval(&p.leaves(&bytes)?);
     let bad = |i: usize| {

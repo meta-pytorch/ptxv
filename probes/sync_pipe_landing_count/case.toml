@@ -1,0 +1,30 @@
+name = "probe_sync_pipe_landing_count"
+description = """
+Stateful-explorer repro (MISS 232): probes/sync_pipe_issue_order with M1's count 3 and a local
+third arrival by rank 1 between its acquire of M2 and its test_wait of M1. No remote landing
+completes phase 0 before rank 1 arrives, so the last-arrival keys (space 16, the MISS 231
+follow-up) do not order a landing against the drain and only the pipe's landing key does. run.sh pins the classes of the
+default explorer, of the explorer without the synchronization reduction (PTXV_NO_SYNC_POR) and
+of --certify (expected/classes.txt).
+"""
+ptx = "kernel.ptx"
+entry = "sync_pipe_landing_count"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "out = rank 1's test_wait of M1: 1 or 0 (issue order Y,X only)"
+expect = ["nondeterministic"]

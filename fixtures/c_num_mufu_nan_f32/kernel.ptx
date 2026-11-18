@@ -1,0 +1,41 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 258 (fixtures/c_num_mufu_nan_f32): out[32 k + t] for op k of x[t]: sqrt.approx.ftz,
+// rsqrt.approx.ftz, lg2.approx.ftz, ex2.approx.ftz(lg2.approx.ftz), max(lg2.approx.ftz, -200),
+// sqrt.approx (no .ftz).
+
+.visible .entry num_mufu_nan(.param .u64 px, .param .u64 pout)
+{
+    .reg .b32 %r<4>;
+    .reg .f32 %f<12>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    sqrt.approx.ftz.f32 %f2, %f1;
+    st.global.f32 [%rd5], %f2;
+    rsqrt.approx.ftz.f32 %f3, %f1;
+    st.global.f32 [%rd5+128], %f3;
+    lg2.approx.ftz.f32 %f4, %f1;
+    st.global.f32 [%rd5+256], %f4;
+    ex2.approx.ftz.f32 %f5, %f4;
+    st.global.f32 [%rd5+384], %f5;
+    max.f32 %f6, %f4, 0fC3480000;
+    st.global.f32 [%rd5+512], %f6;
+    sqrt.approx.f32 %f7, %f1;
+    st.global.f32 [%rd5+640], %f7;
+    ret;
+}

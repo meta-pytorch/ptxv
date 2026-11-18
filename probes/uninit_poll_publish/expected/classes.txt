@@ -1,0 +1,19 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# unreduced: every reduction off, the reference. PTX: the reductions may lose nondeterministic
+# past the race (E-DRF).
+good   ptx  unreduced [nondeterministic,race]
+good   ptx  stateful  [race]
+good   ptx  certify   [race]
+good   ptx  dpor      [nondeterministic,race]
+good   sass unreduced [nondeterministic,race,violation]
+good   sass stateful  [nondeterministic,race,violation]
+good   sass certify   [nondeterministic,race,violation]
+good   sass dpor      [nondeterministic,race,violation]
+NOSPIN ptx  unreduced [nondeterministic,race]
+NOSPIN ptx  stateful  [race]
+NOSPIN ptx  certify   [race]
+NOSPIN ptx  dpor      [nondeterministic,race]
+NOSPIN sass unreduced [nondeterministic]
+NOSPIN sass stateful  [nondeterministic]
+NOSPIN sass certify   [nondeterministic]
+NOSPIN sass dpor      [nondeterministic]

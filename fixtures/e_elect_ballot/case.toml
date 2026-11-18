@@ -1,0 +1,51 @@
+name = "e_elect_ballot"
+description = """
+E-ELECT (MISS 71): warp 0's leader computes its lane number l from a vote of elect's
+predicate (bfind of the ballot; POPC: popc(ballot - 1)) and f(l) = min(l, (l + 1) & 31), 0
+for the two end lanes and nonzero for the others. It stores out[1] before bar.sync 0 when
+f(l) = 0, after it otherwise, where thread 32 reads out[1]: a race for middle-lane leaders
+only. The leader-sensitivity taint kept the ballot leader-dependent but warp-uniform, so
+nothing met a lane-varying value, the two end-lane policies were explored, and the PTX verdict
+was clean. A ballot or reduction of a leader-dependent pattern is lane-varying now (the
+leader's identity, as elect's lane output): every leader function is explored. GB300 elects
+the lowest lane (probes/elect): SASS clean. OUT: a middle-lane leader stores f(l) to out[2]
+instead of out[1]: race-free, leader-dependent outputs for middle-lane leaders only."""
+ptx = "kernel.ptx"
+entry = "e_elect_ballot"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "racy for middle-lane leaders"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "OUT"
+summary = "a middle-lane leader stores f(l) to out[2] instead"
+marker = "@LATE"
+find = "@%p6 st.global.u32 [%rd1+4], %r7;"
+replace = "@%p6 st.global.u32 [%rd1+8], %r4;"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "POPC"
+summary = "the leader's lane through popc(ballot - 1)"
+marker = "@ID"
+find = "vote.sync.ballot.b32 %r8, %p1, -1;"
+replace = "vote.sync.ballot.b32 %r10, %p1, -1; sub.u32 %r11, %r10, 1; popc.b32 %r8, %r11; mov.u32 %r12, 1; shl.b32 %r8, %r12, %r8;"
+expect = ["race"]
+expect_sass = ["clean"]

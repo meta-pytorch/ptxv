@@ -99,13 +99,15 @@ first launch, 2 in the second.
 `c_triton_rowsum_atomic` (triton_rowsum_atomic.py): 4 programs per row each add their partial
 sum with `tl.atomic_add`, i.e. `REDG.E.ADD.F32.FTZ.RN.STRONG.GPU`.
 
-- **Model.** `atom/red.add.f32` is one indivisible round-to-nearest add with FTZ (new `AtomOp::FAdd`
-  in the IR, both front-ends, exec). The numerics chain the adds on a location (`AtomAdd`).
+- **Model.** `atom/red.add.f32` is one indivisible round-to-nearest add, with FTZ in global
+  memory and without it in shared memory (`AtomOp::FAddFtz` in the IR, both front-ends, exec;
+  N-ATOMIC, MISS 142). The numerics chain the adds on a location (`AtomAdd`, with the flag).
 - **Every order at once.** The chain's order is schedule-dependent. In any order of S adds onto a
   location that starts at +0, the first add is exact, so each value sits under at most S − 1
   roundings (S with a nonzero start): `equiv` gives every value that worst case (fp_noise Cor 4b),
-  plus 3·2^-126 absolute per add for FTZ. The bound therefore holds for every order, not only the
-  ones the explorer visited. L0 is refused (the bits depend on the order).
+  plus 3·2^-126 absolute per flushing add (a non-flushing add is exact below 2^-126; MISS 143).
+  The bound therefore holds for every order, not only the ones the explorer visited. L0 is refused
+  (the bits depend on the order).
 - **Exploration.** CTAs share nothing but the atomic adds, but a flat exploration of 16 CTAs
   interleaving their atomics did not finish in 20M states. `--slices` now files bytes that only
   fp32 atomic adds without a returned value touch as reductions (`GFoot::red`): two clusters'

@@ -1,0 +1,71 @@
+name = "probe_shfl_qread"
+description = """
+Probe for the same-opcode queued read (MISS 106 follow-up, chunk_local_cumsum's shape): a SHFL
+reading an earlier SHFL's result with no wait. ptxas (sm_103a, CUDA 13.0) issues
+`SHFL.BFLY PT, R4, R7, 0x1, 0x1f` (A, wr=SB1, st=4) at 0x70, `SHFL.BFLY PT, R5, R4, 0x2, 0x1f`
+(B, waits on SB1, wr=SB0) at 0x80, `IADD3 R6, PT, PT, R4, 0x7, RZ` at 0x90, then the STG of
+R4..R7 waiting on SB0. Compared against each variant's own simulator run
+(PTXV_HW_EXPECT=variant).
+- QREAD: A with no write scoreboard (st=1), B waits on nothing; the IADD3 reads R7 instead
+  (bits), so B's column out[t][1] is the probe: correct if and only if B reads A's result
+  after it lands (in the queue), not at issue.
+- QREAD_ST: as QREAD with ptxas's st=4 after A.
+- QCTRL (positive control): A with no write scoreboard (st=1), then the IADD3 reading R4 with no
+  wait right after it (bits), then B reading R7 (bits): the IADD3 column out[t][2] reads A's
+  result at issue."""
+ptx = "kernel.ptx"
+entry = "shfl_qread"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2654435761
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "QREAD"
+summary = "A with no write scoreboard; B reads A's result with no wait"
+patch = [
+    { at = "@0x70", stall = 1, wbar = 7, expect = "SHFL.BFLY PT, R4, R7, 0x1, 0x1f" },
+    { at = "@0x80", wait = 0, expect = "SHFL.BFLY PT, R5, R4, 0x2, 0x1f" },
+    { at = "@0x90", bits = [[0, 64, 0x0000000707067810], [64, 41, 0x7ffe0ff]], expect = "IADD3 R6, PT, PT, R7, 0x7, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "QREAD_ST"
+summary = "as QREAD with ptxas's stall of 4 after A"
+patch = [
+    { at = "@0x70", wbar = 7, expect = "SHFL.BFLY PT, R4, R7, 0x1, 0x1f" },
+    { at = "@0x80", wait = 0, expect = "SHFL.BFLY PT, R5, R4, 0x2, 0x1f" },
+    { at = "@0x90", bits = [[0, 64, 0x0000000707067810], [64, 41, 0x7ffe0ff]], expect = "IADD3 R6, PT, PT, R7, 0x7, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "QCTRL"
+summary = "positive control: an IADD3 reads A's result with no wait right after A"
+patch = [
+    { at = "@0x70", stall = 1, wbar = 7, expect = "SHFL.BFLY PT, R4, R7, 0x1, 0x1f" },
+    { at = "@0x80", bits = [[0, 64, 0x0000000704067810], [64, 41, 0x7ffe0ff]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "IADD3 R6, PT, PT, R4, 0x7, RZ" },
+    { at = "@0x90", bits = [[0, 64, 0x0c401f0007057f89], [64, 41, 0xe0000]], stall = 5, wbar = 0, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R5, R7, 0x2, 0x1f" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]

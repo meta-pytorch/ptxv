@@ -1,0 +1,2 @@
+out=131 (data[31] read fresh) in 520 of 520 runs of good and FENCE; W0: out=100 in 500 of 500 (2026-11-12, GB300, ptxv hw --scrub)
+GB300 cannot decide the PTX-contract race (one warp-wide MEMBAR orders every lane's data store before any flag store)

@@ -1,0 +1,46 @@
+name = "probe_stasync_coalesce"
+description = """
+Probe (S-REMOTE-INFLIGHT) for coalesced st.async words: one pending operation per warp
+instruction and mbarrier, whose lanes land together unless a lane's drain takes its own part
+out (review repros). C0: lane 1 leaves, lane 0 fences and releases, rank 1 reads lane 1's y: a
+race (PTX memory model: lane 1's store is not in lane 0's program order and lane 1 never
+synchronizes after it), and y can still be in flight at the read (unwritten: S-INIT,
+nondeterministic); PTX also the S-MBAR-SCOPE contract. C1: lane 1 fences and releases: its
+word is ordered before the read. run.sh prints the stateful, unreduced stateful, DPOR and
+--certify verdicts and exits 1 unless each is the expected one. ebfacb16: the explorers
+disagree on C0 (both fronts) and C1 is a false race; 53ef07ac: C0 is wrong-clean everywhere
+(lane 0's drain ordered lane 1's word) and C1 still a false race; 62e6a560: C0 races, but lane
+0's drain still lands lane 1's word, so y is never unwritten ([contract, race]). Fixture:
+fixtures/e_stasync_coalesce.
+"""
+ptx = "kernel.ptx"
+entry = "stasync_coalesce"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "C0"
+summary = "lane 0 alone drains and releases; the reader reads lane 1's y: race, and y may still be unwritten"
+expect = ["contract", "nondeterministic", "race", "violation"]
+expect_sass = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "C1"
+summary = "lane 1 alone drains and releases; the reader reads its y: ordered"
+marker = "@LANE"
+find = "setp.ne.u32 %p6, %r1, 0;"
+replace = "setp.ne.u32 %p6, %r1, 1;"
+expect = ["contract"]
+expect_sass = ["clean"]

@@ -1,0 +1,46 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// probes/cluster_launch_ops/wait_cluster (MISS 209): mbarrier.arrive (local) and try_wait.parity.acquire.cluster; out[t] = S[t] afterwards. Variant cluster1
+// keeps .reqnctapercluster 1, 1, 1 (a cluster launch); variant none deletes it (a launch without
+// cluster dimensions).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry cl_wait_cluster(.param .u64 pout, .param .u64 psrc)
+.reqnctapercluster 1, 1, 1                                          // @NOCLUSTER
+{
+    .reg .pred %p<4>;
+    .reg .b16 %rs<4>;
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<16>;
+    .shared .align 16 .b8 S[256];
+    .shared .align 8 .b64 MB;
+    ld.param.u64 %rd1, [pout];
+    ld.param.u64 %rd4, [psrc];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd5, %rd4;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd2, %r0, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    mov.u32 %r20, S;
+    mad.lo.u32 %r21, %r0, 4, %r20;
+    mov.u32 %r22, MB;
+    st.shared.u32 [%r21], %r0;
+    setp.eq.u32 %p2, %r0, 0;
+    @%p2 mbarrier.init.shared::cta.b64 [%r22], 1;
+    fence.mbarrier_init.release.cluster;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    @%p2 mbarrier.arrive.shared::cta.b64 %rd9, [%r22];
+WAITC:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p1, [%r22], 0;
+    @!%p1 bra WAITC;
+    bar.sync 0;
+    ld.shared.u32 %r9, [%r21];
+    st.global.u32 [%rd3], %r9;
+    ret;
+}

@@ -1,0 +1,2 @@
+{"version": 1, "seed": 1, "name": "x: N(0,1) w.p. 0.995, uniform [2^64.5, 2^65) w.p. 0.005",
+ "default": {"dist": {"kind": "mixture", "components": [{"weight": 0.995, "dist": {"kind": "normal"}}, {"weight": 0.005, "dist": {"kind": "uniform", "lo": 26087635650665564424.0, "hi": 36893488147419103232.0}}]}}}

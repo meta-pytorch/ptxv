@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use ptxv_case::Case;
 use ptxv_sim::explore::Verdict;
+use ptxv_sim::machine::Machine;
 use serde_json::Value;
 use serde_json::json;
 
@@ -231,39 +232,49 @@ fn side(who: &str, dir_case: &Path, out: &Path, max_states: usize) -> Result<Sid
         .unwrap_or(1);
     // ASSUME(E-SMID, E-CLOCK): as the launch check (`ptxv check`), one check per %smid
     // placement and clock-dependent outputs incomplete (smid::check_placements).
+    let verdict_of = |make: &dyn Fn() -> Machine| -> (Verdict, bool) {
+        if ctas <= 1 {
+            return (
+                ptxv_sim::smid::check_placements(make, &mut |mk| {
+                    ptxv_sim::wellsync::check_certified(mk(), max_states)
+                }),
+                false,
+            );
+        }
+        // Several CTAs: the certificate alone, then one cluster at a time (symmetry, or every
+        // cluster) rather than the whole launch's interleavings.
+        let only = std::env::var_os("PTXV_CERTIFY_ONLY");
+        std::env::set_var("PTXV_CERTIFY_ONLY", "1");
+        let v = ptxv_sim::smid::check_placements(make, &mut |mk| {
+            ptxv_sim::wellsync::check_certified(mk(), max_states)
+        });
+        match only {
+            Some(o) => std::env::set_var("PTXV_CERTIFY_ONLY", o),
+            None => std::env::remove_var("PTXV_CERTIFY_ONLY"),
+        }
+        if v.complete {
+            return (v, false);
+        }
+        let mut vs = ptxv_sim::smid::check_placements(make, &mut |mk| {
+            ptxv_sim::explore::explore_symmetric(mk, max_states, &mut |_, _| {})
+        });
+        if let Some(n) = v.notes.first() {
+            vs.notes.insert(0, n.clone());
+        }
+        (vs, true)
+    };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> Result<(Verdict, bool)> {
             drop(machine(&case, k.clone())?);
             let make = || machine(&case, k.clone()).expect("machine");
-            if ctas <= 1 {
-                return Ok((
-                    ptxv_sim::smid::check_placements(&make, &mut |mk| {
-                        ptxv_sim::wellsync::check_certified(mk(), max_states)
-                    }),
-                    false,
-                ));
-            }
-            // Several CTAs: the certificate alone, then one cluster at a time (symmetry, or every
-            // cluster) rather than the whole launch's interleavings.
-            let only = std::env::var_os("PTXV_CERTIFY_ONLY");
-            std::env::set_var("PTXV_CERTIFY_ONLY", "1");
-            let v = ptxv_sim::smid::check_placements(&make, &mut |mk| {
-                ptxv_sim::wellsync::check_certified(mk(), max_states)
-            });
-            match only {
-                Some(o) => std::env::set_var("PTXV_CERTIFY_ONLY", o),
-                None => std::env::remove_var("PTXV_CERTIFY_ONLY"),
-            }
-            if v.complete {
-                return Ok((v, false));
-            }
-            let mut vs = ptxv_sim::smid::check_placements(&make, &mut |mk| {
-                ptxv_sim::explore::explore_symmetric(mk, max_states, &mut |_, _| {})
-            });
-            if let Some(n) = v.notes.first() {
-                vs.notes.insert(0, n.clone());
-            }
-            Ok((vs, true))
+            let (mut v, slices) = verdict_of(&make);
+            // ASSUME(E-LAUNCH-ORDER), MISS 189: as `ptxv check`, an unknown order of several
+            // launches under the strict reading is also checked in the list's order, for its
+            // deadlocks.
+            ptxv_sim::serialized_order_deadlocks(&mut v, &case, &k, &mut |m| {
+                verdict_of(&|| m.clone()).0
+            })?;
+            Ok((v, slices))
         },
     ));
     let (v, slices) = match r {
@@ -445,14 +456,55 @@ fn ulps(a: f32, b: f32) -> u64 {
 /// The two captured GPU outputs against each other.
 fn gpu_compare(r: &Case, c: &Case) -> Option<Value> {
     let (a, b) = (gpu_output_f32(r)?, gpu_output_f32(c)?);
-    if a.len() != b.len() {
-        return Some(json!({"error": format!("output sizes differ: {} vs {}", a.len(), b.len())}));
+    let (ra, rb) = (
+        crate::equiv::gpu_output_bits(r)?,
+        crate::equiv::gpu_output_bits(c)?,
+    );
+    let dt = |k: &Case| {
+        k.m.outputs
+            .first()
+            .and_then(|o| k.buffer(o).ok())
+            .map(|b| b.dtype.clone())
+    };
+    let (da, db) = (dt(r)?, dt(c)?);
+    Some(compare_outputs(&a, &b, &ra, &rb, [&da, &db]))
+}
+
+/// Captured outputs `a`, `b` (values) with raw encodings `ra`, `rb` (f32 bits or 16-bit
+/// codes). `bitwise_equal` counts equal encodings: two NaNs with different payloads or signs
+/// differ (MISS 171: until 2026-11-12 f16 outputs were compared through their f32 widenings,
+/// which map every f16 NaN to one NaN, so 0x7fff and 0xfc03 counted as equal).
+/// `nan_payload_only` counts, separately, the outputs whose encodings differ while both are
+/// NaN. `dt`: the two outputs' dtypes. Codes of two dtypes are not comparable (f16 0x3c00 is
+/// 1.0, bf16 0x3c00 is 2^-7): when they differ there is no bitwise count, and the widened f32
+/// values' bits are compared instead (`widened_equal`, `first_widened_diff`, `dtypes`; until
+/// 2026-11-12 the raw codes were compared across dtypes and reported as "bitwise equal").
+fn compare_outputs(a: &[f32], b: &[f32], ra: &[u32], rb: &[u32], dt: [&str; 2]) -> Value {
+    if a.len() != b.len() || ra.len() != a.len() || rb.len() != b.len() {
+        return json!({"error": format!("output sizes differ: {} vs {}", a.len(), b.len())});
     }
+    let mixed = dt[0] != dt[1];
+    let widened: [Vec<u32>; 2] = if mixed {
+        [a, b].map(|v| v.iter().map(|x| x.to_bits()).collect())
+    } else {
+        [vec![], vec![]]
+    };
+    let (ra, rb) = if mixed {
+        (&widened[0][..], &widened[1][..])
+    } else {
+        (ra, rb)
+    };
     let (mut max_abs, mut max_rel, mut max_ulps, mut worst) = (0.0f64, 0.0f64, 0u64, 0usize);
-    let mut eq = 0;
-    for (i, (x, y)) in a.iter().zip(&b).enumerate() {
-        if x.to_bits() == y.to_bits() {
+    let (mut eq, mut nan_only) = (0, 0);
+    let mut first_diff: Option<usize> = None;
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        if ra[i] == rb[i] {
             eq += 1;
+        } else {
+            first_diff.get_or_insert(i);
+            if x.is_nan() && y.is_nan() {
+                nan_only += 1;
+            }
         }
         let d = (*x as f64 - *y as f64).abs();
         if d > max_abs {
@@ -466,24 +518,87 @@ fn gpu_compare(r: &Case, c: &Case) -> Option<Value> {
             max_ulps = max_ulps.max(ulps(*x, *y));
         }
     }
-    Some(json!({
+    let mut j = json!({
         "outputs": a.len(),
         "bitwise_equal": eq,
+        "nan_payload_only": nan_only,
         "max_abs_diff": max_abs,
         "max_rel_diff": max_rel,
         "max_ulps": max_ulps,
         "worst_output": worst,
-        "worst_values": [a[worst], b[worst]],
-    }))
+        "worst_values": [a.get(worst), b.get(worst)],
+    });
+    if let Some(i) = first_diff {
+        j["first_bitwise_diff"] =
+            json!({"output": i, "encodings": [format!("{:#x}", ra[i]), format!("{:#x}", rb[i])]});
+    }
+    if mixed {
+        let o = j.as_object_mut().unwrap();
+        o.remove("nan_payload_only");
+        let eq = o.remove("bitwise_equal").unwrap();
+        o.insert("widened_equal".into(), eq);
+        if let Some(d) = o.remove("first_bitwise_diff") {
+            o.insert("first_widened_diff".into(), d);
+        }
+        o.insert("dtypes".into(), json!(dt));
+    }
+    j
 }
 
-/// max, median, min and a histogram of the per-output bounds (units of u).
+/// The captured outputs' count for a headline or report: "K/N outputs bitwise equal" and the
+/// NaN note, or, for outputs of two dtypes, that no bitwise count exists and how many are
+/// equal after widening to f32.
+fn gpu_count(g: &Value, n: u64) -> String {
+    match g["dtypes"].as_array() {
+        Some(d) => format!(
+            "output dtypes differ ({} vs {}): no bitwise count; {}/{n} equal after widening to f32{}",
+            d[0].as_str().unwrap_or("?"),
+            d[1].as_str().unwrap_or("?"),
+            g["widened_equal"],
+            g["first_widened_diff"].as_object().map_or(String::new(), |d| format!(
+                "; first difference out[{}]: f32 {} vs {}",
+                d["output"],
+                d["encodings"][0].as_str().unwrap_or("?"),
+                d["encodings"][1].as_str().unwrap_or("?")
+            ))
+        ),
+        None => format!("{}/{n} outputs bitwise equal{}", g["bitwise_equal"], nan_note(g)),
+    }
+}
+
+/// The NaN-tolerant count, labelled as such (", N more equal up to NaN payload / sign (both
+/// NaN)"), and the first encoding difference; empty when the outputs are bitwise equal.
+fn nan_note(g: &Value) -> String {
+    let mut s = String::new();
+    if let Some(n) = g["nan_payload_only"].as_u64().filter(|&n| n > 0) {
+        s += &format!(", {n} more equal only up to NaN payload / sign (both NaN)");
+    }
+    if let Some(d) = g["first_bitwise_diff"].as_object() {
+        s += &format!(
+            "; first difference out[{}]: {} vs {}",
+            d["output"],
+            d["encodings"][0].as_str().unwrap_or("?"),
+            d["encodings"][1].as_str().unwrap_or("?")
+        );
+    }
+    s
+}
+
+/// max, median, min and a histogram of the per-output bounds (units of u), and the largest
+/// absolute term of a bounded output (`max_abs_extra`: flushed subnormals, subnormal roundings;
+/// the bound is |C - R| <= bound_u u sum_m a_m |x_m| + abs_extra).
 fn bound_stats(per: &[Value]) -> Value {
     let mut b: Vec<f64> = per.iter().filter_map(|o| o["bound_u"].as_f64()).collect();
     let n = per.len();
     if b.is_empty() {
         return json!({"outputs": n, "with_bound": 0});
     }
+    // MISS 145: until 2026-11-12 the stats, and so every headline form, dropped this term.
+    let abs = per
+        .iter()
+        .filter(|o| o["bound_u"].is_f64())
+        .filter_map(|o| o["abs_extra"].as_f64())
+        .fold(0.0, f64::max);
     b.sort_by(|x, y| x.partial_cmp(y).unwrap());
     let (lo, hi) = (b[0], b[b.len() - 1]);
     let med = if b.len() % 2 == 1 {
@@ -521,7 +636,17 @@ fn bound_stats(per: &[Value]) -> Value {
             .fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.max(x))))
     };
     json!({"outputs": n, "with_bound": b.len(), "max_u": hi, "median_u": med, "min_u": lo, "histogram": hist,
+           "max_abs_extra": abs,
            "reference_own_max_u": own("ref_u"), "candidate_own_max_u": own("cand_u")})
+}
+
+/// " + A" for the largest absolute term of the per-output bounds (`bound_stats`), as `ptxv
+/// equiv` prints it; empty when there is none.
+fn plus_abs(b: &Value) -> String {
+    match b["max_abs_extra"].as_f64() {
+        Some(a) if a > 0.0 => format!(" + {}", up_e(a, 1)),
+        _ => String::new(),
+    }
 }
 
 /// Blockers from the equiv report (why something is not proven).
@@ -772,7 +897,87 @@ fn fmt_u(x: f64) -> String {
     if x == 0.0 {
         "0".into()
     } else {
-        format!("{x:.2}u")
+        format!("{}u", up(x, 2))
+    }
+}
+
+/// The exact decimal digits of a finite x >= 0 (integer part, fraction part): every finite f64
+/// has at most 1074 fraction digits, and Rust prints a float's exact value at any precision.
+fn exact_digits(x: f64) -> (String, String) {
+    let s = format!("{x:.1100}");
+    let (i, f) = s.split_once('.').unwrap_or((&s, ""));
+    (i.to_string(), f.to_string())
+}
+
+/// Add one unit in the last place to a string of decimal digits.
+fn incr(digits: &mut Vec<u8>) {
+    for b in digits.iter_mut().rev() {
+        if *b == b'9' {
+            *b = b'0';
+        } else {
+            *b += 1;
+            return;
+        }
+    }
+    digits.insert(0, b'1');
+}
+
+/// x >= 0 with `d` decimals, truncated (`up`: plus one unit where digits were dropped).
+fn fixed(x: f64, d: usize, up: bool) -> String {
+    let (i, f) = exact_digits(x);
+    let mut digits: Vec<u8> = format!("{i}{}", &f[..d]).into_bytes();
+    if up && f[d..].bytes().any(|b| b != b'0') {
+        incr(&mut digits);
+    }
+    let mut s = String::from_utf8(digits).unwrap();
+    if d > 0 {
+        s.insert(s.len() - d, '.');
+    }
+    s
+}
+
+/// An upper bound `x` with `d` decimals, rounded up: the printed bound is never below the proven
+/// one (MISS 145: until 2026-11-12 bounds printed rounded to nearest, so 4.004u read "4.00u",
+/// and A = 3.526e-38 read "3.5e-38").
+pub(crate) fn up(x: f64, d: usize) -> String {
+    if !x.is_finite() || x <= 0.0 {
+        return format!("{x:.d$}");
+    }
+    fixed(x, d, true)
+}
+
+/// A lower limit (a condition's threshold, as "for every input with kappa <= K") with `d`
+/// decimals, rounded down: the printed condition is never wider than the proven one.
+pub(crate) fn down(x: f64, d: usize) -> String {
+    if !x.is_finite() || x <= 0.0 {
+        return format!("{x:.d$}");
+    }
+    fixed(x, d, false)
+}
+
+/// An upper bound `x` in the `{:.de}` form (d decimals of the mantissa), rounded up (`up`).
+pub(crate) fn up_e(x: f64, d: usize) -> String {
+    if !x.is_finite() || x <= 0.0 {
+        return format!("{x:.d$e}");
+    }
+    let (i, f) = exact_digits(x);
+    let all = format!("{i}{f}");
+    let first = all.bytes().position(|b| b != b'0').unwrap();
+    // The exponent of the first significant digit.
+    let mut e = i.len() as i64 - 1 - first as i64;
+    let mut m: Vec<u8> = all.as_bytes()[first..first + d + 1].to_vec();
+    if all.as_bytes()[first + d + 1..].iter().any(|&b| b != b'0') {
+        incr(&mut m);
+        if m.len() > d + 1 {
+            m.pop();
+            e += 1;
+        }
+    }
+    let m = String::from_utf8(m).unwrap();
+    if d == 0 {
+        format!("{m}e{e}")
+    } else {
+        format!("{}.{}e{e}", &m[..1], &m[1..])
     }
 }
 
@@ -945,7 +1150,7 @@ pub fn cmd_compare(ref_dir: &Path, cand_dir: &Path, o: &Opts) -> Result<bool> {
             "segments": segments,
             "bound_form": forms,
             "bound_meaning": if forms == ["softmax"] {
-                "|C - R| <= rel_u u y + add_u u, y the exact output (<= 1)"
+                "|C - R| <= rel_u u y + add_u u (+ abs_extra), y the exact output (<= 1)"
             } else {
                 "|C - R| <= bound_u u sum_m a_m |x_m| (+ abs_extra), for every input"
             },
@@ -1063,12 +1268,12 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
                 )
             } else {
                 format!(
-                    "PROVEN elementwise: every output is {o}(rn(f(x) * y)), y another input element; at every (x, y) pair ({:.0} pairs, exhaustive): max {} {o} ulp apart where f and the outputs are normal, max {} overall, |C - R| <= {:.3e}, bitwise equal on {:.4}%, {} special-value mismatches",
+                    "PROVEN elementwise: every output is {o}(rn(f(x) * y)), y another input element; at every (x, y) pair ({:.0} pairs, exhaustive): max {} {o} ulp apart where f and the outputs are normal, max {} overall, |C - R| <= {}, bitwise equal on {}%, {} special-value mismatches",
                     pairs,
                     p16["max_ulps_normal"],
                     p16["max_ulps"],
-                    p16["max_abs"].as_f64().unwrap_or(f64::NAN),
-                    100.0 * eq / pairs,
+                    up_e(p16["max_abs"].as_f64().unwrap_or(f64::NAN), 3),
+                    down(100.0 * eq / pairs, 4),
                     p16["special_mismatch"],
                     o = ew["output_type"].as_str().unwrap_or("?")
                 )
@@ -1081,23 +1286,29 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
                 )
             } else {
                 format!(
-                    "PROVEN elementwise: every output is rn(f(x) * y), y another input element; over {all}, |f_C - f_R| <= {:.3e} (max {} ulp, bitwise equal on {:.4}%), so |C - R| <= |y| {:.3e} + 2^-24 (|C| + |R|) + 2^-149",
-                    ew["max_abs"].as_f64().unwrap_or(f64::NAN),
+                    "PROVEN elementwise: every output is rn(f(x) * y), y another input element; over {all}, |f_C - f_R| <= {} (max {} ulp, bitwise equal on {}%), so |C - R| <= |y| {} + 2^-24 (|C| + |R|) + 2^-149",
+                    up_e(ew["max_abs"].as_f64().unwrap_or(f64::NAN), 3),
                     ew["max_ulps"],
-                    100.0 * ew["bitwise_equal_inputs"].as_f64().unwrap_or(0.0)
-                        / ew["inputs"].as_f64().unwrap_or(1.0),
-                    ew["max_abs"].as_f64().unwrap_or(f64::NAN),
+                    down(
+                        100.0 * ew["bitwise_equal_inputs"].as_f64().unwrap_or(0.0)
+                            / ew["inputs"].as_f64().unwrap_or(1.0),
+                        4
+                    ),
+                    up_e(ew["max_abs"].as_f64().unwrap_or(f64::NAN), 3),
                 )
             }
         } else if ew["bitwise_all"] == true {
             format!("PROVEN bitwise identical (L0) elementwise for {all}")
         } else {
             format!(
-                "PROVEN elementwise for {all}: |C - R| <= {:.3e}, max {} ulp apart, bitwise equal on {:.4}% of inputs",
-                ew["max_abs"].as_f64().unwrap_or(f64::NAN),
+                "PROVEN elementwise for {all}: |C - R| <= {}, max {} ulp apart, bitwise equal on {}% of inputs",
+                up_e(ew["max_abs"].as_f64().unwrap_or(f64::NAN), 3),
                 ew["max_ulps"],
-                100.0 * ew["bitwise_equal_inputs"].as_f64().unwrap_or(0.0)
-                    / ew["inputs"].as_f64().unwrap_or(1.0)
+                down(
+                    100.0 * ew["bitwise_equal_inputs"].as_f64().unwrap_or(0.0)
+                        / ew["inputs"].as_f64().unwrap_or(1.0),
+                    4
+                )
             )
         };
         if let (Some(f), Some(r), Some(c)) = (
@@ -1106,9 +1317,9 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
             ew["candidate_vs_true"].as_object(),
         ) {
             s += &format!(
-                "; vs {f} (f64): reference |err| <= {:.3e}, candidate |err| <= {:.3e}",
-                r["max_abs"].as_f64().unwrap_or(f64::NAN),
-                c["max_abs"].as_f64().unwrap_or(f64::NAN)
+                "; vs {f} (f64): reference |err| <= {}, candidate |err| <= {}",
+                up_e(r["max_abs"].as_f64().unwrap_or(f64::NAN), 3),
+                up_e(c["max_abs"].as_f64().unwrap_or(f64::NAN), 3)
             );
         }
         s
@@ -1122,12 +1333,17 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
     } else if proven && b["with_bound"].as_u64().unwrap_or(0) > 0 {
         let form = if let Some(sf) = eq["softmax_form"].as_object() {
             format!(
-                "{:.2}u*y + {:.2}u",
-                sf["rel_u"].as_f64().unwrap_or(0.0),
-                sf["add_u"].as_f64().unwrap_or(0.0)
+                "{}u*y + {}u{}",
+                up(sf["rel_u"].as_f64().unwrap_or(0.0), 2),
+                up(sf["add_u"].as_f64().unwrap_or(0.0), 2),
+                plus_abs(b)
             )
         } else {
-            format!("{} * sum|terms|", fmt_u(b["max_u"].as_f64().unwrap_or(0.0)))
+            format!(
+                "{} * sum|terms|{}",
+                fmt_u(b["max_u"].as_f64().unwrap_or(0.0)),
+                plus_abs(b)
+            )
         };
         let r16 = &eq["round16"];
         if r16.is_object() && eq["bound_form"] == json!(["round"]) {
@@ -1158,9 +1374,10 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
                 .unwrap_or_default();
             let sf = &eq["softmax_form"];
             format!(
-                "PROVEN {level} for every input: both outputs are {fmt} roundings of values with the same exact polynomial y{inner}; |C - R| <= {:.0}u*|y| + {:.2}u*sum|terms|, and per input <= the distance between the {fmt} roundings of [y - G_R, y + G_C]{steps}",
-                sf["rel_u"].as_f64().unwrap_or(0.0),
-                sf["add_u"].as_f64().unwrap_or(0.0)
+                "PROVEN {level} for every input: both outputs are {fmt} roundings of values with the same exact polynomial y{inner}; |C - R| <= {}u*|y| + {}u*sum|terms|{}, and per input <= the distance between the {fmt} roundings of [y - G_R, y + G_C]{steps}",
+                up(sf["rel_u"].as_f64().unwrap_or(0.0), 0),
+                up(sf["add_u"].as_f64().unwrap_or(0.0), 2),
+                plus_abs(b)
             )
         } else if r16.is_object() && eq["bound_form"] == json!(["norm"]) {
             let fmt = r16["format"].as_str().unwrap_or("bf16");
@@ -1188,8 +1405,9 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
                 })
                 .unwrap_or_default();
             format!(
-                "PROVEN {level} for every input (norm form): both outputs are {fmt} roundings of the same normalization{inner}; |C - R| <= {} * T(x), and per input <= the distance between the {fmt} roundings of [y - G_R, y + G_C]{steps}",
-                fmt_u(b["max_u"].as_f64().unwrap_or(0.0))
+                "PROVEN {level} for every input (norm form): both outputs are {fmt} roundings of the same normalization{inner}; |C - R| <= {} * T(x){}, and per input <= the distance between the {fmt} roundings of [y - G_R, y + G_C]{steps}",
+                fmt_u(b["max_u"].as_f64().unwrap_or(0.0)),
+                plus_abs(b)
             )
         } else {
             format!("PROVEN {level} (same function) for every input, |C - R| <= {form}")
@@ -1236,9 +1454,8 @@ fn headline(level: &str, proven: bool, eq: &Value, gpu: &Value) -> String {
     };
     if let Some(n) = gpu["outputs"].as_u64() {
         s += &format!(
-            "; GPU: {}/{} outputs bitwise equal, max |C - R| {:.3e}",
-            gpu["bitwise_equal"],
-            n,
+            "; GPU: {}, max |C - R| {:.3e}",
+            gpu_count(gpu, n),
             gpu["max_abs_diff"].as_f64().unwrap_or(f64::NAN)
         );
         // L0 and L0~0 (also unproven): the bound is 0.
@@ -1371,12 +1588,16 @@ fn summary(r: &Value) -> String {
     let b = &r["equivalence"]["per_output_bound"];
     if b["with_bound"].as_u64().unwrap_or(0) > 0 {
         s += &format!(
-            "   per-output bound: max {}, median {}, min {} ({} of {} outputs bounded)\n",
+            "   per-output bound: max {}, median {}, min {} ({} of {} outputs bounded){}\n",
             fmt_u(b["max_u"].as_f64().unwrap_or(0.0)),
             fmt_u(b["median_u"].as_f64().unwrap_or(0.0)),
             fmt_u(b["min_u"].as_f64().unwrap_or(0.0)),
             b["with_bound"],
-            b["outputs"]
+            b["outputs"],
+            match b["max_abs_extra"].as_f64() {
+                Some(a) if a > 0.0 => format!(", plus an absolute term of at most {}", up_e(a, 1)),
+                _ => String::new(),
+            }
         );
     }
     let rel = r["relies_on"].as_array().cloned().unwrap_or_default();
@@ -1503,13 +1724,17 @@ fn markdown(r: &Value) -> String {
         let b = &e["per_output_bound"];
         if b["with_bound"].as_u64().unwrap_or(0) > 0 {
             s += &format!(
-                "- per-output bound ({}): max {}, median {}, min {}; {} of {} outputs bounded\n",
+                "- per-output bound ({}): max {}, median {}, min {}; {} of {} outputs bounded{}\n",
                 e["bound_meaning"].as_str().unwrap_or(""),
                 fmt_u(b["max_u"].as_f64().unwrap_or(0.0)),
                 fmt_u(b["median_u"].as_f64().unwrap_or(0.0)),
                 fmt_u(b["min_u"].as_f64().unwrap_or(0.0)),
                 b["with_bound"],
-                b["outputs"]
+                b["outputs"],
+                match b["max_abs_extra"].as_f64() {
+                    Some(a) if a > 0.0 => format!("; abs_extra at most {}", up_e(a, 1)),
+                    _ => String::new(),
+                }
             );
             if let (Some(a), Some(c)) = (
                 b["reference_own_max_u"].as_f64(),
@@ -1523,9 +1748,10 @@ fn markdown(r: &Value) -> String {
             }
             if let Some(sf) = e["softmax_form"].as_object() {
                 s += &format!(
-                    "- softmax form: |C - R| <= {:.2}u * y + {:.2}u\n",
-                    sf["rel_u"].as_f64().unwrap_or(0.0),
-                    sf["add_u"].as_f64().unwrap_or(0.0)
+                    "- softmax form: |C - R| <= {}u * y + {}u{}\n",
+                    up(sf["rel_u"].as_f64().unwrap_or(0.0), 2),
+                    up(sf["add_u"].as_f64().unwrap_or(0.0), 2),
+                    plus_abs(b)
                 );
             }
             s += "- histogram of the bound over outputs:\n\n  | bound (u) | outputs |\n  |---|---|\n";
@@ -1534,10 +1760,11 @@ fn markdown(r: &Value) -> String {
                     h["lo"].as_f64().unwrap_or(0.0),
                     h["hi"].as_f64().unwrap_or(0.0),
                 );
+                // Outward: the bin's low edge rounded down, its high edge up.
                 let k = if lo == hi {
-                    format!("{lo:.2}")
+                    up(lo, 2)
                 } else {
-                    format!("{lo:.2} – {hi:.2}")
+                    format!("{} – {}", down(lo, 2), up(hi, 2))
                 };
                 s += &format!("  | {k} | {} |\n", h["count"]);
             }
@@ -1592,10 +1819,18 @@ fn markdown(r: &Value) -> String {
             "Not available (no f32 captured outputs on both sides).\n"
         };
     } else {
+        let count = if g["dtypes"].is_array() {
+            gpu_count(g, g["outputs"].as_u64().unwrap_or(0))
+        } else {
+            format!(
+                "{} of {} outputs bitwise equal (encodings compared, NaN payloads and signs included){}",
+                g["bitwise_equal"],
+                g["outputs"],
+                nan_note(g)
+            )
+        };
         s += &format!(
-            "- {} of {} outputs bitwise equal; max |C - R| = {:.3e} (out[{}]: {} vs {}), max relative {:.3e}, max {} ulp\n",
-            g["bitwise_equal"],
-            g["outputs"],
+            "- {count}; max |C - R| = {:.3e} (out[{}]: {} vs {}), max relative {:.3e}, max {} ulp\n",
             g["max_abs_diff"].as_f64().unwrap_or(0.0),
             g["worst_output"],
             g["worst_values"][0],
@@ -1679,6 +1914,72 @@ mod tests {
         assert!(!rerun_replaces(Some(&l1), Some(&l0u)));
     }
 
+    /// MISS 171 (RHA): codes of two dtypes are not comparable. An f16 reference {1.0, 2.0}
+    /// (0x3c00, 0x4000) against a bf16 candidate with the same codes (2^-7, 2.0): until
+    /// 2026-11-12 this printed "2/2 outputs bitwise equal"; one value is equal.
+    #[test]
+    fn mixed_dtype_codes_have_no_bitwise_count() {
+        let codes: Vec<u32> = vec![0x3c00, 0x4000];
+        let a: Vec<f32> = codes
+            .iter()
+            .map(|c| crate::equiv::f16_to_f32_for_tests(*c as u16))
+            .collect();
+        let b: Vec<f32> = codes.iter().map(|c| f32::from_bits(c << 16)).collect();
+        let g = compare_outputs(&a, &b, &codes, &codes, ["f16", "bf16"]);
+        assert!(g["bitwise_equal"].is_null(), "{g}");
+        assert_eq!(g["widened_equal"], 1, "{g}");
+        assert_eq!(g["dtypes"], json!(["f16", "bf16"]), "{g}");
+        assert_eq!(g["first_widened_diff"]["encodings"][0], "0x3f800000", "{g}");
+        assert_eq!(g["first_widened_diff"]["encodings"][1], "0x3c000000", "{g}");
+        let h = headline("L1", false, &json!({}), &g);
+        let gpu = h.split("; GPU: ").nth(1).unwrap_or_else(|| panic!("{h}"));
+        assert!(
+            gpu.starts_with("output dtypes differ (f16 vs bf16): no bitwise count; 1/2 equal"),
+            "{h}"
+        );
+        assert!(!h.contains("bitwise equal"), "{h}");
+        // Equal values of two dtypes (1.0 in both, -0 in both) are equal once widened.
+        let (ca, cb) = (vec![0x3c00u32, 0x8000], vec![0x3f80u32, 0x8000]);
+        let a: Vec<f32> = ca
+            .iter()
+            .map(|c| crate::equiv::f16_to_f32_for_tests(*c as u16))
+            .collect();
+        let b: Vec<f32> = cb.iter().map(|c| f32::from_bits(c << 16)).collect();
+        let g = compare_outputs(&a, &b, &ca, &cb, ["f16", "bf16"]);
+        assert_eq!(g["widened_equal"], 2, "{g}");
+        assert!(g["first_widened_diff"].is_null(), "{g}");
+    }
+
+    /// MISS 171: bitwise means bitwise. The captured outputs of forum post 76's
+    /// `6x7/colslice/scatter_add/fp16/d1` differ only in NaN payloads (0x7fff vs 0xfc03): not
+    /// bitwise equal; the NaN-tolerant count is separate and labelled.
+    #[test]
+    fn nan_payloads_are_not_bitwise_equal() {
+        let codes_a: Vec<u32> = vec![0x3c00, 0x7fff, 0x7fff, 0x0000];
+        let codes_b: Vec<u32> = vec![0x3c00, 0xfc03, 0x7fff, 0x8000];
+        let wide = |c: &u32| crate::equiv::f16_to_f32_for_tests(*c as u16);
+        let (a, b): (Vec<f32>, Vec<f32>) = (
+            codes_a.iter().map(wide).collect(),
+            codes_b.iter().map(wide).collect(),
+        );
+        let g = compare_outputs(&a, &b, &codes_a, &codes_b, ["f16", "f16"]);
+        assert_eq!(g["outputs"], 4);
+        assert_eq!(g["bitwise_equal"], 2, "{g}");
+        assert_eq!(g["nan_payload_only"], 1, "{g}");
+        assert_eq!(g["first_bitwise_diff"]["encodings"][1], "0xfc03", "{g}");
+        let note = nan_note(&g);
+        assert!(
+            note.contains("1 more equal only up to NaN payload / sign (both NaN)"),
+            "{note}"
+        );
+        assert!(note.contains("out[1]: 0x7fff vs 0xfc03"), "{note}");
+        let h = headline("L0", true, &json!({}), &g);
+        assert!(
+            h.contains("GPU: 2/4 outputs bitwise equal, 1 more equal only"),
+            "{h}"
+        );
+    }
+
     /// MISS 109: L0 up to the sign of zero (L0~0) has a headline of its own, never "bitwise
     /// identical" (until 2026-11-11 the level was L0: "PROVEN bitwise identical (L0)").
     #[test]
@@ -1739,5 +2040,76 @@ mod tests {
             s.json
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// MISS 145: the per-output stats carry the largest absolute term of a bounded output, and
+    /// the headline prints it ("+ A", as `ptxv equiv` does), rounded up. Until 2026-11-12 it said
+    /// "|C - R| <= 0 * sum|terms|" for a flushing pair whose proven bound is 3.526e-38 there.
+    #[test]
+    fn the_headline_carries_the_absolute_term() {
+        let per = vec![
+            json!({"bound_u": 0.0, "abs_extra": 3.526e-38, "form": "sum"}),
+            json!({"bound_u": 2.0, "abs_extra": 0.0, "form": "sum"}),
+            json!({"bound_u": null, "abs_extra": 1.0, "form": "none"}),
+        ];
+        let b = bound_stats(&per);
+        assert_eq!(b["max_abs_extra"].as_f64(), Some(3.526e-38), "{b}");
+        let gpu = json!({"outputs": 3, "bitwise_equal": 3, "max_abs_diff": 0.0,
+            "max_fraction_of_bound": 0.0});
+        let eq = json!({"per_output_bound": b, "bound_form": ["sum"]});
+        let h = headline("L1", true, &eq, &gpu);
+        assert!(h.contains("|C - R| <= 2.00u * sum|terms| + 3.6e-38"), "{h}");
+        let eq = json!({"per_output_bound": b, "bound_form": ["softmax"],
+            "softmax_form": {"rel_u": 4.0, "add_u": 2.0}});
+        let h = headline("L1", true, &eq, &gpu);
+        assert!(h.contains("|C - R| <= 4.00u*y + 2.00u + 3.6e-38"), "{h}");
+        let none = bound_stats(&[json!({"bound_u": 1.0, "abs_extra": 0.0, "form": "sum"})]);
+        let h = headline(
+            "L1",
+            true,
+            &json!({"per_output_bound": none, "bound_form": ["sum"]}),
+            &gpu,
+        );
+        assert!(
+            h.contains("|C - R| <= 1.00u * sum|terms|") && !h.contains(" + "),
+            "{h}"
+        );
+    }
+
+    /// MISS 145: a printed bound is never below the proven one, and a printed condition's limit
+    /// never wider: bounds round up, limits down. Until 2026-11-12 both rounded to nearest, so a
+    /// bound of 4.004u read "4.00u" and A = 3.526e-38 read "3.5e-38".
+    #[test]
+    fn printed_bounds_round_outward() {
+        for (x, d, want) in [
+            (4.004, 2, "4.01"),
+            (4.0, 2, "4.00"),
+            (17.7, 2, "17.70"),
+            (79.305, 2, "79.31"),
+            (131072.0, 0, "131072"),
+            (0.0, 2, "0.00"),
+        ] {
+            assert_eq!(up(x, d), want, "up({x}, {d})");
+        }
+        for (x, d, want) in [
+            (3.526e-38, 1, "3.6e-38"),
+            (9.96e-5, 1, "1.0e-4"),
+            (1e-38, 1, "1.0e-38"),
+        ] {
+            assert_eq!(up_e(x, d), want, "up_e({x:e}, {d})");
+        }
+        for (x, d, want) in [(4.996, 0, "4"), (5.0, 0, "5"), (99.99996, 4, "99.9999")] {
+            assert_eq!(down(x, d), want, "down({x}, {d})");
+        }
+        // Every printed value bounds its argument, over a sweep of magnitudes.
+        let mut v = 1.234_567e-40f64;
+        while v < 1e6 {
+            for d in 0..4 {
+                assert!(up(v, d).parse::<f64>().unwrap() >= v, "up({v:e}, {d})");
+                assert!(down(v, d).parse::<f64>().unwrap() <= v, "down({v:e}, {d})");
+                assert!(up_e(v, d).parse::<f64>().unwrap() >= v, "up_e({v:e}, {d})");
+            }
+            v *= 1.37;
+        }
     }
 }

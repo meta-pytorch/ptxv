@@ -1,0 +1,79 @@
+name = "probe_rel_lanes_pub"
+description = """
+MISS 223 repro (PTX contract; lane orders of one store instruction, publishing stores): the 32
+lanes of warp 0 store data[t] = t + 100, then run one st.release.gpu of the same value 1 to
+flag; thread 32 polls flag with ld.acquire.gpu and reads data[31] (good). The poll may read from
+any lane's release store and synchronizes with that lane alone, so the plain read of data[31]
+races with lane 31's plain store unless the poll read lane 31's store (PTX memory model: release
+sequences are continued by read-modify-writes only). The lane orders return no order for equal
+stored values (exec.rs `lane_orders`, the St arm's "all values equal: no choice" shortcut), so
+lane 31's store is always the location's synchronization source and good is clean. W0 reads
+data[0] (control: the race the model does report). ONE: only lane 31 releases (control:
+ordered, clean). FENCE: fence.acq_rel.gpu then st.relaxed.gpu of 1 (a release pattern through
+membar_vc): clean too. GB300 cannot decide it (expected/gb300.txt: one warp-wide MEMBAR orders
+every lane's data store before any flag store). `bash probes/rel_lanes_pub/run.sh` exits 1
+while good or FENCE is PTX clean. grid 1, block 64."""
+ptx = "kernel.ptx"
+entry = "rel_lanes"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+[[buffers]]
+name = "data"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "data"
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "equal-valued release stores by 32 lanes; the observer reads data[31]"
+expect = ["race"]
+
+[[variants]]
+id = "W0"
+summary = "the observer reads data[0] (control: race reported)"
+marker = "@WHO"
+find = "[%rd1+124]"
+replace = "[%rd1]"
+expect = ["race"]
+
+[[variants]]
+id = "ONE"
+summary = "only lane 31 runs the release store (control: ordered, clean)"
+marker = "@REL"
+find = "st.release.gpu.global.u32 [%rd2], %r3;"
+replace = "setp.eq.u32 %p4, %r1, 31; @%p4 st.release.gpu.global.u32 [%rd2], %r3;"
+expect = ["clean"]
+
+[[variants]]
+id = "FENCE"
+summary = "fence.acq_rel.gpu then st.relaxed.gpu of 1 by every lane; the observer reads data[31]"
+marker = "@REL"
+find = "st.release.gpu.global.u32 [%rd2], %r3;"
+replace = "fence.acq_rel.gpu; st.relaxed.gpu.global.u32 [%rd2], %r3;"
+expect = ["race"]
+

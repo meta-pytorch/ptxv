@@ -1,0 +1,298 @@
+name = "e_nic_cta"
+description = """
+S-SCOPE / S-NIC-ATOMIC (MISS 193): the NIC is in no CTA or cluster. One GPU, a loopback QP: CTA 0
+t0 posts an RDMA write of src into dst and an atomic fetch-add of 1 on sig, after a bar.sync with
+t32 (R), rings the doorbell and polls the completion; R read dst once before the barrier, polls
+sig with ld.acquire.cta until 1 and reads dst again. The NIC's accesses take the doorbell thread's
+GPU, not its CTA or cluster, so only a .gpu or .sys acquire synchronizes with the fetch-add (PTX
+ISA 9.5 sections 8.5, 8.7; docs/nic.md). PART, PART_OTHERCTA, PART_SRC, WORDPART, WORDFULL, WORD4,
+FLAGHALF, FLAGFULL, CQEPART, CQECTA (MISS 194): reads of another extent than the NIC's element
+(the atomic's word, an RDMA write's chunk or lone flag write, a CQE field) are not one location
+with it. WORDDEAD, CQEDEAD (MISS 226): such a race stays a race when the read's value is dead
+(E-RACE-DEAD; PTX ISA 9.5 section 8.7.2)."""
+ptx = "kernel.ptx"
+entry = "ibgda"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[nic_qps]]
+name = "qp0"
+device = 0
+peer = 0
+qpn = 0x42
+sq = "sq"
+sq_wqes = 2
+cq = "cq"
+cq_cqes = 2
+db = "uar"
+
+[[nic_mrs]]
+key = 0x100
+buffer = "src"
+
+[[nic_mrs]]
+key = 0x101
+buffer = "sink"
+
+[[nic_mrs]]
+key = 0x200
+buffer = "dst"
+
+[[nic_mrs]]
+key = 0x201
+buffer = "sig"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "cq"
+dtype = "u8"
+shape = [128]
+init = "zeros"
+values = [[63, 241], [127, 241]]
+device = 0
+
+[[buffers]]
+name = "uar"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dbr"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sink"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dst"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sig"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [5]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "sq"
+
+[[params]]
+kind = "ptr"
+buffer = "cq"
+
+[[params]]
+kind = "ptr"
+buffer = "uar"
+
+[[params]]
+kind = "ptr"
+buffer = "dbr"
+
+[[params]]
+kind = "ptr"
+buffer = "sink"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "sig"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "CTA"
+summary = "R (CTA 0, the doorbell thread's CTA) polls with ld.acquire.cta: the NIC is in no CTA, so the poll and the fetch-add are not morally strong: a race on sig (until 2026-11-12 the NIC took the doorbell thread's CTA: clean on the PTX front). SASS: LDG.E.64.STRONG.SM with no CCTL.IVALL: race (before: on dst); GB300 profile: a stale L1 read"
+expect = ["race"]
+
+[[variants]]
+id = "CLUSTER"
+summary = "ld.acquire.cluster: the NIC is in no cluster: a race on sig on the PTX front (until 2026-11-12: clean). SASS: LDG.E.64.STRONG.GPU, CCTL.IVALL: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64"
+replace = "ld.acquire.cluster.global.u64"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "GPU"
+summary = "ld.acquire.gpu: the NIC's GPU is the doorbell thread's: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64"
+replace = "ld.acquire.gpu.global.u64"
+expect = ["clean"]
+
+[[variants]]
+id = "SYS"
+summary = "ld.acquire.sys: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64"
+replace = "ld.acquire.sys.global.u64"
+expect = ["clean"]
+
+[[variants]]
+id = "OTHERCTA"
+summary = "R in CTA 1 (no early read): .cta does not include the doorbell thread's CTA either: race"
+marker = "@RCTA"
+find = "setp.eq.u32     %p4, %r21, 0;"
+replace = "setp.eq.u32     %p4, %r21, 1;"
+edits = [{ marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["race"]
+
+[[variants]]
+id = "PART"
+summary = "R (CTA 0) polls the low 4 bytes of the 8-byte sig with ld.acquire.sys.u32: not one location with the NIC's 8-byte fetch-add (PTX ISA 9.5 8.2.1, 8.7): a mixed-size data race (8.7.2), no observation (8.9.2) (MISS 194; until 2026-11-12: clean). SASS: overlap not decided: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.acquire.sys.global.u32 %r31, [%rd2]; cvt.u64.u32 %rd41, %r31;"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "PART_OTHERCTA"
+summary = "PART read by CTA 1 (no early read)"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.acquire.sys.global.u32 %r31, [%rd2]; cvt.u64.u32 %rd41, %r31;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "WORDPART"
+summary = "a thread of CTA 1, unordered with the NIC, polls dst+4 (4 bytes) of the 8-byte word the RDMA write lands as one strong .sys write (S-NIC-WORD) with ld.relaxed.sys.u32 until it holds src[1]: a mixed-size data race (8.7, 8.7.2) (MISS 194; until 2026-11-12: clean). SASS: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.relaxed.sys.global.u32 %r31, [%rd1+4]; setp.ne.u32 %p10, %r31, 257; @%p10 bra SIGPOLL; mov.u32 %r31, 1; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "WORDFULL"
+summary = "the same poll at the word's width (ld.relaxed.sys.u64 [dst]): morally strong with the NIC's word write: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.relaxed.sys.global.u64 %rd43, [%rd1]; setp.ne.u64 %p10, %rd43, 1103806595328; @%p10 bra SIGPOLL; mov.u32 %r31, 1; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "CQEPART"
+summary = "a thread of CTA 1, unordered with the NIC, reads bytes 60-63 of the second CQE with ld.relaxed.sys.u32, spanning three of the fields the model publishes (56-59, 60-61, 62, 63; S-NIC-CQE): unmodeled (MISS 194; until 2026-11-12: clean). SASS: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.param.u64 %rd44, [cq]; ld.relaxed.sys.global.u32 %r31, [%rd44+124]; and.b32 %r31, %r31, 0; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["unmodeled"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "PART_SRC"
+summary = "PART, then R reads src[0], which T stored before its release fence and doorbell: the 4-byte poll does not observe the fetch-add (PTX ISA 9.5 8.9.2), so R does not synchronize with the release the fetch-add carries and the read races with T's store (MISS 194; until 2026-11-12 the poll synchronized: clean). SASS: overlap not decided: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.acquire.sys.global.u32 %r31, [%rd2]; cvt.u64.u32 %rd41, %r31; setp.ne.u64 %p10, %rd41, 1; @%p10 bra SIGPOLL; ld.param.u64 %rd45, [src]; ld.global.u32 %r32, [%rd45]; st.global.u32 [%rd42+16], %r32;"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "WORD4"
+summary = "the RDMA write lands src[0..3) at dst+4 (12 bytes: a naturally aligned 4-byte chunk, then an 8-byte one; S-NIC-WORD) and a thread of CTA 1 polls dst+4 with ld.relaxed.sys.u32 until it holds src[0]: the chunk's own width, one location: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.relaxed.sys.global.u32 %r31, [%rd1+4]; setp.ne.u32 %p10, %r31, 256; @%p10 bra SIGPOLL; mov.u32 %r31, 1; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }, { marker = "@RADDR", find = "mov.u64         %rd40, %rd1;", replace = "add.u64         %rd40, %rd1, 4;" }, { marker = "@WBC", find = "0x0001000010000000", replace = "0x000100000C000000" }]
+expect = ["clean"]
+
+[[variants]]
+id = "FLAGHALF"
+summary = "DeepEP's notify shape: the RDMA write is a lone aligned 8-byte write (S-NIC-FLAG: one strong .sys write that carries the doorbell's release) and a thread of CTA 1 polls its lower 4 bytes with ld.acquire.sys.u32 until they hold src[0], then reads src[0], which T stored before the doorbell: not one location with the flag (PTX ISA 9.5 8.2.1, 8.7), so the poll is a mixed-size race and acquires nothing (8.9.2): the src read races (MISS 194; until 2026-11-12 the poll synchronized: clean). SASS: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.acquire.sys.global.u32 %r31, [%rd1]; setp.ne.u32 %p10, %r31, 256; @%p10 bra SIGPOLL; ld.param.u64 %rd45, [src]; ld.global.u32 %r32, [%rd45]; st.global.u32 [%rd42+16], %r32; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }, { marker = "@WBC", find = "0x0001000010000000", replace = "0x0001000008000000" }]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "FLAGFULL"
+summary = "control: FLAGHALF with the poll at the flag's width (ld.acquire.sys.u64 [dst]): it synchronizes with the flag's release, so the src read is ordered: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.acquire.sys.global.u64 %rd43, [%rd1]; setp.ne.u64 %p10, %rd43, 1103806595328; @%p10 bra SIGPOLL; ld.param.u64 %rd45, [src]; ld.global.u32 %r32, [%rd45]; st.global.u32 [%rd42+16], %r32; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }, { marker = "@WBC", find = "0x0001000010000000", replace = "0x0001000008000000" }]
+expect = ["clean"]
+
+[[variants]]
+id = "CQECTA"
+summary = "CQEPART's read at .cta scope (ld.relaxed.cta.u32 of bytes 60-63 of the second CQE), polled until the CQE lands: the NIC is in no CTA, so the read and the CQE write are not morally strong whatever their overlap: a race, and no unmodeled report (MISS 194: the overlap decides nothing)"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.param.u64 %rd44, [cq]; ld.relaxed.cta.global.u32 %r31, [%rd44+124]; setp.eq.u32 %p10, %r31, 0xF1000000; @%p10 bra SIGPOLL; mov.u32 %r31, 1; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["race"]
+expect_sass = ["race"]
+
+[[variants]]
+id = "WORDDEAD"
+summary = "WORDPART's 4-byte read of the 8-byte word the RDMA write lands, once, its value masked to 0 before the store: a mixed-size data race whose loaded value reaches nothing stays a race (E-RACE-DEAD, PTX ISA 9.5 section 8.7.2; MISS 226; until 2026-11-12: race-dead, clean). SASS: ptxas 13.0 drops the masked load: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.relaxed.sys.global.u32 %r31, [%rd1+4]; and.b32 %r31, %r31, 0; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "CQEDEAD"
+summary = "CQECTA's read once, its value masked to 0: not morally strong with the CQE write, whose overlap with bytes 60-63 is not modeled; E-RACE-DEAD drops only a race of one location, so the race stays (MISS 226; until 2026-11-12: race-dead, clean). SASS: ptxas 13.0 drops the masked load: clean"
+marker = "@SIGPOLL"
+find = "ld.acquire.cta.global.u64 %rd41, [%rd2];"
+replace = "ld.param.u64 %rd44, [cq]; ld.relaxed.cta.global.u32 %r31, [%rd44+124]; and.b32 %r31, %r31, 0; st.global.u32 [%rd42+16], %r31; bra DONE;"
+edits = [{ marker = "@RCTA", find = "setp.eq.u32     %p4, %r21, 0;", replace = "setp.eq.u32     %p4, %r21, 1;" }, { marker = "@ECTA", find = "setp.eq.u32     %p8, %r21, 0;", replace = "setp.eq.u32     %p8, %r21, 7;" }]
+expect = ["race"]
+expect_sass = ["clean"]

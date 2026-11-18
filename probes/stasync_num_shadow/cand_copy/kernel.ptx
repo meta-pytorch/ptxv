@@ -1,0 +1,38 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry r5e_cand_copy(.param .u64 px, .param .u64 pw, .param .u64 pout, .param .u64 pz)
+{
+    .reg .pred %p<8>;
+    .reg .b16 %rs<40>;
+    .reg .b32 %r<80>;
+    .reg .f32 %f<80>;
+    .reg .b64 %rd<64>;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd7, [pw];
+    ld.param.u64 %rd2, [pout];
+    ld.param.u64 %rd15, [pz];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd7, %rd7;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd15, %rd15;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd3, %r0, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd8, %rd7, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    mul.wide.u32 %rd9, %r0, 8;
+    add.s64 %rd10, %rd15, %rd9;
+    mul.wide.u32 %rd9, %r0, 16;
+    add.s64 %rd11, %rd15, %rd9;
+    ld.global.f32 %f4, [%rd4];
+    ld.global.f32 %f5, [%rd8];
+    st.global.f32 [%rd5], %f4;
+    ret;
+}

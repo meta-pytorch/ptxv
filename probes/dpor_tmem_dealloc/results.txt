@@ -1,0 +1,45 @@
+# run.sh, 2026-11-12, on agentDP 72da73cd (before the fixes): exit 1
+# (NOFREEWAIT ptx dpor was expected [race] at this run. The fixed DPOR reports [race,violation]; the stateful search reports only [race]. Racy kernel, so E-DRF allows the extra class.)
+good  ptx  stateful expected [clean]                    observed [clean]                    ok
+good  ptx  dpor     expected [clean]                    observed [clean]                    ok
+good  ptx  certify  expected [clean]                    observed [clean]                    ok
+good  sass stateful expected [clean]                    observed [clean]                    ok
+good  sass dpor     expected [clean]                    observed [clean]                    ok
+good  sass certify  expected [clean]                    observed [clean]                    ok
+NOFREEWAIT ptx  stateful expected [race]                     observed [race]                     ok
+NOFREEWAIT ptx  dpor     expected [race]                     observed [race]                     ok
+NOFREEWAIT ptx  certify  expected [race]                     observed [race]                     ok
+NOFREEWAIT sass stateful expected [race,violation]           observed [race,violation]           ok
+NOFREEWAIT sass dpor     expected [race,violation]           observed [race]                     MISMATCH
+NOFREEWAIT sass certify  expected [race,violation]           observed [race,violation]           ok
+rc=1
+
+# After the MISS 230/231/233 fixes (04fbfa49): exit 0
+good  ptx  stateful expected [clean]                    observed [clean]                    ok
+good  ptx  dpor     expected [clean]                    observed [clean]                    ok
+good  ptx  certify  expected [clean]                    observed [clean]                    ok
+good  sass stateful expected [clean]                    observed [clean]                    ok
+good  sass dpor     expected [clean]                    observed [clean]                    ok
+good  sass certify  expected [clean]                    observed [clean]                    ok
+NOFREEWAIT ptx  stateful expected [race]                     observed [race]                     ok
+NOFREEWAIT ptx  dpor     expected [race,violation]           observed [race,violation]           ok
+NOFREEWAIT ptx  certify  expected [race]                     observed [race]                     ok
+NOFREEWAIT sass stateful expected [race,violation]           observed [race,violation]           ok
+NOFREEWAIT sass dpor     expected [race,violation]           observed [race,violation]           ok
+NOFREEWAIT sass certify  expected [race,violation]           observed [race,violation]           ok
+rc=0
+
+# On agentDP after merging int7 05eb1a04 (2cd6794f): exit 0
+good  ptx  stateful expected [clean]                    observed [clean]                    ok
+good  ptx  dpor     expected [clean]                    observed [clean]                    ok
+good  ptx  certify  expected [clean]                    observed [clean]                    ok
+good  sass stateful expected [clean]                    observed [clean]                    ok
+good  sass dpor     expected [clean]                    observed [clean]                    ok
+good  sass certify  expected [clean]                    observed [clean]                    ok
+NOFREEWAIT ptx  stateful expected [race]                     observed [race]                     ok
+NOFREEWAIT ptx  dpor     expected [race,violation]           observed [race,violation]           ok
+NOFREEWAIT ptx  certify  expected [race]                     observed [race]                     ok
+NOFREEWAIT sass stateful expected [contract,race,violation]  observed [contract,race,violation]  ok
+NOFREEWAIT sass dpor     expected [contract,race,violation]  observed [contract,race,violation]  ok
+NOFREEWAIT sass certify  expected [contract,race,violation]  observed [contract,race,violation]  ok
+rc=0

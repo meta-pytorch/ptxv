@@ -1,0 +1,10 @@
+# s > b ? s : b vs s >u b ? s : b, s = sqrt.approx(a) (NaN for a < 0) (ptx front). The model's claim, run without captures (check.py).
+max_states = 200000
+segments = true
+reference = { case = "sselgt_p", variant = "good", front = "ptx", certify = true }
+
+[[candidates]]
+case = "sselgtu_p"
+variant = "good"
+front = "ptx"
+certify = true

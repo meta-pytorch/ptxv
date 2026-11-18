@@ -1,0 +1,92 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe: does a BSSY region's BSYNC hold the lanes waiting at it while another lane of its mask
+// is blocked at a warp sync (E-HW-BSYNC-YIELD's "blocks" clause; E-BSYNC gap G1)? probes/
+// mbar_init_diverge with lanes 0 and 1 on the divergent path: lane 0 spins 20,000 cycles on the
+// clock (no yield), inits an mbarrier slot, stores the round's data word and arrives; lane 1 goes
+// straight to `bar.warp.sync 3`, where it waits for lane 0; lanes 2-31 wait on the slot (parity
+// 0) at the join and read the word. Each slot first holds a planted stale word (`stale`
+// parameter; bit 63 set = phase parity 1, which a parity-0 wait accepts at once). out[t] =
+// rounds in which thread t passed the wait and read a data word other than r + 1.
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry bsync_block(.param .u64 out_p, .param .u64 stale_p, .param .u32 rounds_p)
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<40>;
+    .reg .b64 %rd<16>;
+    .shared .align 8 .b64 slots[1024];
+    .shared .align 4 .b32 data[1024];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [stale_p];
+    ld.param.u32 %r30, [rounds_p];
+    mov.u32 %r1, %tid.x;
+    and.b32 %r25, %r1, 31;
+    shr.u32 %r9, %r1, 5;
+    // The warp index made warp-uniform as Triton does (shfl of lane 0).
+    shfl.sync.idx.b32 %r2, %r9, 0, 31, -1;
+    mov.u32 %r3, slots;
+    mov.u32 %r4, data;
+    // Plant the stale words and zero the data, then a CTA barrier.
+    mov.u32 %r5, %r1;
+PLANT:
+    shl.b32 %r6, %r5, 3;
+    add.u32 %r7, %r3, %r6;
+    st.shared.u64 [%r7], %rd2;
+    shl.b32 %r6, %r5, 2;
+    add.u32 %r7, %r4, %r6;
+    mov.u32 %r8, 0;
+    st.shared.u32 [%r7], %r8;
+    add.u32 %r5, %r5, 128;
+    setp.lt.u32 %p1, %r5, 1024;
+    @%p1 bra PLANT;
+    bar.sync 0;
+    mov.u32 %r10, 0;
+    mov.u32 %r11, 0;
+LOOP:
+    shl.b32 %r12, %r2, 8;
+    add.u32 %r12, %r12, %r10;
+    shl.b32 %r13, %r12, 3;
+    add.u32 %r14, %r3, %r13;
+    shl.b32 %r13, %r12, 2;
+    add.u32 %r15, %r4, %r13;
+    add.u32 %r16, %r10, 1;
+    setp.lt.u32 %p2, %r25, 2;
+    @!%p2 bra JOIN;
+    setp.ne.u32 %p7, %r25, 0;
+    @%p7 bra SYNC1;
+    mov.u32 %r22, %clock;
+DELAY:
+    mov.u32 %r23, %clock;
+    sub.u32 %r24, %r23, %r22;
+    setp.lt.u32 %p6, %r24, 20000;            // @DELAY
+    @%p6 bra DELAY;
+    mbarrier.init.shared::cta.b64 [%r14], 1;
+    st.shared.u32 [%r15], %r16;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r14];
+SYNC1:
+    bar.warp.sync 3;                          // @BLOCK
+JOIN:
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p3, [%r14], 0;
+    @!%p3 bra WAIT;
+    ld.shared.u32 %r18, [%r15];
+    setp.ne.u32 %p4, %r18, %r16;
+    selp.u32 %r19, 1, 0, %p4;
+    add.u32 %r11, %r11, %r19;
+    add.u32 %r10, %r10, 1;
+    setp.lt.u32 %p5, %r10, %r30;
+    @%p5 bra LOOP;
+    mov.u32 %r20, %ctaid.x;
+    mad.lo.u32 %r21, %r20, 128, %r1;
+    mul.wide.u32 %rd3, %r21, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    st.global.u32 [%rd4], %r11;
+    ret;
+}

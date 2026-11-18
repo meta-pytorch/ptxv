@@ -1,0 +1,150 @@
+name = "e_nic_conv2"
+description = """
+MISS 194 (S-SCOPE, complete overlap with the NIC's accesses): the state hash covers
+NicState::acc, the element each NIC access covers. Two schedules (an E-CLOCK branch) post one RDMA
+write of the same 16 bytes split into two data segments 8+8 (X) or 4+12 (Y); after the sender
+zeroes the WQE, the CQE and its registers, the states differ only in NicState::acc (the element
+covering dst+4: X's 8-byte chunk, Y's 4-byte one). A reader unordered with the NIC then reads dst+4
+with 4 bytes: a mixed-size race under X, none under Y. CONV2_XY: the fall-through side posts X
+and the clock-taken side Y, which is explored first; with acc left out of the hash the visited set
+merges X into Y and the race is lost (source mutant acc-unhashed). CONV2_YX: the fall-through side
+posts Y (X explored first). ONLY2_X, ONLY2_Y: controls. SASS: ptxas turns the clock branch into
+selects, so the sides are not explored apart there (E-CLOCK notes, clock-paced polls, an S-INIT use
+by the NIC: nondeterministic, unmodeled, violation); CONV2_XY and CONV2_YX are incomplete there
+(E-CLOCK: clock-derived output) and not asserted by the test; the SASS front does not decide
+overlap."""
+ptx = "kernel.ptx"
+entry = "conv2"
+grid = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[nic_qps]]
+name = "qp0"
+device = 0
+peer = 0
+qpn = 0x42
+sq = "sq"
+sq_wqes = 1
+cq = "cq"
+cq_cqes = 1
+db = "uar"
+
+[[nic_mrs]]
+key = 0x100
+buffer = "src"
+
+[[nic_mrs]]
+key = 0x200
+buffer = "dst"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "sq"
+dtype = "u8"
+shape = [64]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "cq"
+dtype = "u8"
+shape = [64]
+init = "zeros"
+values = [[63, 241]]
+device = 0
+
+[[buffers]]
+name = "uar"
+dtype = "u64"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "dst"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "done"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+device = 0
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[params]]
+kind = "ptr"
+buffer = "sq"
+
+[[params]]
+kind = "ptr"
+buffer = "cq"
+
+[[params]]
+kind = "ptr"
+buffer = "uar"
+
+[[params]]
+kind = "ptr"
+buffer = "dst"
+
+[[params]]
+kind = "ptr"
+buffer = "done"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "CONV2_XY"
+summary = "fall-through side posts X (8+8: an 8-byte chunk over dst+4), the clock-taken side Y (4+12: a 4-byte chunk at dst+4): X's side races on C's 4-byte read (PTX ISA 9.5 sections 8.7.1, 8.7.2): race; clean with acc left out of the state hash (54 states then 43). SASS: no branch; incomplete (E-CLOCK), not asserted (see the description)"
+expect = ["race"]
+expect_sass = ["nondeterministic", "unmodeled", "violation"]
+
+[[variants]]
+id = "CONV2_YX"
+summary = "the sides swapped: the fall-through side posts Y (X explored first): race, with or without acc in the state hash. SASS: no branch; incomplete (E-CLOCK), not asserted (see the description)"
+marker = "@SIDEF"
+find = "bra             SHAPE_X;"
+replace = "bra             SHAPE_Y;"
+edits = [{ marker = "@SIDET", find = "bra             SHAPE_Y;", replace = "bra             SHAPE_X;" }]
+expect = ["race"]
+expect_sass = ["nondeterministic", "unmodeled", "violation"]
+
+[[variants]]
+id = "ONLY2_X"
+summary = "control: both sides post X (8-byte chunk): race. SASS: overlap not decided: clean"
+marker = "@SIDET"
+find = "bra             SHAPE_Y;"
+replace = "bra             SHAPE_X;"
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "ONLY2_Y"
+summary = "control: both sides post Y (4-byte chunk at dst+4: one location with the read, morally strong): clean"
+marker = "@SIDEF"
+find = "bra             SHAPE_X;"
+replace = "bra             SHAPE_Y;"
+expect = ["clean"]

@@ -1,0 +1,186 @@
+name = "probe_xu_queue"
+description = """
+Probe (L-OPCLASS, E-HW-SB-QUEUE) for F2I in MUFU's conversion queue on GB300. ptxas (sm_103a)
+issues `F2I.TRUNC.NTZ R0, R5` (no scoreboard) at 0x80, `F2I.TRUNC.NTZ R9, R6` (wr=SB0) at 0x90,
+`MUFU.RCP R8, R4` (wr=SB1) at 0xa0 and `IADD3 R0, PT, PT, R0, R9, RZ` (waits on SB0) at 0xb0.
+The variants cut the stalls of 0x80 and 0x90 to 1 and take the second F2I's write scoreboard
+away:
+- COVER: the IADD3 waits on SB1 only, MUFU's. Correct on GB300 if and only if F2I completes in
+  issue order before the later MUFU (the conversion queue E-HW-SB-QUEUE assumed until MISS 96).
+- NOWAIT: the IADD3 waits on nothing (positive control: R0 / R9 read before the F2Is land).
+- OWN: the stalls cut, the second F2I keeps SB0 and the IADD3 waits on it (control).
+The _I2F / _F2F variants put `I2F.U16 R8, R4` / `F2F.F16.F32 R8, R4` (wr=SB1) at 0xa0 in
+MUFU's place, with the same patches (ptxv hw compares them with the good variant's output, so
+the three words derived from 0xa0 differ by construction; the F2I column out[t][2] is the probe).
+GB300 (2026-11-11, `ptxv hw --scrub`, 1000 runs each): good and OWN correct; COVER and NOWAIT
+wrong in every run with the same outputs; OWN_I2F / OWN_F2F with the F2I column correct in every
+run, COVER_* / NOWAIT_* with it stale in every run; COVER_ST (ptxas's stalls kept, st=8) wrong in
+1000 / 1000 as NOWAIT_ST. No queue across F2I and MUFU, I2F or F2F (MISS 96): the scoreboard
+check reports COVER's reads at both levels (results.txt)."""
+ptx = "kernel.ptx"
+entry = "xu_queue"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [256, 4]
+init = "file"
+file = "in.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [256, 4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "COVER"
+summary = "the second F2I with no write scoreboard, the IADD3 waits on MUFU's SB1 only"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", wbar = 7, stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xb0", wait = 2, expect = "IADD3 R0, PT, PT, R0, R9, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "the second F2I with no write scoreboard, the IADD3 waits on nothing (positive control)"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", wbar = 7, stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xb0", wait = 0, expect = "IADD3 R0, PT, PT, R0, R9, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN"
+summary = "the stalls cut, the second F2I keeps SB0 and the IADD3 waits on it (control)"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "COVER_I2F"
+summary = "COVER with `I2F.U16 R8, R4` (wr=SB1) at 0xa0 in MUFU's place: the IADD3 waits on its SB1 only"
+marker = "@XU"
+find = "rcp.approx.ftz.f32 %f5, %f1;"
+replace = "mov.b32 %r20, %f1;\n    cvt.u16.u32 %rs1, %r20;\n    cvt.rn.f32.u16 %f5, %rs1;"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", wbar = 7, stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xa0", expect = "I2F.U16 R8, R4" },
+    { at = "@0xb0", wait = 2, expect = "IADD3 R0, PT, PT, R0, R9, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_I2F"
+summary = "NOWAIT with `I2F.U16 R8, R4` at 0xa0 (positive control)"
+marker = "@XU"
+find = "rcp.approx.ftz.f32 %f5, %f1;"
+replace = "mov.b32 %r20, %f1;\n    cvt.u16.u32 %rs1, %r20;\n    cvt.rn.f32.u16 %f5, %rs1;"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", wbar = 7, stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xa0", expect = "I2F.U16 R8, R4" },
+    { at = "@0xb0", wait = 0, expect = "IADD3 R0, PT, PT, R0, R9, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN_I2F"
+summary = "OWN with `I2F.U16 R8, R4` at 0xa0 (control)"
+marker = "@XU"
+find = "rcp.approx.ftz.f32 %f5, %f1;"
+replace = "mov.b32 %r20, %f1;\n    cvt.u16.u32 %rs1, %r20;\n    cvt.rn.f32.u16 %f5, %rs1;"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xa0", expect = "I2F.U16 R8, R4" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "COVER_F2F"
+summary = "COVER with `F2F.F16.F32 R8, R4` (wr=SB1) at 0xa0 in MUFU's place: the IADD3 waits on its SB1 only"
+marker = "@XU"
+find = "rcp.approx.ftz.f32 %f5, %f1;"
+replace = "cvt.rn.f16.f32 %rs1, %f1;\n    cvt.u32.u16 %r21, %rs1;\n    mov.b32 %f5, %r21;"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", wbar = 7, stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xa0", expect = "F2F.F16.F32 R8, R4" },
+    { at = "@0xb0", wait = 2, expect = "IADD3 R0, PT, PT, R0, R9, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_F2F"
+summary = "NOWAIT with `F2F.F16.F32 R8, R4` at 0xa0 (positive control)"
+marker = "@XU"
+find = "rcp.approx.ftz.f32 %f5, %f1;"
+replace = "cvt.rn.f16.f32 %rs1, %f1;\n    cvt.u32.u16 %r21, %rs1;\n    mov.b32 %f5, %r21;"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", wbar = 7, stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xa0", expect = "F2F.F16.F32 R8, R4" },
+    { at = "@0xb0", wait = 0, expect = "IADD3 R0, PT, PT, R0, R9, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN_F2F"
+summary = "OWN with `F2F.F16.F32 R8, R4` at 0xa0 (control)"
+marker = "@XU"
+find = "rcp.approx.ftz.f32 %f5, %f1;"
+replace = "cvt.rn.f16.f32 %rs1, %f1;\n    cvt.u32.u16 %r21, %rs1;\n    mov.b32 %f5, %r21;"
+patch = [
+    { at = "@0x80", stall = 1, expect = "F2I.TRUNC.NTZ R0, R5" },
+    { at = "@0x90", stall = 1, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xa0", expect = "F2F.F16.F32 R8, R4" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "COVER_ST"
+summary = "COVER with ptxas's stalls kept (st=8 on both F2Is): the second F2I with no write scoreboard, the IADD3 waits on MUFU's SB1 only"
+patch = [
+    { at = "@0x90", wbar = 7, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xb0", wait = 2, expect = "IADD3 R0, PT, PT, R0, R9, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "NOWAIT_ST"
+summary = "NOWAIT with ptxas's stalls kept (control for COVER_ST)"
+patch = [
+    { at = "@0x90", wbar = 7, expect = "F2I.TRUNC.NTZ R9, R6" },
+    { at = "@0xb0", wait = 0, expect = "IADD3 R0, PT, PT, R0, R9, RZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]

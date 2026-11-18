@@ -1,0 +1,58 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-CLOCK: control decided by the high half of %clock64 only. Thread 0 stores out[1] = 7 with
+// no synchronization; thread 32 reads %clock64 and, when bit 32 is set, copies out[1] to out[0]
+// (a race with thread 0's store), else stores 1 to out[0]. ptxas reads the high register of the
+// `CS2R R2, SR_CLOCKLO` pair directly. The clock taint followed only the pair's low register,
+// so the branch was no clock choice and the model (clock 0) took the store of 1: clean. Both
+// halves are clock-derived now: the branch goes both ways, the race.
+//   good: as above (each side a loop that runs once, so that ptxas keeps the branch).
+//   LO: bit 0 of the low half instead (a clock choice before as well).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_clock_hi(.param .u64 out_p)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra READER;
+    mov.u32 %r2, 7;
+    st.global.u32 [%rd1+4], %r2;
+    bra DONE;
+READER:
+    setp.ne.u32 %p2, %r1, 32;
+    @%p2 bra DONE;
+    mov.u64 %rd2, %clock64;
+    shr.u64 %rd3, %rd2, 32;              // @HALF
+    cvt.u32.u64 %r3, %rd3;
+    and.b32 %r4, %r3, 1;
+    setp.ne.u32 %p3, %r4, 0;
+    @%p3 bra RACE;
+    ld.global.u32 %r10, [%rd1+12];       // 0: the store loop runs once
+    mov.u32 %r5, 1;
+ONE:
+    st.global.u32 [%rd1], %r5;
+    add.u32 %r10, %r10, 1;
+    setp.lt.u32 %p5, %r10, %r5;
+    @%p5 bra ONE;
+    bra DONE;
+RACE:
+    ld.global.u32 %r9, [%rd1+12];        // 0: the copy loop runs once (ptxas keeps a branch)
+COPY:
+    ld.global.u32 %r6, [%rd1+4];
+    st.global.u32 [%rd1], %r6;
+    add.u32 %r9, %r9, 1;
+    setp.lt.u32 %p4, %r9, %r6;
+    @%p4 bra COPY;
+DONE:
+    ret;
+}

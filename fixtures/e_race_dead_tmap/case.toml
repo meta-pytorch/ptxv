@@ -59,6 +59,8 @@ buffer = "flag"
 [[variants]]
 id = "good"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "TF1"
@@ -79,6 +81,8 @@ W1WAIT:
     @!%p2 bra W1WAIT;
     ret;"""
 expect = ["fault", "race", "violation"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "fault", "race", "violation"]
 
 [[variants]]
 id = "TF2"
@@ -109,3 +113,5 @@ W1WAIT:
     @!%p2 bra W1WAIT;
     ret;""" }]
 expect = ["race"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "race"]

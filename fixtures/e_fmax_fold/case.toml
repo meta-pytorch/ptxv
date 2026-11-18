@@ -31,6 +31,8 @@ buffer = "out"
 id = "good"
 summary = "post-fix: bar.sync 2,128 right before each fold (every warp read tile s-1's max first)"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "prefix"
@@ -40,7 +42,7 @@ replace = "<delete>"
 expect = ["race"]
 # SASS: the read is an LDS against the fold's ATOMS, which the strong re-check (S-SMEM-STRONG)
 # keeps; the outputs then differ (beyond 2M states, so the race tag is not reached).
-expect_sass = ["nondeterministic"]
+expect_sass = ["contract", "nondeterministic"]
 
 [[variants]]
 id = "good_3tiles"
@@ -49,6 +51,8 @@ marker = "@NT"
 find = "%r8, 2;"
 replace = "%r8, 3;"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "prefix_3tiles"
@@ -58,7 +62,7 @@ replace = "<delete>"
 expect = ["race"]
 # SASS: the read is an LDS against the fold's ATOMS, which the strong re-check (S-SMEM-STRONG)
 # keeps; the outputs then differ (beyond 2M states, so the race tag is not reached).
-expect_sass = ["nondeterministic"]
+expect_sass = ["contract", "nondeterministic"]
 
 [[variants.edits]]
 marker = "@NT"

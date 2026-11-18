@@ -1,0 +1,87 @@
+name = "probe_wo_commute"
+description = """
+E-WARP-ORDER repro (MISS 220): why commuting is not enough to exempt two warp atomics from the
+PTX strong-pair report. Lanes 31 and 1 of the converged warp 0 add 1 and 2 to one word at
+consecutive instructions, results dead, no lane publishing; thread 32 reads the word once and
+traps on 2, which only lane 1's add first leaves. The PTX model lets either add take effect
+first (the lanes are threads: ISA text), so the trap is reachable; the model runs the warp's
+lanes in program order and reports the pair instead (good: nondeterministic, never clean). SWAP
+(lane 1's add first in program order) reaches the trap in the model. SAME (both add 1, trap on
+5, a value no order leaves): equal operands take the word through the same values in either
+order, the report's false alarm. RED / RED_SAME: the same with red (no result). Grid 1, block
+64. expected/ is GB300's output per variant (ptxas cubin, `ptxv hw`, 1000 runs per variant):
+out = 7 when thread 32 did not trap; GB300 issues the converged warp's adds in program order,
+so a null result for the other order. `bash probes/wo_commute/run.sh` prints the GB300 outputs
+next to ptxv's verdicts and exits 1 while a verdict differs from the expected one."""
+ptx = "kernel.ptx"
+entry = "wo_commute"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "c"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 31 adds 1, then lane 1 adds 2, results dead; trap on 2 (reachable under the PTX model with lane 1's add first): reported, nondeterministic, never clean"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "SWAP"
+summary = "control: lane 1 adds 2 first in program order, lane 31 adds 1 next; trap on 2 (reached by the model)"
+expect = ["nondeterministic", "trap"]
+marker = "@A"
+find = "@%p2 atom.relaxed.gpu.global.add.u32 %r2, [%rd1], 1;"
+replace = "@%p3 atom.relaxed.gpu.global.add.u32 %r3, [%rd1], 2;"
+edits = [{ marker = "@B", find = "@%p3 atom.relaxed.gpu.global.add.u32 %r3, [%rd1], 2;", replace = "@%p2 atom.relaxed.gpu.global.add.u32 %r2, [%rd1], 1;" }]
+
+[[variants]]
+id = "SAME"
+summary = "both lanes add 1; trap on 5, a value no order leaves (equal operands: the same values in either order): clean"
+expect = ["clean"]
+marker = "@B"
+find = "@%p3 atom.relaxed.gpu.global.add.u32 %r3, [%rd1], 2;"
+replace = "@%p3 atom.relaxed.gpu.global.add.u32 %r3, [%rd1], 1;"
+edits = [{ marker = "@CMP", find = "setp.eq.u32 %p5, %r4, 2;", replace = "setp.eq.u32 %p5, %r4, 5;" }]
+
+[[variants]]
+id = "RED"
+summary = "good with red.relaxed.gpu.add (no result): trap on 2 reachable under the PTX model; nondeterministic"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@A"
+find = "@%p2 atom.relaxed.gpu.global.add.u32 %r2, [%rd1], 1;"
+replace = "@%p2 red.relaxed.gpu.global.add.u32 [%rd1], 1;"
+edits = [{ marker = "@B", find = "@%p3 atom.relaxed.gpu.global.add.u32 %r3, [%rd1], 2;", replace = "@%p3 red.relaxed.gpu.global.add.u32 [%rd1], 2;" }]
+
+[[variants]]
+id = "RED_SAME"
+summary = "SAME with red.relaxed.gpu.add of 1 by both lanes: clean"
+expect = ["clean"]
+marker = "@A"
+find = "@%p2 atom.relaxed.gpu.global.add.u32 %r2, [%rd1], 1;"
+replace = "@%p2 red.relaxed.gpu.global.add.u32 [%rd1], 1;"
+edits = [
+  { marker = "@B", find = "@%p3 atom.relaxed.gpu.global.add.u32 %r3, [%rd1], 2;", replace = "@%p3 red.relaxed.gpu.global.add.u32 [%rd1], 1;" },
+  { marker = "@CMP", find = "setp.eq.u32 %p5, %r4, 2;", replace = "setp.eq.u32 %p5, %r4, 5;" },
+]

@@ -1198,6 +1198,9 @@ impl<T: Clone> Pages<T> {
 
 impl<T: Clone + Hash> Pages<T> {
     pub fn from_vec(v: Vec<T>, fill: T) -> Self {
+        Self::from_slice(&v, fill)
+    }
+    pub fn from_slice(v: &[T], fill: T) -> Self {
         let len = v.len();
         let mut pages = Vec::new();
         for chunk in v.chunks(PAGE) {
@@ -1324,19 +1327,19 @@ pub struct Mem {
 }
 
 impl Mem {
-    pub fn new(init: Vec<u8>) -> Mem {
+    pub fn new(init: &[u8]) -> Mem {
         let n = init.len();
         Mem {
-            bytes: Pages::from_vec(init, 0),
+            bytes: Pages::from_slice(init, 0),
             sh: Pages::uniform(n, Sh::default()),
         }
     }
 
     /// Memory whose every byte holds undefined data until written (S-INIT scratch buffers).
-    pub fn new_undef(init: Vec<u8>) -> Mem {
+    pub fn new_undef(init: &[u8]) -> Mem {
         let n = init.len();
         Mem {
-            bytes: Pages::from_vec(init, 0),
+            bytes: Pages::from_slice(init, 0),
             sh: Pages::uniform(
                 n,
                 Sh {
@@ -1389,6 +1392,12 @@ pub struct Thread {
     /// Landings of this thread's cp.async copies by waits so far: the epochs of its wait actor
     /// (`Machine::cp_wait_actor`, E-CPASYNC).
     pub cp_epoch: u32,
+    /// The epochs of this thread's cp.async copies that have landed, one entry per landing
+    /// actor (a `cp.async.mbarrier.arrive` operation's actor, the wait actor): the prior copies
+    /// a later arrive-on of the thread also releases (`AsyncKind::CpArrive::prior`,
+    /// E-CPASYNC-MBAR). An arrive operation's copies land at its epoch 1 and its arrive-on is
+    /// its epoch 2, so these cover the copies, not the earlier arrive-ons.
+    pub cp_done: VC,
     /// E-CLOCK opt-in (PTXV_CLOCK_STEP): the value the next clock read returns.
     pub clock: u64,
     /// E-CLOCK: back edges of clock branches taken in a row (clock.rs `MAX_CLOCK_ITERS`).
@@ -1471,6 +1480,11 @@ pub struct Thread {
     /// waited on), as clocks of their threads: S-CLUSTER-LIFE counts them as ordered before
     /// this thread's exit even when the wait did not synchronize with them (S-MBAR-SCOPE).
     pub landed: VC,
+    /// The async actors (`AsyncOp::actor`, at their write clock) of this thread's remote stores
+    /// (st.async, SASS `ST.E`) that landed as their own steps, or ahead of another lane's op in
+    /// a drain, since its last drain: its next cluster release orders them before it, as it
+    /// would had they still been in flight (`drain_remote`, S-REMOTE-INFLIGHT).
+    pub remote_landed: VC,
     /// Releases observed by relaxed strong loads, not yet acquired (a later acquire fence
     /// does): (writer, release clock, release scope).
     pub acq_pending: Vec<(u32, VC, Scope)>,
@@ -1607,6 +1621,10 @@ pub struct CpPending {
 pub struct Warp {
     pub cta: u16,
     core: WarpCore,
+    /// E-HW-BSYNC-YIELD (GB300 profile): bit b set once a lane `BSSY Bb` recorded yielded or
+    /// blocked; a `BSYNC Bb` that is no reconvergence point (`exec::bsync_holds`) then holds no
+    /// lane until b records none.
+    pub bopen: u16,
     /// SASS: copies a `DEPBAR` of some lanes retired while other live lanes of the warp ran
     /// elsewhere: (the warp's commit count at their issue, their writes' clock, lanes that
     /// have not executed a `DEPBAR` covering them yet). Such a lane's covering wait joins
@@ -1695,6 +1713,29 @@ pub struct MbRel {
     pub asyncx: bool,
 }
 
+/// One lane's part of an `AsyncKind::Remote` operation (S-REMOTE-INFLIGHT), as issued.
+#[derive(Clone, Debug, Hash)]
+pub struct RemoteLane {
+    pub thread: u32,
+    /// Its own async actor for words (st.async, SASS `ST.E`); `thread` for an arrival.
+    pub actor: u32,
+    /// Transaction bytes (negative: completed) and arrivals.
+    pub tx: i64,
+    pub n: u32,
+    /// (offset, value) of the words it writes, under `actor`.
+    pub words: Vec<(u32, u32)>,
+    /// What its update releases (S-MBAR-SCOPE), fixed at issue.
+    pub rels: Vec<MbRel>,
+    /// Its clock (with `actor` ticked) and view at issue, and its shared-memory-only
+    /// happens-before then (`AsyncOp::sh`).
+    pub vc: VC,
+    pub vis: VC,
+    pub sh: Vec<(Cover, VC)>,
+    /// Per word of `words`, what it leaves in the numerics shadow when it lands (MISS 205;
+    /// empty without numerics).
+    pub snaps: Vec<crate::num::ReadSnapshot>,
+}
+
 #[derive(Clone, Debug, Hash, Serialize)]
 pub struct Mbar {
     pub expected: u32,
@@ -1742,6 +1783,21 @@ pub struct Tmem {
     /// The last MMA that used or changed the collector (its pipe actor and clock at issue),
     /// for the order check (S-TC-COLLECTOR).
     pub coll_last: Option<(u32, u32)>,
+    /// E-PAIR: this CTA's side of a `tcgen05.alloc.cta_group::2` rendezvous in progress.
+    pub pair: Option<PairAlloc>,
+}
+
+/// One CTA's side of a paired allocation (`tcgen05.alloc.cta_group::2`, E-PAIR): a warp of
+/// each CTA of the pair executes it, the first waits for the second, and the second allocates
+/// the same columns in both CTAs (exec.rs `tmem_alloc_pair`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PairAlloc {
+    /// This CTA's warp `warp` (representative thread `rep`) arrived first, allocating `ncols`
+    /// columns, and waits for the peer CTA's warp.
+    Arrived { warp: u32, rep: u32, ncols: u32 },
+    /// The peer CTA's warp allocated columns `col..` in both CTAs; their marks are `actor`'s
+    /// epoch 1. This CTA's waiting warp takes the address next.
+    Done { col: u32, actor: u32 },
 }
 
 pub const TMEM_LANES: usize = 128;
@@ -1766,6 +1822,7 @@ impl Tmem {
             permit: false,
             coll_a: None,
             coll_last: None,
+            pair: None,
         }
     }
 }
@@ -1857,23 +1914,25 @@ pub enum AsyncKind {
         mbar: u32,
         writes: Vec<CpPending>,
         tx: bool,
+        /// The issuer's prior cp.async operations, which the arrive-on is ordered after too:
+        /// the copies that had landed when it issued the arrive (`Thread::cp_done`) and epoch 1
+        /// of its earlier arrive operations then in flight, whose copies land by this
+        /// operation's completion at the latest (`complete_cp_arrive`).
+        prior: VC,
     },
     /// ASSUME(S-REMOTE-INFLIGHT): a remote mbarrier arrival / complete_tx (`mbarrier.arrive
-    /// .shared::cluster` to another CTA) or `st.async` into another CTA, in flight from issue
-    /// until delivered: `store` = (offset, value) of st.async words, `tx` the transaction
-    /// bytes (negative: completed), `n` arrivals. The lanes of one warp instruction that
-    /// target the same mbarrier are one operation (`fresh` while that instruction executes).
+    /// .shared::cluster` to another CTA), `st.async` into another CTA or SASS `ST.E` into
+    /// another CTA's shared memory, in flight from issue until delivered. The lanes of one warp
+    /// instruction that target the same mbarrier are one operation (`fresh` while that
+    /// instruction executes), one `RemoteLane` each, in lane order; the operation's
+    /// `AsyncOp::issuer` / `actor` / `vc` are its first lane's (`vc`: the lanes' join). The lanes
+    /// land together as one async step, but a lane's drain lands only that lane's part
+    /// (`Machine::split_remote_lane`): another lane's release orders none of it.
     Remote {
         cta: u16,
         mbar: u32,
-        tx: i64,
-        n: u32,
-        store: Vec<(u32, u32)>,
         fresh: bool,
-        /// What the update releases (S-MBAR-SCOPE), fixed at issue.
-        rels: Vec<MbRel>,
-        /// The issuing lanes' own clocks at issue (S-CLUSTER-LIFE: landed when observed).
-        land: VC,
+        lanes: Vec<RemoteLane>,
     },
     /// ASSUME(S-NIC-ORDER): QP `qp`'s NIC executes its oldest announced WQE (nic.rs).
     Nic { qp: u16 },
@@ -1894,6 +1953,12 @@ pub struct AsyncOp {
     /// In-order pipe this op belongs to, or None (unordered): the issuing thread for tcgen05;
     /// `remote_pipe` for remote mbarrier operations (S-REMOTE-INFLIGHT).
     pub fifo: Option<u64>,
+    /// Position in its in-order pipe (`fifo`), 0 = the head: the op completes only after the
+    /// ops of its pipe with lower positions. Ops enter a pipe in issue order (`push_async`)
+    /// and the positions stay 0..n-1 as ops leave (`take_pending`). Not (actor, clock) order:
+    /// one warp's remote pipe holds several lanes' ops (S-REMOTE-INFLIGHT, MISS 154). 0 for
+    /// ops outside any pipe.
+    pub seq: u32,
     pub actor: u32,
     pub vc: VC,
     pub issuer: u32,
@@ -1996,7 +2061,10 @@ pub struct McBind {
 pub struct Alloc {
     pub name: String,
     pub base: u64,
-    pub init: Vec<u8>,
+    /// Shared: a launch cloned for a model variant, a profile re-run or an explorer thread's
+    /// private statics (`Machine::private_statics`) keeps the bytes once (`Arc::make_mut`
+    /// copies them for a launch that changes them, e.g. a mutated input).
+    pub init: Arc<Vec<u8>>,
     /// S-INIT (scratch buffers): every byte is undefined until written (`init` is a placeholder); a
     /// load of an unwritten byte gives undefined bits, reported where they are used.
     pub undef: bool,
@@ -2123,6 +2191,21 @@ pub struct Launch {
     /// lane mask is parked at a WARPSYNC.COLLECTIVE (GB300, fixtures/e_bsync_parked_collective).
     /// Only the GB300 hardware profile sets it (hwprofile.rs); never set from a case.
     pub hw_bsync_coll: bool,
+    /// E-HW-BSYNC-YIELD (GB300 profile, MISS 81): a `BSYNC` that is no reconvergence point (no
+    /// `.RECONVERGENT`, or a region that can yield: G1) holds its lanes until a lane it waits for
+    /// yields (`YIELD`, `NANOSLEEP`) or blocks. Only the GB300
+    /// hardware profile sets it (hwprofile.rs); never set from a case.
+    pub hw_bsync_yield: bool,
+    /// E-HW-STS-LOWEST (GB300 profile, MISS 75): the lanes of one shared store (SASS `STS`)
+    /// take effect in phases of 32 / (bytes / 4) lanes, so the lowest active lane of the last
+    /// phase leaves its bytes (GB300, fixtures/e_sts_shapes; exec.rs `hw_store_phase`). Only
+    /// the GB300 hardware profile sets it (hwprofile.rs); never set from a case.
+    pub hw_sts_lowest: bool,
+    /// E-HW-STG-LOWEST (GB300 profile, MISS 168): the lanes of one 32-bit global store (SASS
+    /// `STG`) on one word leave the lowest active lane's bytes (GB300, fixtures/e_stg_keep;
+    /// exec.rs `hw_store_phase`; not `STG.E.MMIO.SYS`, not with multicast objects). Only the
+    /// GB300 hardware profile sets it (hwprofile.rs); never set from a case.
+    pub hw_stg_lowest: bool,
     /// E-HW-SPLIT-UR (GB300 profile): no switch between a warp's splits inside a
     /// uniform-register window (urwin.rs). Default: off.
     pub hw_split_ur: bool,
@@ -2402,11 +2485,25 @@ pub struct Machine {
     /// issuer), sorted. At the end, the target must have waited on that phase or a later one
     /// (`mbar_seen`): otherwise nothing kept it from exiting before the delivery. A later
     /// cluster release of the issuer (which would have drained it) moves the entry to
-    /// `remote`, the happens-before check. Last field: the issuer's clock at issue
-    /// (E-REMOTE-FIFO moves an entry to a later arrival's mbarrier and phase).
+    /// `remote_drained`. Last field: the issuer's clock at issue (E-REMOTE-FIFO moves an
+    /// entry to a later arrival's mbarrier and phase).
     pub remote_obs: Vec<(u16, u32, u64, u32, u32, u32)>,
-    /// Per mbarrier (cta, offset): the latest phase whose completion a wait observed.
+    /// ASSUME(S-REMOTE-INFLIGHT, S-CLUSTER-LIFE): `remote_obs` entries a later cluster release
+    /// of their issuer would have drained, sorted; same layout, last field the issuer's clock at
+    /// that release. At the end each is covered by a wait of the target on its phase or a later
+    /// one (`mbar_seen`, as for `remote_obs`) or by that release happening before the exit of a
+    /// thread of the target (`Machine::observed_by`). Until 2026-11-12 such an entry moved to
+    /// `remote`, where only the release counted: a target that waited for the delivery but
+    /// never synchronized with its issuer's later fence was a false cluster-lifetime violation.
+    pub remote_drained: Vec<(u16, u32, u64, u32, u32, u32)>,
+    /// Per mbarrier (cta, offset): one past the latest phase whose completion a wait observed,
+    /// since the object's last (re-)initialization (`Machine::mbar_reset_seen`).
     pub mbar_seen: BTreeMap<(u16, u32), u64>,
+    /// ASSUME(S-MBAR-MEM): per invalidated mbarrier (cta, offset), the inval's epoch, until the
+    /// next init at that offset. A plain store over those bytes, or an init, that is not
+    /// ordered after it could have reached the live object instead (MISS 241,
+    /// `Machine::store_over_mbar`, `Machine::mbar_init`).
+    pub mbar_dead: BTreeMap<(u16, u32), Epoch>,
     /// Completed generations per named barrier (cta, id).
     pub bar_gen: BTreeMap<(u16, u32), u32>,
     /// Per named barrier (cta, id): the join of the clocks its last completed generation
@@ -2488,6 +2585,10 @@ pub struct Machine {
     /// whose guard / control operand derives from the clock (`unmodeled`). clock.rs
     pub clock_choice_pcs: Arc<std::collections::HashSet<u32>>,
     pub clock_effect_pcs: Arc<std::collections::HashSet<u32>>,
+    /// Not hashed, static: clock choices whose predicate may differ between the lanes of a
+    /// split (clock.rs `lane_varying_choices`): `unmodeled` when a split of several lanes
+    /// takes one. ASSUME(E-CLOCK)
+    pub clock_lane_pcs: Arc<std::collections::HashSet<u32>>,
     /// Not hashed, static: stores of clock-derived values (clock.rs `clock_stores`), and
     /// branches on loaded values (`mem_branches`). ASSUME(E-CLOCK)
     pub clock_store_pcs: Arc<std::collections::HashSet<u32>>,
@@ -2525,6 +2626,12 @@ pub struct Machine {
     /// Transient, within one step: 1 = the step's strong global load is a value-insensitive
     /// poll (it skips the observation of the location's release).
     pub vip_read: u8,
+    /// Not hashed, transient (taken right after the step that set it, `take_vip_learn`): the
+    /// strong-read footprint a value-insensitive poll of the last step left out (E-POLL-ANY).
+    /// Whether a load is such a poll depends on the state (the location's current value), so
+    /// the synchronization reduction's learned sets, which stand for the warp's step at that
+    /// pc in every state, take the read (MISS 295).
+    pub vip_learn: Vec<(u8, u32, u64, u64)>,
     /// Not hashed, transient: the current access is an fp32 atomic add with no returned value
     /// (`red.add.f32`) or a bulk-reduction add: `gfoot` files it as a reduction of kind
     /// `red_kind` (`RED_F32` / `RED_BF16` / `RED_F16`), not a read and a write.
@@ -2589,15 +2696,28 @@ pub struct Machine {
     pub fill: Option<crate::fills::Fill>,
     /// Input coverage (coverage.rs): the provenance shadow of a deterministic run. Not hashed.
     pub prov: Option<Box<crate::coverage::ProvState>>,
-    /// Per thread: own clock when its warp last diverged (`Machine::wdiv`); an access with an own
-    /// clock at least this one ran after it (intra-warp race labels, E-WARP-ORDER). History
-    /// for a label only: not part of the state hash.
+    /// Per thread: own clock when its warp last diverged, or reconverged at a PTX aligned
+    /// barrier (`Machine::wdiv`); an access with an own clock at least this one ran after it
+    /// (intra-warp race labels, E-WARP-ORDER). History for a label only: not part of the
+    /// state hash.
     pub div_clk: Arc<Vec<u32>>,
     /// Per warp: it may be diverged on hardware (E-WARP-ORDER): set when the lanes of a split
     /// leave an instruction at different pcs (or a live lane is not in the split), cleared
-    /// when a `BSYNC` / `WARPSYNC` releases every live lane together; false at launch. Used
+    /// when a `BSYNC` / `WARPSYNC` releases every live lane together, and on the PTX front
+    /// when an aligned barrier releases them together (`note_gathered`); false at launch. Used
     /// for intra-warp race labels only: not part of the state hash.
     pub wdiv: Arc<Vec<bool>>,
+    /// Per thread, PTX front: the lowest thread index of its lockstep group (exited: u32::MAX),
+    /// the lanes of its warp the model has run as one split since they were last released
+    /// together at a point it enforces (a barrier release, a `bar.warp.sync` release, a warp
+    /// collective that waits for the lanes it names) or since launch (one group per warp). A
+    /// group splits where its lanes stop sharing a pc; lanes that only meet at a pc stay in
+    /// their groups (exec.rs `regroup`, `note_gathered`). The E-WARP-ORDER strong-pair report
+    /// needs both lanes in one group, so the PTX front hashes it.
+    pub mgrp: Arc<Vec<u32>>,
+    /// MISS 74, PTX: the pcs of atomics whose destination no later instruction reads
+    /// (`spin::live_after`; exec.rs `lane_orders`). Not hashed: a function of the kernel.
+    pub atom_dead: Arc<std::collections::HashSet<u32>>,
     /// Not hashed: C-ORDER's dead-read probe (wellsync.rs `dead_reads`). Loads by these
     /// (thread, pc) leave their destination registers undefined (S-INIT), so a use of the
     /// loaded value is reported where it reaches a sink.
@@ -2634,6 +2754,10 @@ pub struct Machine {
     /// explorer then stops at the first such race (1: an LDS/STS race; 2: also a global-memory
     /// race, when the strong kernel has acquiring LDS). 0: off.
     pub weak_stop: u8,
+    /// Not hashed: opt-in (`groups::Opts::first_race`, for tests and quick group checks):
+    /// the explorer stops at its first race, with no race rerun and no depth run, and the
+    /// verdict is incomplete. Off by default.
+    pub race_stop: bool,
     /// Not hashed: the well-synchronization certificate's event log (wellsync.rs); empty
     /// except in a certificate run, and clones are always empty.
     pub wlog: crate::wellsync::LogSlot,
@@ -2865,6 +2989,11 @@ pub struct VipLearn {
     /// Watched locations some explored write lowered (as an unsigned little-endian integer):
     /// not monotone. A monotone one only takes values at least its current one.
     pub nonmono: std::sync::Mutex<std::collections::HashSet<(u32, u64, u8)>>,
+    /// Watched locations some explored write left with an undefined byte (S-INIT): the
+    /// learned values are concrete and drop the undefined bits, so a load there is no poll.
+    /// Search-wide learning like `values` (`Machine::vip` is shared by every state and not
+    /// part of it), so not hashed.
+    pub undef: std::sync::Mutex<std::collections::HashSet<(u32, u64, u8)>>,
     pub dirty: std::sync::atomic::AtomicBool,
     /// Acquire loads may be value-insensitive polls too (their acquire dropped): the first
     /// search's model. A race found with it is searched again without (`explore::explore_one`).
@@ -2976,13 +3105,30 @@ impl SFoot {
 
 /// Footprint space of the tensor core's A collector buffer (S-TC-COLLECTOR).
 pub const SPACE_COLL_A: u8 = 24;
-/// Reserved legacy mbarrier pending-count space; audited membership uses space 18.
+/// Footprint space of mbarrier pending counts (exec.rs `rec_count`, `rec_tx`,
+/// `rec_peek_counts`), in addition to the audited generation membership of space 18.
 pub const SPACE_MBAR_COUNT: u8 = 16;
-/// Footprint space of mbarrier over-arrivals (exec.rs `rec_late`, `rec_overarrival`); a write is an
+/// Bit of a `SPACE_MBAR_COUNT` index that names one of the phase's last-arrival keys, not its
+/// count key; below it, the phase key and the last arrival's tx increment (exec.rs
+/// `mbar_last_keys`). The last arrival writes the key of its increment; a pure tx increment made
+/// with arrivals pending reads them all, a tx decrement that leaves a deficit d reads those of
+/// the increments below d (exec.rs `rec_count`, `rec_tx`; MISS 231).
+pub const MBAR_LAST_ARRIVAL: u64 = 1 << 62;
+/// Footprint space of mbarrier over-arrivals (exec.rs `rec_late`, `rec_overarrival`,
+/// `rec_count`); a write is an
 /// over-arrival to the reductions (`Machine::arv_over`, dpor.rs `OVER_ARRIVAL`).
 pub const SPACE_MBAR_OVER: u8 = 25;
 /// Footprint space of NIC queues (nic.rs, id = queue).
 pub const SPACE_NIC_QUEUE: u8 = 26;
+/// Footprint space of remote-operation pipes (exec.rs `complete_remote`, `push_remote`):
+/// landing a remote op writes its pipe's key (id 0, index = the op's FIFO; id 1, index =
+/// actor << 32 | clock for an op outside any FIFO); issuing a new op into a pipe writes its
+/// issue key (id 2, index = the FIFO; DPOR footprints only, MISS 222). The landing key is in
+/// the stateful explorer's sync-only footprints too (MISS 232: without it the synchronization
+/// reduction took a landing as independent of another lane's drain of the same pipe,
+/// probes/sync_pipe_issue_order); the issue key is not needed there (two lanes' issues are
+/// steps of one warp, one entity of the reduction).
+pub const SPACE_REMOTE_PIPE: u8 = 27;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ActionEffects {
@@ -3037,7 +3183,9 @@ impl Hash for Machine {
         self.atomic_components.hash(h);
         self.completed.hash(h);
         self.remote_obs.hash(h);
+        self.remote_drained.hash(h);
         self.mbar_seen.hash(h);
+        self.mbar_dead.hash(h);
         self.bar_gen.hash(h);
         self.bar_prev.hash(h);
         self.clusters.hash(h);
@@ -3059,6 +3207,10 @@ impl Hash for Machine {
         }
         if !self.ctaint.is_empty() {
             self.ctaint.hash(h);
+        }
+        // E-WARP-ORDER: the PTX strong-pair report depends on the lockstep groups.
+        if self.k.front == Front::Ptx {
+            self.mgrp.hash(h);
         }
     }
 }
@@ -3116,6 +3268,71 @@ impl Machine {
                     && members.iter().any(|&t| self.threads[t].clock_mem))
     }
 
+    /// ASSUME(E-CLOCK): does the hang guard at `pc` keep to its non-trap side until the clock
+    /// has advanced by HANG_BOUND after its first read (the predicate its trap side needs,
+    /// `sl.pred`, never `sl.trap_when` before)? Re-executes the slice (clock.rs `HangSlice`) on a copy of the initial state with a thread of the guard's kernel, the
+    /// clock reads set to S (the first ones in time order) and S + D (the later ones), for
+    /// starts S across the low 32 bits and above (a wrapping 32-bit deadline) and delays
+    /// D < HANG_BOUND (every power of two, one below each, and 0): the comparisons ptxas emits
+    /// for a timeout are monotone in the delay.
+    pub fn hang_bound_holds(&self, pc: u32, sl: &crate::clock::HangSlice) -> bool {
+        let entry = self.k.entry_of(pc as usize);
+        let Some(t) = (0..self.threads.len())
+            .find(|&t| self.k.entry_of(self.threads[t].pc as usize) == entry)
+        else {
+            return false;
+        };
+        let g = sl.pred;
+        let mut ds: Vec<u64> = vec![0];
+        let mut x = 1u64;
+        while x < crate::clock::HANG_BOUND {
+            ds.push(x);
+            ds.push(x - 1);
+            x <<= 1;
+        }
+        ds.push(crate::clock::HANG_BOUND - 1);
+        // Starts across the low 32 bits too: a 32-bit deadline (`%clock + 2^31`) wraps for
+        // some of them.
+        let mut starts: Vec<u64> = Vec::new();
+        for hi in [0u64, 1 << 33, 1 << 50] {
+            for lo in [
+                0u64,
+                1,
+                1 << 30,
+                (1 << 31) - 1,
+                1 << 31,
+                (1 << 31) + 1,
+                (1 << 32) - (1 << 30),
+                (1 << 32) - (1 << 20),
+                (1 << 32) - 1,
+            ] {
+                starts.push(hi | lo);
+            }
+        }
+        // One copy: each run re-executes every slice instruction before its value is read.
+        let mut m = self.clone();
+        m.clock_step = 0;
+        for start in starts {
+            for split in 1..=sl.reads.len() {
+                for &d in &ds {
+                    for &p in &sl.pcs {
+                        if let Some(i) = sl.reads.iter().position(|&r| r == p) {
+                            m.threads[t].make_mut().clock =
+                                if i < split { start } else { start + d };
+                        }
+                        if m.exec_unforced(&[t], p).is_err() {
+                            return false;
+                        }
+                    }
+                    if m.prd(t, g) == sl.trap_when {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     pub(crate) fn private_register_projection(
         &self,
     ) -> Option<&Arc<crate::register_liveness::FutureReads>> {
@@ -3133,6 +3350,17 @@ impl Machine {
 
     pub fn take_footprint(&mut self) -> Option<Box<Footprint>> {
         machine_action::take_footprint(&mut self.action_effects.core)
+    }
+
+    /// Change the transition footprint in place, if one is being recorded (raw ranges and keys
+    /// outside the shared resource spaces: `SPACE_REMOTE_PIPE`, `SPACE_MBAR_COUNT` indices,
+    /// `obs` / `acq_aba`). Bypasses the action trace and the slice footprint, as a direct
+    /// `Footprint::add` did before the effect cores.
+    pub(crate) fn fp_with(&mut self, f: impl FnOnce(&mut Footprint)) {
+        if let Some(mut footprint) = self.take_footprint() {
+            f(&mut footprint);
+            self.set_footprint(Some(footprint));
+        }
     }
 
     pub(crate) fn begin_action_effects(&mut self) -> bool {
@@ -3217,6 +3445,18 @@ impl Machine {
     pub fn rec_acq(&mut self, key: u64) {
         machine_action::record_acquire(&mut self.action_effects.core, key);
     }
+    /// A blocking wait acquired `key`, a generation that can come round again
+    /// (`Footprint::acq_aba`).
+    #[inline]
+    pub fn rec_acq_aba(&mut self, key: u64) {
+        self.rec_acq(key);
+        self.fp_with(|f| f.acq_aba.push(key));
+    }
+    /// A non-blocking test acquired `key` (`Footprint::obs`).
+    #[inline]
+    pub fn rec_obs(&mut self, key: u64) {
+        self.fp_with(|f| f.obs.push(key));
+    }
 
     // ASSUME(E-GRID, S-INIT): see ASSUMPTIONS.md
     pub fn new(k: Arc<Kernel>, launch: Arc<Launch>) -> Machine {
@@ -3256,6 +3496,7 @@ impl Machine {
                         bmask: [0; 16],
                         cp_seq: 0,
                     },
+                    bopen: 0,
                     cp_landed: Vec::new(),
                 }));
             }
@@ -3286,6 +3527,7 @@ impl Machine {
                     pipe2_vc: VC::new(),
                     tma_count: 0,
                     cp_epoch: 0,
+                    cp_done: VC::new(),
                     clock: 0,
                     clock_iters: 0,
                     clock_mem: false,
@@ -3315,6 +3557,7 @@ impl Machine {
                     vc_sh: vec![],
                     acq_pending_mb: vec![],
                     landed: VC::new(),
+                    remote_landed: VC::new(),
                     acq_pending: vec![],
                     acq_view: VC::new(),
                     cl_arrived: None,
@@ -3330,16 +3573,16 @@ impl Machine {
             }
         }
         let smem: Vec<Mem> = (0..launch.ctas())
-            .map(|c| Mem::new(vec![0; launch.g(c).smem_bytes as usize]))
+            .map(|c| Mem::new(&vec![0; launch.g(c).smem_bytes as usize]))
             .collect();
         let gmem = launch
             .allocs
             .iter()
             .map(|a| {
                 if a.undef {
-                    Mem::new_undef(a.init.clone())
+                    Mem::new_undef(&a.init)
                 } else {
-                    Mem::new(a.init.clone())
+                    Mem::new(&a.init)
                 }
             })
             .collect();
@@ -3347,6 +3590,24 @@ impl Machine {
         let launch_ctas = launch.ctas();
         let n_grids = launch.grids.len();
         let threads_len = threads.len() as u32;
+        // MISS 74: PTX atomics with dead destinations (exec.rs `lane_orders`).
+        let atom_dead = Arc::new(if k.front == Front::Ptx {
+            k.code
+                .iter()
+                .enumerate()
+                .filter_map(|(pc, i)| match &i.op {
+                    Op::Atom { d: Some(r), .. } => {
+                        let regs: BTreeSet<Reg> = [*r].into_iter().collect();
+                        crate::spin::live_after(&k.code, pc + 1, &regs)
+                            .is_none()
+                            .then_some(pc as u32)
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Default::default()
+        });
         let register_liveness = crate::register_liveness::FutureReads::analyze(&k)
             .map(|reads| (k.clone(), Arc::new(reads)));
         let mut m = Machine {
@@ -3355,6 +3616,19 @@ impl Machine {
             launch,
             div_clk: Arc::new(vec![0; threads.len()]),
             wdiv: Arc::new(vec![false; warps.len()]),
+            atom_dead,
+            // One lockstep group per warp at launch: its first thread's index (threads are
+            // laid out warp by warp).
+            mgrp: Arc::new(
+                (0..threads.len())
+                    .scan(0usize, |first, i| {
+                        if i > 0 && threads[i].warp != threads[i - 1].warp {
+                            *first = i;
+                        }
+                        Some(*first as u32)
+                    })
+                    .collect(),
+            ),
             threads: CowVec::new(threads),
             warps: CowVec::new(warps),
             smem: CowVec::new(smem),
@@ -3367,7 +3641,9 @@ impl Machine {
             atomic_operand: None,
             completed: Vec::new(),
             remote_obs: Vec::new(),
+            remote_drained: Vec::new(),
             mbar_seen: BTreeMap::new(),
+            mbar_dead: BTreeMap::new(),
             bar_gen: BTreeMap::new(),
             bar_prev: BTreeMap::new(),
             clusters: BTreeMap::new(),
@@ -3396,6 +3672,7 @@ impl Machine {
             clock_loop_pcs,
             clock_choice_pcs,
             clock_effect_pcs,
+            clock_lane_pcs: Default::default(),
             clock_store_pcs,
             mem_branch_pcs,
             ctaint: Default::default(),
@@ -3406,6 +3683,7 @@ impl Machine {
             arv_over: None,
             vipr: Default::default(),
             vip_read: 0,
+            vip_learn: Vec::new(),
             red_access: false,
             red_kind: RED_F32,
             red16: Default::default(),
@@ -3441,6 +3719,7 @@ impl Machine {
             xg: None,
             sink: 0,
             weak_stop: 0,
+            race_stop: false,
             wlog: Default::default(),
             ring: None,
             l1: None,
@@ -3549,6 +3828,22 @@ impl Machine {
                 .collect(),
         );
         m.bar_cfg = Arc::new(crate::explore::bar_cfg(&m));
+        // ASSUME(E-CLOCK): a hang guard is exempt from the clock choices only when its bound
+        // is at least HANG_BOUND clock units (clock.rs `hang_guards`); the others go both ways.
+        let hang = crate::clock::hang_guards(&m.k, &m.delay_pcs);
+        if !hang.is_empty() {
+            let open: Vec<u32> = hang
+                .iter()
+                .filter(|(pc, sl)| !sl.as_ref().is_some_and(|sl| m.hang_bound_holds(*pc, sl)))
+                .map(|x| x.0)
+                .collect();
+            if !open.is_empty() {
+                Arc::make_mut(&mut m.clock_choice_pcs).extend(open);
+            }
+        }
+        if !m.clock_choice_pcs.is_empty() || !m.mem_branch_pcs.is_empty() {
+            m.clock_lane_pcs = Arc::new(crate::clock::lane_varying_choices(&m.k, &m.delay_pcs));
+        }
         // Every thread starts with its own clock at 1, so that "clock 0" means "never".
         for t in 0..m.threads.len() {
             let th = m.threads[t].make_mut();
@@ -4111,6 +4406,11 @@ mod footprint_space_tests {
                 "SPACE_NIC_QUEUE",
                 super::SPACE_NIC_QUEUE,
                 ResourceSpace::NicQueue,
+            ),
+            (
+                "SPACE_REMOTE_PIPE",
+                super::SPACE_REMOTE_PIPE,
+                ResourceSpace::RemotePipe,
             ),
             (
                 "SPACE_COLL_A",

@@ -5,10 +5,11 @@
 
 // NVLS multicast (multimem.*) probe for GB300. One process drives every visible GPU.
 //
-//   nvcc -O2 -arch=sm_103a -o mm mm.cu -lcuda
+//   nvcc -O2 -gencode arch=compute_103a,code=sm_103a -o mm mm.cu -lcuda
 //   ./mm info                        MULTICAST_SUPPORTED per device, granularity
 //   ./mm ldr OUTDIR [order]          multimem.ld_reduce numerics: per-member inputs + results
-//                                    issued from every device, REPS times (dumped as .bin)
+//                                    issued from every device, REPS times (dumped as .bin);
+//                                    env MM_TESTS, MM_IN, MM_SEED (see want_test below)
 //   ./mm red OUTDIR                  concurrent multimem.red from every device: member contents
 //   ./mm litmus OUTDIR               message passing: multimem.st data + multimem.red flag on one
 //                                    device, poll + unicast read on the others (variants)
@@ -355,6 +356,28 @@ static void dump(const std::string &path, const void *p, size_t n) {
 }
 
 static uint64_t rng = 0x9E3779B97F4A7C15ull;
+// MM_TESTS (comma-separated exact test names) limits the ldr tests; MM_IN reads the member
+// inputs from MM_IN/<test>.in<i>.bin instead of fill(); MM_SEED reseeds fill().
+static bool want_test(const char *name) {
+    const char *l = getenv("MM_TESTS");
+    if (!l) return true;
+    std::string s(l), n(name);
+    size_t p = 0;
+    while (p <= s.size()) {
+        size_t q = s.find(',', p);
+        if (q == std::string::npos) q = s.size();
+        if (s.substr(p, q - p) == n) return true;
+        p = q + 1;
+    }
+    return false;
+}
+static void read_in(const std::string &path, uint8_t *buf, size_t n) {
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) { perror(path.c_str()); exit(1); }
+    size_t got = fread(buf, 1, n, f);
+    fclose(f);
+    if (got != n) { fprintf(stderr, "%s: %zu of %zu bytes\n", path.c_str(), got, n); exit(1); }
+}
 static uint32_t rnd() {
     rng ^= rng << 13;
     rng ^= rng >> 7;
@@ -411,6 +434,7 @@ int main(int argc, char **argv) {
     int ndev = 0;
     CK(cuDeviceGetCount(&ndev));
     std::string mode = argc > 1 ? argv[1] : "info";
+    if (getenv("MM_SEED")) rng = strtoull(getenv("MM_SEED"), 0, 0);
     if (mode == "info") {
         for (int d = 0; d < ndev; d++) {
             CUdevice dev;
@@ -464,9 +488,13 @@ int main(int argc, char **argv) {
     if (mode == "ldr") {
         std::vector<uint8_t> in((size_t)N * 16), res((size_t)N * 16);
         for (auto &t : LDR) {
+            if (!want_test(t.name)) continue;
             int n = N * 16 / t.width;
             for (int i = 0; i < nm; i++) {
-                fill(in.data(), in.size(), 0, i);
+                if (getenv("MM_IN"))
+                    read_in(std::string(getenv("MM_IN")) + "/" + t.name + ".in" + std::to_string(i) + ".bin", in.data(), in.size());
+                else
+                    fill(in.data(), in.size(), 0, i);
                 CK(cuCtxSetCurrent(m.ctx[i]));
                 CK(cuMemcpyHtoD(m.uc[i], in.data(), in.size()));
                 dump(out + "/" + t.name + ".in" + std::to_string(i) + ".bin", in.data(), in.size());

@@ -1,0 +1,15 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# RACE on SASS: ptxas makes the test's result dead (the load overwrites it) and LDS/STS are
+# relaxed .cta strong accesses (S-SMEM-STRONG), so the stateful verdict has no race there.
+good ptx  stateful [nondeterministic]
+good ptx  dpor     [nondeterministic]
+good ptx  certify  [nondeterministic]
+good sass stateful [nondeterministic]
+good sass dpor     [nondeterministic]
+good sass certify  [nondeterministic]
+RACE ptx  stateful [nondeterministic,race]
+RACE ptx  dpor     [nondeterministic,race]
+RACE ptx  certify  [nondeterministic,race]
+RACE sass stateful [nondeterministic]
+RACE sass dpor     [nondeterministic]
+RACE sass certify  [nondeterministic]

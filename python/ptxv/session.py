@@ -134,16 +134,15 @@ class Session:
                     job.set_running_or_notify_cancel()
                     job.set_result(r)
                     return job
-            self.backend.submit(spec, job)
             if path is not None:
+                # Written inside set_result, before result() returns (a done callback runs
+                # after the waiters wake: a job resubmitted at once could miss the cache).
+                def save(r: dict) -> None:
+                    if not r.get("dry_run"):
+                        store_cache(path, r)
 
-                def save(f: Job) -> None:
-                    if not f.cancelled() and f.exception() is None:
-                        r = f.result()
-                        if not r.get("dry_run"):
-                            store_cache(path, r)
-
-                job.add_done_callback(save)
+                job.before_result(save)
+            self.backend.submit(spec, job)
             return job
         finally:
             spec.release_inputs()

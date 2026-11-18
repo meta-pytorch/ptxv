@@ -1,0 +1,13 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+# unreduced: every reduction off, the reference. DPOR: since MISS 275 (a test writes the count
+# keys of the phases it reads; before it DPOR gave [clean] here).
+good  ptx  unreduced [nondeterministic]
+good  ptx  stateful  [nondeterministic]
+good  ptx  nosyncpor [nondeterministic]
+good  ptx  certify   [nondeterministic]
+good  ptx  dpor      [nondeterministic]
+good  sass unreduced [nondeterministic]
+good  sass stateful  [nondeterministic]
+good  sass nosyncpor [nondeterministic]
+good  sass certify   [nondeterministic]
+good  sass dpor      [nondeterministic]

@@ -1,0 +1,111 @@
+name = "probe_utmastg_queue"
+description = """
+Probe (L-OPREAD, E-HW-SB-QUEUE) for TMA stores reading their uniform-register operands in issue
+order. Thread 0 fills a 12 KB staging tile (element e = e), stores two 8 x 32 f32 boxes through a
+tensor map over D (f32 [64, 32]) at rows 0 and 8, then rewrites the row coordinates (+16).
+ptxas (sm_103a): `UTMASTG.2D [UR12], [UR6]` (rd=SB1) at 0x420, `UTMASTG.2D [UR16], [UR6]`
+(rd=SB2) at 0x460, `UIADD3 UR14, UPT, UPT, UR14, 0x10, URZ` (the first store's row) at 0x470
+waiting on SB1 and SB2. The variants take the first store's read scoreboard away:
+- COVER: the UIADD3 waits on SB2 only, the second store's. Correct on GB300 if and only if the
+  first store has read UR14 when the second store's read scoreboard is released (the rule the
+  gb300 profile assumes, E-HW-SB-QUEUE; the strict check reports it as an sb-hwq: contract).
+- NOWAIT: the UIADD3 waits on nothing (positive control: a late read of UR14 stores rows 16..23).
+- OWN: the first store keeps SB1, the UIADD3 waits on SB1 and SB2 as ptxas has it (control).
+NOWAIT_T cuts the window to 5 cycles; BUSY queues 24 stores ahead (ptxas gives most no read
+scoreboard and covers them by a later store's), BUSY_NOWAIT rewrites a queued store's coordinate
+with no wait. GB300 (2026-11-11, 1000 scrubbed runs each): every variant correct, the positive
+controls too: no positive control, so the in-order-read rule stays capture-backed (gb300
+profile, E-HW-SB-QUEUE). The coordinates are reads of the store all the same (MISS 101: the
+check counted only the bracketed base register): COVER is a strict sb-hwq contract, NOWAIT a
+violation at both levels (results.txt)."""
+ptx = "kernel.ptx"
+entry = "utmastg_queue"
+grid = [1, 1, 1]
+block = [128, 1, 1]
+outputs = ["D"]
+
+[[buffers]]
+name = "D"
+dtype = "f32"
+shape = [64, 32]
+init = "nan"
+
+[[params]]
+kind = "tensormap"
+buffer = "D"
+box = [32, 8]
+dims = [32, 64]
+strides = [128]
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[params]]
+kind = "u32"
+value = 0
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "COVER"
+summary = "the first UTMASTG with no read scoreboard, the UIADD3 rewriting its row waits on the second's SB2 only"
+patch = [
+    { at = "@0x420", rbar = 7, expect = "UTMASTG.2D [UR12], [UR6]" },
+    { at = "@0x470", wait = 4, expect = "UIADD3 UR14, UPT, UPT, UR14, 0x10, URZ" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "the first UTMASTG with no read scoreboard, the UIADD3 waits on nothing (positive control)"
+patch = [
+    { at = "@0x420", rbar = 7, expect = "UTMASTG.2D [UR12], [UR6]" },
+    { at = "@0x470", wait = 0, expect = "UIADD3 UR14, UPT, UPT, UR14, 0x10, URZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "OWN"
+summary = "control: as ptxas has it"
+patch = [
+    { at = "@0x420", expect = "UTMASTG.2D [UR12], [UR6]" },
+]
+expect = ["clean"]
+
+[[variants]]
+id = "NOWAIT_T"
+summary = "NOWAIT with the stalls between the first store and the UIADD3 cut to 1 (a tighter window)"
+patch = [
+    { at = "@0x420", rbar = 7, stall = 1, expect = "UTMASTG.2D [UR12], [UR6]" },
+    { at = "@0x430", stall = 1, expect = "UIADD3 UR10, UPT, UPT, UR10, 0x10, URZ" },
+    { at = "@0x460", stall = 1, expect = "UTMASTG.2D [UR16], [UR6]" },
+    { at = "@0x470", wait = 0, expect = "UIADD3 UR14, UPT, UPT, UR14, 0x10, URZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+[[variants]]
+id = "BUSY"
+summary = "24 TMA stores queued ahead (ptxas: the first, `UTMASTG.2D [UR12]` at 0x440, and most of the rest with no read scoreboard, covered by later stores' rd=SB2 / SB3); control"
+marker = "@BUSY"
+find = "mov.u32 %r15, 0;"
+replace = "mov.u32 %r20, 32;\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    mov.u32 %r15, 0;"
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "BUSY_NOWAIT"
+summary = "BUSY with `UIADD3 UR18` (a coordinate of the queued `[UR16]` stores) at 0x690 waiting on nothing (positive control attempt)"
+marker = "@BUSY"
+find = "mov.u32 %r15, 0;"
+replace = "mov.u32 %r20, 32;\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r6, %r20}], [%r12];\n    mov.u32 %r15, 0;"
+patch = [
+    { at = "@0x690", wait = 0, expect = "UIADD3 UR18, UPT, UPT, UR5, 0x8, URZ" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]

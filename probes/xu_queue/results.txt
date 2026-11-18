@@ -1,0 +1,21 @@
+# GB300 (one GPU), 2026-11-11, rev 1be3c4c4: ptxv hw --runs 1000 --scrub
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER  [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(998, 512), (2, 512)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(998, 512), (2, 512)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw OWN    [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+
+# _I2F / _F2F variants (same GPU and options). ptxv hw compares every variant with the good variant's
+# simulator output; these variants put I2F.U16 / F2F.F16.F32 in MUFU's place, so the three output words
+# derived from it (768 of 1024) differ by construction; the F2I column (out[t][2]) is the probe.
+# OWN_*: 768 words differ (F2I column correct in every run). COVER_* / NOWAIT_*: 1024 (F2I column stale in every run).
+hw COVER_I2F [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(998, 1024), (2, 1024)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw NOWAIT_I2F [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(998, 1024), (2, 1024)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw OWN_I2F [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 768)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw COVER_F2F [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(998, 1024), (2, 1024)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw NOWAIT_F2F [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(998, 1024), (2, 1024)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw OWN_F2F [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 768)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
+# _ST variants: ptxas's stalls kept (only the scoreboard bit removed and the wait moved); GB300 (one GPU, a
+# separate node), 2026-11-11: ptxv hw --runs 1000 --scrub. COVER_ST fails as NOWAIT_ST does.
+hw COVER_ST [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): 13 distinct, first: [(801, 512), (73, 512), (44, 512), (24, 512)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+hw NOWAIT_ST [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): 18 distinct, first: [(675, 512), (100, 512), (79, 512), (65, 512)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]

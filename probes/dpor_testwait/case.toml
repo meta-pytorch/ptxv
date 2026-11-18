@@ -1,0 +1,44 @@
+name = "probe_dpor_testwait"
+description = """
+DPOR repro (MISS 221): a non-blocking mbarrier.test_wait that observed a phase completion is
+still reorderable before it (both outcomes of the test are schedules). Thread 0 waits on M2
+(thread 64), then test_waits M1 (thread 32) and stores the result. No remote operations.
+run.sh pins every explorer's classes (expected/classes.txt). fixtures.rs
+`dpor_explores_both_outcomes_of_a_test_wait` cross-checks DPOR against the stateful search.
+"""
+ptx = "kernel.ptx"
+entry = "dpor_testwait"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "out = test_wait's result: 1 or 0"
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "RACE"
+summary = "thread 32 writes g before its arrive, thread 0 reads g after test_wait: a race when the test returned false"
+marker = "@WR"
+find = "// (write)"
+replace = "st.shared.u32 [%r8], 7;"
+expect = ["nondeterministic", "race"]
+# SASS: the load overwrites the test's result (dead) and LDS/STS are relaxed .cta strong
+# accesses (S-SMEM-STRONG): no race.
+expect_sass = ["nondeterministic"]
+
+[[variants.edits]]
+marker = "@RD"
+find = "// (read)"
+replace = "ld.shared.u32 %r15, [%r8];"

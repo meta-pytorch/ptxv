@@ -1,0 +1,13 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+TMA   ptx  stateful [nondeterministic,race,violation]
+TMA   ptx  dpor     [nondeterministic,race,violation]
+TMA   ptx  certify  [nondeterministic,race,violation]
+TMA   sass stateful [nondeterministic,race,violation]
+TMA   sass dpor     [nondeterministic,race,violation]
+TMA   sass certify  [nondeterministic,race,violation]
+CLC   ptx  stateful [nondeterministic,race,violation]
+CLC   ptx  dpor     [nondeterministic,race,violation]
+CLC   ptx  certify  [nondeterministic,race,violation]
+CLC   sass stateful [nondeterministic,race,violation]
+CLC   sass dpor     [nondeterministic,race,violation]
+CLC   sass certify  [nondeterministic,race,violation]

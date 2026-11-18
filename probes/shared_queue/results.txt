@@ -1,0 +1,27 @@
+# GB300 (one GPU), 2026-11-11, rev c57945e2 + this probe: ptxv hw --runs 1000 --scrub
+# grid 1x1x1, block 256; out[t] = {LDS word + 1, SHFL value + 2}
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 1.0s) distinct outputs (count, words differing): [(1000, 0)]
+hw OWN_L  [scrubbed smem] matches simulator bitwise (1000 runs, 0.8s) distinct outputs (count, words differing): [(1000, 0)]
+hw COVER  [scrubbed smem] matches simulator bitwise (1000 runs, 0.8s) distinct outputs (count, words differing): [(1000, 0)]
+hw NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 256)]
+hw REV_COVER [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 256)]
+hw REV_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 256)]
+# Static check (rev of the MISS 106 fix): good, OWN_L clean; COVER contract (sb-hwq:, clean at
+# gb300); NOWAIT, REV_COVER, REV_NOWAIT violation at both levels (NOWAIT and, since review
+# item 4, REV_NOWAIT also carry strict sb-hwq: contracts). On int7 ff213fa6: COVER and
+# REV_COVER clean at both levels.
+# kernel_db kernels with REV_COVER's shape (an unscoreboarded SHFL read after waits on later LDS
+# scoreboards only), unmodified on GB300, ptxv hw --runs 1000 --scrub, against the simulator:
+#   triton._block_starts: 0/1000 at shape grid 1x1x1 block 128x1x1
+#   triton._kernel_map_routing_global: 0/1000 at shape grid 128x1x1 block 128x1x1
+#   triton.chunk_local_cumsum_vector_kernel_forloop: 0/1000 at shape grid 2x8x2 block 64x1x1
+# Nulls: bounds at those shapes, not proofs (windows of 16 to 33 instructions).
+# Adversarial review's runs (MISS 129), GB300, 1000 runs each:
+hw RVS_QREAD_REF_S4 matches simulator bitwise (1000 runs)
+hw RVS_QREAD_LDS_S4 1000/1000 runs differ (256 words)
+hw RVS_QREAD_CTL_S4 1000/1000 runs differ (256 words)
+hw RVS_QREAD_REF_S8 matches simulator bitwise (1000 runs)
+hw RVS_QREAD_LDS_S8 1000/1000 runs differ (256 words)
+hw RVS_QREAD_CTL_S8 1000/1000 runs differ (256 words)
+# A SHFL reading an earlier unscoreboarded LDS result reads it at issue (as the VIADD in its
+# slot): no queued read. Static: RVS_QREAD_LDS_* a violation at both levels.

@@ -1,0 +1,1 @@
+hw good   [scrubbed smem] matches simulator bitwise (20 runs, 0.7s) distinct outputs (count, words differing): [(20, 0)]  (GB300, job 2568125, ptxv 998d62d1 md5 6b42eb06375fb4d4d960adfbdd48a028, 2026-11-12)

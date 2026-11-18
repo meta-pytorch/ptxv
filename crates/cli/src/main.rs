@@ -203,7 +203,8 @@ enum Cmd {
         no_gb300: bool,
         /// Hardware profile of the two-level verdict: when the strict check reports anything
         /// undefined (race, violation, contract deviation, undefined values, ...), the SASS
-        /// front is checked again with every probe-backed assumption of the profile on, and
+        /// front is checked again with every hardware-measured assumption of the profile on
+        /// (probes, or captured outputs where no probe exists yet: E-HW-SB-QUEUE), and
         /// both levels are reported (`ptx_contract`, `sass_gb300`). `gb300` (default) or
         /// `none` (also PTXV_HW_PROFILE); any other name is an error. `none` and --no-gb300 /
         /// PTXV_GB300=0 turn the re-run off, and the row says so (`two_level_skipped`).
@@ -574,6 +575,9 @@ enum Cmd {
         /// The variant whose launch-order edits (`after`, `waits`, `launch_order`) apply.
         #[arg(long)]
         variant: Option<String>,
+        /// FNV-1a of the image the parent built (required, as `hw-worker`'s).
+        #[arg(long)]
+        image_fnv: String,
     },
     #[command(hide = true)]
     HwWorker {
@@ -591,6 +595,10 @@ enum Cmd {
         /// Write the first run's output bytes here.
         #[arg(long)]
         dump: Option<PathBuf>,
+        /// FNV-1a of the image the parent built (patched): the worker refuses to run any
+        /// other bytes. Required (RVS2 L2).
+        #[arg(long)]
+        image_fnv: String,
         /// The variant whose launch-order edits (`after`, `waits`, `launch_order`) apply.
         #[arg(long)]
         variant: Option<String>,
@@ -1702,10 +1710,42 @@ struct GpuCompareRow {
     result: ptxv_case::GpuMatch,
 }
 
+/// E-LAUNCH-ORDER (MISS 191): the launch order a check row's verdict was computed under.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+struct OrderRow {
+    /// The variant's `launch_order`: "recorded", "declared" or "unknown" (no value: unknown).
+    case: String,
+    /// For an unknown order, its reading (sim `launch_order`): "concurrent" (every grid may run
+    /// at the same time as every other; the default) or "ordered" (`PTXV_UNRECORDED_ORDER=
+    /// ordered`: E-PDL's order of the list). None for a recorded or declared order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reading: Option<String>,
+}
+
+/// The launch order of `case` (a variant's case, `Case::for_variant`) as `ptxv check` reads it.
+fn order_row(case: &Case) -> OrderRow {
+    let lo = case
+        .m
+        .launch_order
+        .clone()
+        .unwrap_or_else(|| "unknown".into());
+    let reading = (lo == "unknown").then(|| {
+        match std::env::var("PTXV_UNRECORDED_ORDER").as_deref() {
+            Ok("ordered") => "ordered",
+            _ => "concurrent",
+        }
+        .to_string()
+    });
+    OrderRow { case: lo, reading }
+}
+
 #[derive(Serialize)]
 struct CheckRow {
     variant: String,
     front: String,
+    /// The launch order the verdict was computed under (the case's, and for an unknown order
+    /// its reading), so that a stored check says which reading it is (MISS 191).
+    launch_order: OrderRow,
     /// Captured cases: the simulator's outputs against the GPU's (`expect`), per output.
     expect_report: Vec<String>,
     /// The decision each `expect_report` line states, one entry per comparison (and per
@@ -2089,6 +2129,7 @@ fn cmd_check(
                     mutation_refusals: vec![],
                     mutation_budget: None,
                     exhaustive_concolic: None,
+                    launch_order: order_row(case),
                 });
                 continue;
             }
@@ -2115,6 +2156,7 @@ fn cmd_check(
                 rows.push(CheckRow {
                     variant: v.clone(),
                     front: f.into(),
+                    launch_order: order_row(case),
                     expect_report: vec![],
                     gpu_compare: vec![],
                     pass: true,
@@ -2360,7 +2402,11 @@ fn cmd_check(
             let check = |make: &dyn Fn() -> Machine, label: &str| -> Verdict {
                 ptxv_sim::smid::check_placements(make, &mut |mk| check_one(mk, label))
             };
-            let make1 = || machine(case, k.clone()).expect("machine");
+            // Every check of the row starts from a copy of `m` (copy-on-write: the buffers'
+            // pages are shared until written) instead of a machine rebuilt from the case files:
+            // a rebuild re-read every captured buffer and held a second full copy of global
+            // memory while `m` was alive (26 GB captured: about 2 x 26 GB more per rebuild).
+            let make1 = || m.clone();
             // The plain certificate check is what errdist / equiv run as their precondition
             // (equiv.rs `prepare`): store it for them (vcache.rs).
             // Not for a variant that edits the launch order (`after`, `waits`, `launch_order`):
@@ -2432,6 +2478,12 @@ fn cmd_check(
                     check(&|| m.clone(), "async completions at the mbarrier's CTA: ")
                 });
             }
+            // ASSUME(E-LAUNCH-ORDER), MISS 189: an unknown order of several launches under the
+            // strict reading is also checked in the list's order, for the deadlocks a GPU that
+            // runs the list in order hits.
+            ptxv_sim::serialized_order_deadlocks(&mut verdict, case, &k, &mut |m| {
+                check(&|| m.clone(), "list order: ")
+            })?;
             let births = if nonfinite.is_some() {
                 ptxv_sim::nonfinite::take()
             } else {
@@ -2514,6 +2566,18 @@ fn cmd_check(
                 k.static_image.as_deref(),
                 strict_memory.as_ref(),
             );
+            // E-LAUNCH-ORDER (MISS 191): the reading an unknown order of several launches was
+            // checked under, in the text too (the certificate's report).
+            if let (Some(r), true) = (order_row(case).reading, case.m.all_launches().len() > 1) {
+                println!(
+                    "    launch order: unknown, read as {r} ({}; E-LAUNCH-ORDER)",
+                    if r == "ordered" {
+                        "PTXV_UNRECORDED_ORDER=ordered: each grid after the previous one on its GPU"
+                    } else {
+                        "every grid may run at the same time as every other; PTXV_UNRECORDED_ORDER=ordered reads the list's order"
+                    }
+                );
+            }
             // The two-level verdict: anything undefined under the strict model -> the SASS
             // front under the hardware profile. Both levels are reported. --no-gb300 /
             // PTXV_GB300=0 and --hw-profile none turn the re-run off (the row says so).
@@ -2578,7 +2642,7 @@ fn cmd_check(
                     } else {
                         load(case, &v, "sass", &dir)?.0
                     };
-                    let ms = machine(case, k2)?;
+                    let ms = if f == "sass" { m.clone() } else { machine(case, k2)? };
                     let make2 = || ptxv_sim::hwprofile::machine(&ms, p);
                     group_log.borrow_mut().clear();
                     let mut v2 = check(&make2, "GB300 profile: ");
@@ -3096,6 +3160,7 @@ fn cmd_check(
             rows.push(CheckRow {
                 variant: v.clone(),
                 front: f.into(),
+                launch_order: order_row(case),
                 expect_report,
                 gpu_compare,
                 pass: verdict.meets(&expect)
@@ -3218,19 +3283,28 @@ fn cmd_num_with(
     // claims only elements the PTX front claims, with the same exact value.
     type PtxOut = Option<Vec<Option<ptxv_sim::exact::Expansion>>>;
     let mut ptx_verdict: Option<std::collections::HashMap<String, PtxOut>> = None;
+    // MISS 160: why the PTX front-end refused the case's PTX (forms ptxas compiles but the PTX
+    // lift does not model). The SASS front still runs (`hw`'s expected bytes), but it makes no
+    // claim: no PTX claim bounds it, and ptxas compiled that PTX, folding roundings of
+    // constants where it could. Until MISS 160 the SASS front claimed alone.
+    let mut ptx_refused: Option<String> = None;
     for f in ["ptx", "sass"] {
         if f == "ptx" && case.m.cubin.is_some() {
             continue; // binary-only case
         }
         let k = match load(case, variant, f, &dir) {
             Ok((k, _)) => k,
-            // A PTX the front-end does not parse (forms ptxas compiles but the PTX lift does
-            // not model): the SASS front alone gives the run (`hw`'s expected bytes).
             Err(e) if f == "ptx" => {
+                let why = format!("{e:#}")
+                    .lines()
+                    .last()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 println!(
-                    "num {variant} ptx : not run, the PTX front-end refuses it ({}); SASS front only",
-                    format!("{e:#}").lines().last().unwrap_or("").trim()
+                    "num {variant} ptx : not run, the PTX front-end refuses it ({why}); the SASS front runs without claims"
                 );
+                ptx_refused = Some(why);
                 continue;
             }
             Err(e) => return Err(e),
@@ -3373,6 +3447,12 @@ fn cmd_num_with(
                     "the PTX front makes no claim on this output (ptxas may fold a rounding of constants into an immediate the SASS front takes as exact)".to_string()
                 })
             });
+            // ASSUME(N-NUM-TRACK): (MISS 160) a kernel with PTX the PTX front-end refuses.
+            let refusal = refusal.or_else(|| {
+                ptx_refused.as_ref().filter(|_| f == "sass").map(|why| {
+                    format!("the PTX front-end refuses this kernel's PTX ({why}), so no PTX claim bounds the SASS front's (ptxas may fold a rounding of constants into an immediate the SASS front takes as exact)")
+                })
+            });
             if let Some(why) = refusal {
                 if f == "ptx" {
                     if let Some(v) = ptx_verdict.as_mut() {
@@ -3471,20 +3551,45 @@ fn cmd_num_with(
                     v.insert(oname.clone(), Some(exacts));
                 }
             }
+            // ASSUME(N-MUFU): a bound that an analyzed element of the output exceeds is no bound
+            // (MISS 206, defense in depth): where one does (cor1a_ok / running_ok false below),
+            // every element of the output reports that bound as unknown (CSV "unknown", JSON
+            // null), and the summary's bound / error ratio too. Until then an overflowed MUFU
+            // bound printed 2^-126 against errors of 7.7e25 (probes/mufu_bound_top).
+            let exceeds = |e: f64, b: f64| !(e.is_finite() && e <= b);
+            if recs
+                .iter()
+                .any(|r| !r.untracked && exceeds(r.abs_err, r.bound_cor1a))
+            {
+                recs.iter_mut().for_each(|r| r.bound_cor1a = f64::NAN);
+            }
+            if recs
+                .iter()
+                .any(|r| !r.untracked && exceeds(r.abs_err, r.bound_running))
+            {
+                recs.iter_mut().for_each(|r| r.bound_running = f64::NAN);
+            }
+            let bound = |b: f64| {
+                if b.is_nan() {
+                    "unknown".to_string()
+                } else {
+                    format!("{b:e}")
+                }
+            };
             let mut csv = String::from(
                 "index,hw,exact,abs_err,rel_err,err_ulps,bound_cor1a,bound_running,thm1_exact,n_leaves,n_roundings,untracked,nonfinite\n",
             );
             for r in &recs {
                 csv += &format!(
-                    "{},{:e},{:e},{:e},{:e},{},{:e},{:e},{},{},{},{},{}\n",
+                    "{},{:e},{:e},{:e},{:e},{},{},{},{},{},{},{},{}\n",
                     r.index,
                     r.hw,
                     r.exact,
                     r.abs_err,
                     r.rel_err,
                     r.err_ulps,
-                    r.bound_cor1a,
-                    r.bound_running,
+                    bound(r.bound_cor1a),
+                    bound(r.bound_running),
                     r.thm1_exact,
                     r.n_leaves,
                     r.n_roundings,
@@ -3598,8 +3703,13 @@ fn cmd_num_with(
                 } else {
                     String::new()
                 };
+                let ratio = if s.cor1a_never_violated {
+                    format!("{:.1}", s.mean_cor1a_over_err)
+                } else {
+                    "unknown".to_string()
+                };
                 println!(
-                    "num {variant} {f:<4}: {oname_note}outputs={}{partial} thm1_exact={} spec_match={:?} cor1a_ok={} running_ok={} max_err={:.3e} ({:.2} ulp) bound/err(mean)={:.1} out={}",
+                    "num {variant} {f:<4}: {oname_note}outputs={}{partial} thm1_exact={} spec_match={:?} cor1a_ok={} running_ok={} max_err={:.3e} ({:.2} ulp) bound/err(mean)={ratio} out={}",
                     s.outputs,
                     s.thm1_all_exact,
                     s.spec_all_match,
@@ -3607,7 +3717,6 @@ fn cmd_num_with(
                     s.running_never_violated,
                     s.max_abs_err,
                     s.max_err_ulps,
-                    s.mean_cor1a_over_err,
                     s.output_hash
                 );
             }
@@ -3630,6 +3739,44 @@ fn cmd_num_with(
         }
     }
     Ok((sums, outs.pop().unwrap()))
+}
+
+/// FNV-1a (hex) of an image file: what a hardware worker must load (`--image-fnv`).
+pub(crate) fn image_fnv(p: &Path) -> Result<String> {
+    Ok(format!("{:016x}", fnv(&std::fs::read(p)?)))
+}
+
+/// The launches' own cubins a hardware worker loads for `variant` (`PTXV_CUBIN_IMAGES`:
+/// `name=path=fnv;...`): the variant's patched copy `{prefix}.{name}` where its patch names that
+/// cubin (an error if the copy is missing: a patch that did not land), else the case's file.
+/// The worker loads exactly these bytes and fails on any other (RVS2 L2).
+pub(crate) fn own_cubin_images(case: &Case, variant: &str, prefix: &Path) -> Result<String> {
+    let main = case.m.cubin.as_deref();
+    let patched: std::collections::BTreeSet<String> = case
+        .variant(variant)
+        .map(|v| v.patch.iter().filter_map(|p| p.cubin.clone()).collect())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for l in case.m.all_launches() {
+        let Some(c) = l.cubin.filter(|c| Some(*c) != main) else {
+            continue;
+        };
+        if !seen.insert(c.to_string()) {
+            continue;
+        }
+        let p = if patched.contains(c) {
+            let p = PathBuf::from(format!("{}.{c}", prefix.display()));
+            if !p.exists() {
+                bail!("{variant}: the patched copy {} of launch cubin {c} is missing", p.display());
+            }
+            p
+        } else {
+            case.dir.join(c)
+        };
+        out.push(format!("{c}={}={}", p.display(), image_fnv(&p)?));
+    }
+    Ok(out.join(";"))
 }
 
 fn fnv(b: &[u8]) -> u64 {
@@ -3697,6 +3844,9 @@ pub(crate) fn hw_run_cubin(
 ) -> Result<HwRow> {
     let exe = std::env::current_exe()?;
     let t0 = Instant::now();
+    // The worker checks that it loads these bytes (the patched cubin), not another build.
+    let image_fnv = image_fnv(cubin)?;
+    let own = own_cubin_images(case, v, &cubin.with_extension(""))?;
     let mut child = std::process::Command::new(&exe)
         .args([
             "hw-worker",
@@ -3706,13 +3856,16 @@ pub(crate) fn hw_run_cubin(
             &runs.to_string(),
             "--expected",
             exp_path.to_str().unwrap(),
+            "--image-fnv",
+            &image_fnv,
             "--variant",
             v,
         ])
         .args(if scrub { vec!["--scrub"] } else { vec![] })
         .env("CUDA_VISIBLE_DEVICES", gpu_env(case, gpu)?)
-        // Patched launch cubins sit next to the variant's (`load_with`).
-        .env("PTXV_PATCHED_PREFIX", cubin.with_extension(""))
+        // Patched launch cubins sit next to the variant's (`load_with`); the worker loads
+        // exactly the listed images.
+        .env("PTXV_CUBIN_IMAGES", own)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
@@ -3834,6 +3987,19 @@ fn note_ref_faults(run: &str, findings: &[ptxv_sim::machine::Finding]) {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// E-LAUNCH-ORDER (MISS 191): the GPU runs a case's launches in their list order (with their
+/// `after`, `waits` and streams), whatever the reading of an unknown order; the schedules the
+/// strict reading adds (every grid at the same time as every other, `ptxv check`'s default for
+/// an unknown order) are not run on hardware. A note for an unknown order of several launches.
+fn hw_order_note(case: &Case) -> Option<String> {
+    let n = case.m.all_launches().len();
+    (n > 1 && order_row(case).reading.is_some()).then(|| {
+        format!(
+            "launch order unknown: the GPU runs the {n} launches in the case's list order; the schedules the strict reading adds (every grid at the same time as every other, ptxv check's default) are not run on hardware (E-LAUNCH-ORDER)"
+        )
+    })
+}
+
 fn cmd_hw(
     case: &Case,
     variant: &str,
@@ -3876,7 +4042,23 @@ fn cmd_hw(
         } else {
             load_with(case, &v, front, &dir, delays)?.1
         };
+        if let Some(n) = hw_order_note(&case.for_variant(&v)?) {
+            println!("hw {v:<6} {n}");
+        }
         let row = hw_run_cubin(case, &v, &cubin, runs, timeout, &exp_path, scrub, gpu)?;
+        // A patch that replaces instructions (`bits`, `nop`) can change what the variant
+        // computes; without PTXV_HW_EXPECT=variant its runs are compared with the expected
+        // bytes above (the good variant's), not with its own simulator run.
+        let rewrites = case
+            .variant(&v)?
+            .patch
+            .iter()
+            .any(|p| !p.bits.is_empty() || p.nop);
+        if rewrites && v != "good" && std::env::var("PTXV_HW_EXPECT").as_deref() != Ok("variant") {
+            println!(
+                "hw {v:<6} note: the patch replaces instructions and the runs are compared with the good variant's expected bytes (PTXV_HW_EXPECT=variant compares each variant with its own simulator run)"
+            );
+        }
         println!(
             "hw {:<6}{} {} ({} runs, {:.1}s) distinct outputs (count, words differing): {}{}",
             row.variant,
@@ -3923,6 +4105,14 @@ fn cmd_probe(case: &Case, variant: &str, timeout: f64, out: &Option<PathBuf>) ->
         std::fs::write(&ptx_path, case.variant_ptx(&v)?)?;
         let cubin = dir.join(format!("{v}.cubin"));
         ptxv_sass::ptxas(&ptx_path, &cubin, &case.m.arch)?;
+        // The variant's control-bit / instruction patch, as `ptxv hw` applies it (without it
+        // a patched variant would run the unpatched code).
+        let patch = &case.variant(&v)?.patch;
+        if !patch.is_empty() {
+            let log = ptxv_sass::scoreboard::patch_file(&cubin, &case.m.entry, patch)?;
+            std::fs::write(dir.join(format!("{v}.patch.txt")), log.join("\n") + "\n")?;
+        }
+        let image_fnv = image_fnv(&cubin)?;
         let dump = dir.join(format!("{v}.probe.bin"));
         let _ = std::fs::remove_file(&dump);
         let mut child = std::process::Command::new(&exe)
@@ -3934,6 +4124,8 @@ fn cmd_probe(case: &Case, variant: &str, timeout: f64, out: &Option<PathBuf>) ->
                 "1",
                 "--dump",
                 dump.to_str().unwrap(),
+                "--image-fnv",
+                &image_fnv,
                 "--variant",
                 &v,
             ])
@@ -4034,7 +4226,7 @@ fn cmd_suite(case: &Case, runs: usize, out: &Option<PathBuf>) -> Result<()> {
     md += "\n## Numerics (good variant)\n\nRows cover the analyzed elements only; untracked elements have no error claim.\n\n| front | output | elements | analyzed | Thm 1 exact | matches spec | Cor 1a never violated | running bound never violated | max error | max ulp | mean Cor1a/err |\n|---|---|---|---|---|---|---|---|---|---|---|\n";
     for n in &nums {
         md += &format!(
-            "| {} | {} | {} | {} | {} | {:?} | {} | {} | {:.3e} | {:.2} | {:.1} |\n",
+            "| {} | {} | {} | {} | {} | {:?} | {} | {} | {:.3e} | {:.2} | {} |\n",
             n.front,
             n.output,
             n.outputs,
@@ -4048,7 +4240,12 @@ fn cmd_suite(case: &Case, runs: usize, out: &Option<PathBuf>) -> Result<()> {
             n.running_never_violated,
             n.max_abs_err,
             n.max_err_ulps,
-            n.mean_cor1a_over_err
+            // MISS 206: no ratio for a bound the output violates (`cmd_num_with`).
+            if n.cor1a_never_violated || n.refused.is_some() {
+                format!("{:.1}", n.mean_cor1a_over_err)
+            } else {
+                "unknown".to_string()
+            }
         );
     }
     // Assumptions every verdict above depends on (ASSUMPTIONS.md).
@@ -4616,7 +4813,17 @@ fn run() -> Result<()> {
             n,
             tag,
             variant,
-        } => errdist::gpu_worker(&case, &cubin, &dir, n, &tag, variant.as_deref())?,
+            image_fnv: want,
+        } => {
+            let got = image_fnv(&cubin)?;
+            if got != want {
+                bail!(
+                    "{}: the image is not the one the run built (FNV-1a {got}, expected {want})",
+                    cubin.display()
+                );
+            }
+            errdist::gpu_worker(&case, &cubin, &dir, n, &tag, variant.as_deref())?
+        }
         Cmd::HwWorker {
             case,
             image,
@@ -4625,10 +4832,18 @@ fn run() -> Result<()> {
             scrub,
             input,
             dump,
+            image_fnv,
             variant,
         } => {
             let c = worker_case(&case, variant.as_deref())?;
             let img = std::fs::read(&image)?;
+            let got = format!("{:016x}", fnv(&img));
+            if got != image_fnv {
+                bail!(
+                    "{}: the image is not the one the run built (FNV-1a {got}, expected {image_fnv})",
+                    image.display()
+                );
+            }
             let exp = match expected {
                 Some(p) => Some(std::fs::read(p)?),
                 None => None,
@@ -4710,5 +4925,26 @@ mod worker_tests {
         let c = super::worker_case(&fx, Some("UNORD")).unwrap();
         assert_eq!(c.m.launches[0].after, Some(-1));
         assert!(super::worker_case(&fx, Some("NO_SUCH_VARIANT")).is_err());
+    }
+
+    /// MISS 191: `ptxv hw` says when it runs an unknown order of several launches in the list's
+    /// order (the strict reading's concurrent schedules are not run on hardware); not for a
+    /// declared order or a single launch.
+    #[test]
+    fn hw_notes_an_unknown_order_it_runs_in_list_order() {
+        let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_equiv_order");
+        let c = super::Case::load(&fx).unwrap();
+        let unk = super::hw_order_note(&c.for_variant("UNK").unwrap()).unwrap();
+        assert!(unk.contains("list order"), "{unk}");
+        assert_eq!(super::hw_order_note(&c.for_variant("good").unwrap()), None);
+        let one = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/c_cat");
+        assert_eq!(
+            super::hw_order_note(&super::Case::load(&one).unwrap()),
+            None
+        );
+        assert_eq!(
+            super::order_row(&c.for_variant("UNK").unwrap()).case,
+            "unknown"
+        );
     }
 }

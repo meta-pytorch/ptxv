@@ -1,0 +1,60 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-SWIN probe: isspacep.shared::cta (ptxas 13.0: QSPC.E.S) and isspacep.shared::cluster
+// (QSPC.E.D) of three generic addresses per thread, in clusters of 2 CTAs:
+//   own  = cvta.shared of this thread's word of s (this CTA's shared memory),
+//   peer = mapa.u64 own, rank ^ 1 (the other CTA's copy of that word),
+//   glb  = this thread's word of out (global memory).
+// out[32 ctaid + tid] = bit 0 cta(own) | 1 cluster(own) | 2 cta(peer) | 3 cluster(peer)
+//                     | 4 cta(glb) | 5 cluster(glb).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry qspc_window(.param .u64 pout)
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    .shared .align 4 .b32 s[32];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %cluster_ctarank;
+    ld.param.u64 %rd1, [pout];
+    mov.u32 %r4, s;
+    shl.b32 %r5, %r1, 2;
+    add.u32 %r6, %r4, %r5;
+    cvt.u64.u32 %rd2, %r6;
+    cvta.shared.u64 %rd3, %rd2;
+    xor.b32 %r7, %r3, 1;
+    mapa.u64 %rd4, %rd3, %r7;
+    isspacep.shared::cta %p1, %rd3;
+    isspacep.shared::cluster %p2, %rd3;
+    isspacep.shared::cta %p3, %rd4;
+    isspacep.shared::cluster %p4, %rd4;
+    mad.lo.u32 %r10, %r2, 32, %r1;
+    mul.wide.u32 %rd5, %r10, 4;
+    add.u64 %rd8, %rd1, %rd5;
+    isspacep.shared::cta %p5, %rd8;
+    isspacep.shared::cluster %p6, %rd8;
+    selp.u32 %r8, 1, 0, %p1;
+    selp.u32 %r9, 2, 0, %p2;
+    or.b32 %r8, %r8, %r9;
+    selp.u32 %r9, 4, 0, %p3;
+    or.b32 %r8, %r8, %r9;
+    selp.u32 %r9, 8, 0, %p4;
+    or.b32 %r8, %r8, %r9;
+    selp.u32 %r9, 16, 0, %p5;
+    or.b32 %r8, %r8, %r9;
+    selp.u32 %r9, 32, 0, %p6;
+    or.b32 %r8, %r8, %r9;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    cvta.to.global.u64 %rd6, %rd1;
+    add.u64 %rd7, %rd6, %rd5;
+    st.global.u32 [%rd7], %r8;
+    ret;
+}

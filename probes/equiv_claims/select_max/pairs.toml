@@ -1,0 +1,67 @@
+title = "a compare-and-select max / min against FMNMX and against other selects (MISS 197)"
+value = "equal"
+
+[[pairs]]
+name = "max.f32(a, b) vs a > b ? a : b"
+equiv = ["eq_fmax_selgt_ptx.toml", "eq_fmax_selgt_sass.toml"]
+sets = [["fmax_f", "selgt_f"], ["fmax_n", "selgt_n"]]
+
+[[pairs]]
+name = "a > b ? a : b vs b > a ? b : a"
+equiv = ["eq_selgt_selgtsw_ptx.toml", "eq_selgt_selgtsw_sass.toml"]
+sets = [["selgt_f", "selgtsw_f"], ["selgt_n", "selgtsw_n"]]
+
+[[pairs]]
+name = "min.f32(a, b) vs a < b ? a : b"
+equiv = ["eq_fmin_sellt_ptx.toml", "eq_fmin_sellt_sass.toml"]
+sets = [["fmin_f", "sellt_f"], ["fmin_n", "sellt_n"]]
+
+[[pairs]]
+name = "a > b ? a : b vs a >= b ? a : b"
+equiv = ["eq_selgt_selge_ptx.toml", "eq_selgt_selge_sass.toml"]
+sets = [["selgt_f", "selge_f"], ["selgt_n", "selge_n"]]
+
+[[pairs]]
+name = "a > b ? a : b vs a >u b ? a : b (setp.gtu)"
+equiv = ["eq_selgt_selgtu_ptx.toml", "eq_selgt_selgtu_sass.toml"]
+sets = [["selgt_f", "selgtu_f"], ["selgt_n", "selgtu_n"]]
+
+[[pairs]]
+name = "min(max(a, b), c) vs the same clamp by selects"
+equiv = ["eq_clampf_clamps_ptx.toml", "eq_clampf_clamps_sass.toml"]
+sets = [["clampf_f", "clamps_f"], ["clampf_n", "clamps_n"]]
+
+[[pairs]]
+name = "max.f32(x, y) vs x > y ? x : y (FSEL), x = a + b, y = a - b"
+equiv = ["eq_mz_fmnmx_sel_ptx.toml", "eq_mz_fmnmx_sel_sass.toml"]
+sets = [["mz_fmnmx_y", "mz_sel_y"]]
+
+[[pairs]]
+name = "max.f32(x, y) vs x > y ? x : y (selp.b32: SEL), x = a + b, y = a - b"
+equiv = ["eq_mz_fmnmx_selb_ptx.toml", "eq_mz_fmnmx_selb_sass.toml"]
+sets = [["mz_fmnmx_y", "mz_selb_y"]]
+
+[[pairs]]
+name = "x > y ? x : y vs y > x ? y : x, x = a + b, y = a - b"
+equiv = ["eq_mz_sel_selsw_ptx.toml", "eq_mz_sel_selsw_sass.toml"]
+sets = [["mz_sel_y", "mz_selsw_y"]]
+
+[[pairs]]
+name = "s > b ? s : b vs s >u b ? s : b, s = sqrt.approx(a) (NaN for a < 0)"
+equiv = ["eq_sselgt_sselgtu_ptx.toml", "eq_sselgt_sselgtu_sass.toml"]
+sets = [["sselgt_p", "sselgtu_p"], ["sselgt_q", "sselgtu_q"]]
+
+[[pairs]]
+name = "max.f32(s, b) vs b > s ? b : s, s = sqrt.approx(a)"
+equiv = ["eq_sfmax_sselbs_ptx.toml", "eq_sfmax_sselbs_sass.toml"]
+sets = [["sfmax_p", "sselbs_p"], ["sfmax_q", "sselbs_q"]]
+
+[[pairs]]
+name = "s > b ? s : b vs b > s ? b : s, s = sqrt.approx(a)"
+equiv = ["eq_sselgt_sselbs_ptx.toml", "eq_sselgt_sselbs_sass.toml"]
+sets = [["sselgt_p", "sselbs_p"], ["sselgt_q", "sselbs_q"]]
+
+[[pairs]]
+name = "max.f32(s, b) vs s > b ? s : b, s = sqrt.approx(a)"
+equiv = ["eq_sfmax_sselgt_ptx.toml", "eq_sfmax_sselgt_sass.toml"]
+sets = [["sfmax_p", "sselgt_p"], ["sfmax_q", "sselgt_q"]]

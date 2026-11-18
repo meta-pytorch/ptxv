@@ -1,0 +1,21 @@
+# GB300 (one GPU, GPU 0), 2026-11-12, rev d2a4ee90 binary: PTXV_HW_EXPECT=variant ptxv hw --runs 1000 --scrub
+# (the patched image checked by --image-fnv). Grid 1 x 32. The repro of the MISS 181 review (RVS3 H5 / H6).
+# Another user's compute processes held the GPU between this run's variants (the run waited for it to be
+# free before each variant; not excluded during it).
+# Summary (wrong runs of 1000):
+#   MATCH_HI (MATCH.ANY.U64 R11, R6 with no wait while the LDG writing R7, the pair's high register, is
+#     outstanding): 1000 (statically clean before the lift widths, MISS 181)
+#   MATCH_LO (the LDG writes R6 instead; positive control): 1000
+#   HMMA_HI (HMMA.1688.F32.BF16 with C = R12..R15 and no wait while the LDG writing R13 is outstanding):
+#     1000 (statically clean before)
+#   HMMA_OWN (the HMMA waits on the LDG's SB2, as ptxas): 0. good: 0.
+#   (The review saw MATCH_HI / MATCH_LO wrong in the first 12 launches of 1000 only: cold memory; here every
+#   run.)
+# Static classes (fixtures.rs miss181_lift_width_repros): MATCH_HI, MATCH_LO, HMMA_HI violations; HMMA_OWN,
+# good clean.
+# Raw rows:
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 0)]
+hw MATCH_HI [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 32)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1
+hw MATCH_LO [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 32)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1
+hw HMMA_HI [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 32)] first failing runs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+hw HMMA_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]

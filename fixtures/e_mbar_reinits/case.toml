@@ -1,0 +1,43 @@
+name = "e_mbar_reinits"
+description = "RMK4 A11: e_mbar_store_order REINIT with the threads swapped (t32 invals, t0 re-inits per thread: SASS STS.64 over the invalidated object)"
+ptx = "kernel.ptx"
+entry = "e_mbar_reinits"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "REINITS"
+summary = "t32 invals a, t0 re-initializes a through a per-thread address (SASS STS.64 state word), unordered"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "shl.b32 %r21, %r1, 3; add.u32 %r22, %r2, %r21; mbarrier.init.shared::cta.b64 [%r22], 1;" }]
+expect = ["race"]
+
+[[variants]]
+id = "REINIT"
+summary = "as e_mbar_store_order REINIT"
+marker = "@STORE"
+find = "st.shared.u64 [%r2], %rd5;"
+replace = "sub.u32 %r20, %r1, 32; shl.b32 %r21, %r20, 3; add.u32 %r22, %r2, %r21; mbarrier.init.shared::cta.b64 [%r22], 1;"
+expect = ["race"]
+
+[[variants]]
+id = "FLAG"
+summary = "t32 invals a, then sets a flag (st.relaxed); t0 re-initializes a (SASS STS.64 state word) only if it reads the flag (zeroed before B1) set (ld.relaxed): the init always runs after the inval but is not ordered after it. Reaches store_over_mbar's dead-object state-word path in the default explorer, which runs a plain store that can go before the inval before it (E-DRF)"
+edits = [{ marker = "@INIT", find = "mbarrier.init.shared::cta.b64 [%r2], 1;", replace = "mov.u32 %r29, 0; st.shared.u32 [f], %r29; mbarrier.init.shared::cta.b64 [%r2], 1;" }, { marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@INV", find = "mbarrier.inval.shared::cta.b64 [%r2];", replace = "mbarrier.inval.shared::cta.b64 [%r2]; mov.u32 %r30, 1; st.relaxed.cta.shared.u32 [f], %r30;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@VAL", find = "mov.b64 %rd5, 0;", replace = "ld.relaxed.cta.shared.u32 %r31, [f]; setp.ne.u32 %p6, %r31, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "shl.b32 %r21, %r1, 3; add.u32 %r22, %r2, %r21; @%p6 mbarrier.init.shared::cta.b64 [%r22], 1;" }]
+expect = ["race"]
+
+[[variants]]
+id = "FLAGACQ"
+summary = "FLAG with st.release / ld.acquire: the re-init is ordered after the inval"
+edits = [{ marker = "@INIT", find = "mbarrier.init.shared::cta.b64 [%r2], 1;", replace = "mov.u32 %r29, 0; st.shared.u32 [f], %r29; mbarrier.init.shared::cta.b64 [%r2], 1;" }, { marker = "@IVT", find = "%r1, 0;", replace = "%r1, 32;" }, { marker = "@INV", find = "mbarrier.inval.shared::cta.b64 [%r2];", replace = "mbarrier.inval.shared::cta.b64 [%r2]; mov.u32 %r30, 1; st.release.cta.shared.u32 [f], %r30;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }, { marker = "@VAL", find = "mov.b64 %rd5, 0;", replace = "ld.acquire.cta.shared.u32 %r31, [f]; setp.ne.u32 %p6, %r31, 0;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "shl.b32 %r21, %r1, 3; add.u32 %r22, %r2, %r21; @%p6 mbarrier.init.shared::cta.b64 [%r22], 1;" }]
+expect = ["clean"]

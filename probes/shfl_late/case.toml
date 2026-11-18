@@ -1,0 +1,42 @@
+name = "probe_shfl_late"
+description = """
+Control for probes/shared_queue REV_COVER (MISS 106). ptxas (sm_103a, CUDA 13.0) issues
+`SHFL.BFLY PT, R6, R6, 0x1, 0x1f` (wr=SB0) at 0x80, 64 dependent IMADs (st=4 each), then
+`IADD3 R7, PT, PT, R6, R7, RZ` (waits on SB0) at 0x490.
+- LATE: the SHFL with no write scoreboard, the IADD3 waits on nothing. Correct if and only if a
+  SHFL with no scoreboard writes its result within the ~260 issue cycles of the chain, so that
+  REV_COVER's failure is the order of the SHFL against the later LDS, not a lost write."""
+ptx = "kernel.ptx"
+entry = "shfl_late"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2654435761
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "LATE"
+summary = "the SHFL with no write scoreboard, its reader 64 IMADs later waits on nothing"
+patch = [
+    { at = "@0x80", wbar = 7, expect = "SHFL.BFLY PT, R6, R6, 0x1, 0x1f" },
+    { at = "@0x490", wait = 0, expect = "IADD3 R7, PT, PT, R6, R7, RZ" },
+]
+expect = ["clean"]
+# The static check has no SHFL latency: the unscoreboarded result read with no wait.
+expect_sass = ["violation"]

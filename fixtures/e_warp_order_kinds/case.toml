@@ -1,0 +1,44 @@
+name = "e_warp_order_kinds"
+description = """
+E-WARP-ORDER (MISS 31's report, soundness review): strong pairs of a converged warp on
+different instructions beyond e_warp_order_div CONV's shared-memory write-read pairs. good:
+lane 0 stores a global word twice with st.volatile and lane 1 loads it after each store (lane
+1 may see any coherent pair under the PTX model; the model shows (1, 2)). WW: lane 0 and lane
+1 store 1 and 2 to one shared word on consecutive instructions and lane 0 reads it after
+bar.warp.sync (1 or 2 under the PTX model; the model shows 2). Both nondeterministic on the
+PTX front; SASS clean (the converged warp's program order; good: the strict level's
+E-HW-SB-QUEUE contract only)."""
+ptx = "kernel.ptx"
+entry = "e_warp_order_kinds"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "global-memory write-read pairs (st.volatile.global / ld.volatile.global)"
+expect = ["nondeterministic"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
+
+[[variants]]
+id = "WW"
+summary = "a shared-memory write-write pair: lane 0 stores 1, lane 1 stores 2 on the next instruction"
+edits = [
+  { marker = "@A1", find = "@%p1 st.volatile.global.u32 [%rd1+8], %r10;", replace = "@%p1 st.volatile.shared.u32 [%r2], %r10;" },
+  { marker = "@A2", find = "@%p2 ld.volatile.global.u32 %r12, [%rd1+8];", replace = "@%p2 st.volatile.shared.u32 [%r2], %r11;" },
+  { marker = "@A3", replace = "<delete>" },
+  { marker = "@A4", replace = "<delete>" },
+]
+expect = ["nondeterministic"]
+expect_sass = ["clean"]

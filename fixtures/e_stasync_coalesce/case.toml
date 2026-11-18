@@ -1,0 +1,46 @@
+name = "e_stasync_coalesce"
+description = """
+S-REMOTE-INFLIGHT: the st.async words of one warp instruction to one mbarrier are one pending
+operation (push_remote), one part per lane with its own async actor and clock. The parts land
+together as one async step, but a lane's drain lands only its own part and leaves the others
+in flight. Lanes 0 and 1 of rank 0 st.async x and y into rank 1 (complete_tx on M1); then lane
+L alone (lane 0 in C0, lane 1 in C1) runs fence.acq_rel.cluster and a .release.cluster remote
+arrive on M2. Rank 1 waits on M2, reads y (lane 1's word), then waits on M1.
+C0: race on y (PTX memory model: lane 1's store is not in lane 0's program order, and lane 1
+never synchronizes after it), and y can still be in flight at the read (S-INIT,
+nondeterministic). Earlier models: one actor per operation made lane 0's release order lane
+1's word ([contract], wrong-clean); then per-lane actors with a drain landing the whole
+operation gave the race but never an unwritten y ([contract, race]).
+C1: lane 1's release lands its own part and orders its word: PTX the S-MBAR-SCOPE contract,
+SASS clean (a false race while a lane's drain ignored operations it did not issue)."""
+ptx = "kernel.ptx"
+entry = "e_stasync_coalesce"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "C0"
+summary = "lane 0 (the operation's issuer) alone drains and releases; the reader reads lane 1's y: race, and y may still be unwritten"
+expect = ["contract", "nondeterministic", "race", "violation"]
+expect_sass = ["nondeterministic", "race", "violation"]
+
+[[variants]]
+id = "C1"
+summary = "lane 1 alone drains and releases; the reader reads its y: ordered"
+marker = "@LANE"
+find = "setp.ne.u32 %p6, %r1, 0;"
+replace = "setp.ne.u32 %p6, %r1, 1;"
+expect = ["contract"]
+expect_sass = ["clean"]

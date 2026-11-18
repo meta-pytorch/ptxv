@@ -6,7 +6,9 @@
 // Fixture for E-RACE-DEAD (race_dead.rs): every thread of two warps loads a global word and
 // thread 0 then stores the word plus one (Triton's `tl.load` of a scalar by every thread,
 // `tl.store` masked to one lane: local_stats_partial_reduction's numel update). The other
-// threads' loads race with the store; warp 1 never uses its value.
+// threads' loads race with the store; warp 1 never uses its value. RDMIX (MISS 226): the loads
+// read one byte of the word (ld.global.u8), a mixed-size data race with thread 0's u32 store
+// (PTX ISA 9.5 section 8.7.2: the axioms do not apply), which a dead value does not discharge.
 .version 9.0
 .target sm_103a
 .address_size 64
@@ -21,7 +23,7 @@
     ld.param.u64 %rd2, [out_p];
     cvta.to.global.u64 %rd2, %rd2;
     mov.u32 %r1, %tid.x;
-    ld.global.u32 %r5, [%rd1];
+    ld.global.u32 %r5, [%rd1];           // @LOAD
     add.u32 %r6, %r5, 1;
     setp.ne.u32 %p1, %r1, 0;
     @%p1 bra NOT0;

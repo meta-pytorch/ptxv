@@ -83,6 +83,8 @@ byte_offset = 0
 id = "good"
 summary = "as captured"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 hw_note = "lifts completely (HMMA, LDSM, cp.async, local memory, LEA -R); the run matches GB300 bitwise (expected/)"
 
 [[variants]]
@@ -90,4 +92,6 @@ id = "nosb"
 summary = "SASS: LDSM.16.M88.4 R4 (Q's fragment for the first HMMA) at 0x12c0 gets no write scoreboard (wr SB3 -> none)"
 patch = [{ at = "@0x12c0", wbar = 7 }]
 expect = ["violation"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "violation"]
 hw_note = "the first HMMA reads R4..R7 before ldmatrix has written them"

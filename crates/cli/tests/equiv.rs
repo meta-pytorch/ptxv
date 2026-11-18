@@ -127,12 +127,15 @@ fn softmaxes_are_bounded() {
 /// 1/3 change the exact polynomial by ~2^-19 relative, charged in the bound), and no random
 /// trial above its bound.
 #[test]
-fn norms_are_bounded() {
+fn rmsnorms_are_bounded() {
     let t = equiv_ok("fixtures/c_equiv_rmsnorm/equiv.toml", 2);
     assert!(t.contains("L1 same function         PROVEN"), "{t}");
     assert!(t.contains("kappa <= 1 (proven)"), "{t}");
     assert!(t.contains(", 0 over the bound"), "{t}");
     assert!(t.contains("0 output-trials not covered"), "{t}");
+}
+#[test]
+fn layernorms_are_bounded() {
     let t = equiv_ok("fixtures/c_equiv_layernorm/equiv.toml", 2);
     assert!(t.contains("strongest level: L1~"), "{t}");
     assert!(t.contains(", 0 over the bound"), "{t}");
@@ -222,7 +225,7 @@ fn mxf8_gemm_is_bounded() {
     }
     let t = equiv_ok("fixtures/c_equiv_mxf8/equiv.toml", 2);
     assert!(t.contains("L0 bitwise               PROVEN"), "{t}");
-    assert!(t.contains("reference 255.50u, candidate 255.50u"), "{t}");
+    assert!(t.contains("reference 255.51u, candidate 255.51u"), "{t}");
     assert!(t.contains("0 over the bound"), "{t}");
     let own = t
         .split("each kernel vs exact: at most ")
@@ -295,7 +298,7 @@ fn nvf4_dequant_bf16_is_bounded() {
     }
     let t = equiv_ok("fixtures/c_equiv_nvf4_dq/equiv.toml", 1);
     assert!(t.contains("L1 same function         PROVEN"), "{t}");
-    assert!(t.contains("reference 9.88u, candidate 159.50u"), "{t}");
+    assert!(t.contains("reference 9.88u, candidate 159.51u"), "{t}");
     assert!(t.contains("bound: |C - R| <= 169.38u * sum|terms|"), "{t}");
     assert!(t.contains("0 over the bound"), "{t}");
 }
@@ -311,7 +314,7 @@ fn mxf8_triton_is_bounded() {
     let t = equiv_ok("fixtures/c_equiv_mxf8_triton/equiv.toml", 2);
     assert!(t.contains("L0 bitwise               PROVEN"), "{t}");
     assert!(t.contains("expected L1: ok"), "{t}");
-    assert!(t.contains("306.00u * sum|terms|"), "{t}");
+    assert!(t.contains("306.01u * sum|terms|"), "{t}");
     assert!(!t.contains("MISMATCH"), "{t}");
     assert!(t.matches("0 over the bound").count() == 2, "{t}");
 }
@@ -333,13 +336,13 @@ fn mxf4_triton_is_bounded() {
 }
 
 /// f16 outputs: two f32 sum orders rounded to f16 (synthetic PTX, SASS front-end) are L1 in
-/// the 16-bit output form; one f16 ulp where sum |terms| <= 512 |y|; no trial above the
-/// per-input bound.
+/// the 16-bit output form; one f16 ulp where sum |terms| <= 511 |y| (the limit, just below 512,
+/// printed rounded down: MISS 145); no trial above the per-input bound.
 #[test]
 fn f16_outputs_are_bounded() {
     let t = equiv_ok("fixtures/c_equiv_f16/equiv.toml", 1);
     assert!(t.contains("f16 output form"), "{t}");
-    assert!(t.contains("sum|terms| <= 512 |y|"), "{t}");
+    assert!(t.contains("sum|terms| <= 511 |y|"), "{t}");
     assert!(t.contains("0 over the bound"), "{t}");
 }
 
@@ -356,8 +359,9 @@ fn tf32_gemms_are_bounded() {
         3,
         "{t}"
     );
-    assert!(t.contains("bound: |C - R| <= 239.52u * sum|terms|"), "{t}");
-    assert!(t.contains("bound: |C - R| <= 183.52u * sum|terms|"), "{t}");
+    // Rounded up (MISS 145: 239.52u and 183.52u when rounded to nearest).
+    assert!(t.contains("bound: |C - R| <= 239.53u * sum|terms|"), "{t}");
+    assert!(t.contains("bound: |C - R| <= 183.53u * sum|terms|"), "{t}");
     assert!(t.contains("condition: N-TF32"), "{t}");
     assert!(t.contains("relies on: N-FINITE (48 comparisons"), "{t}");
     assert!(
@@ -883,19 +887,25 @@ fn find(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-/// MISS 110 (N-MULTIMEM-ROUND16 in equiv): fixtures/r1h_nvls_bf16 copied with captured outputs
-/// written from its own simulated output, lane 1 of outa0 (an exact bf16 sum: no calibrated
-/// rounding) one encoding up. equiv's check of the simulated output against the capture reports
-/// the difference on both fronts; with every byte taken as a calibrated lane it would pass as
-/// within one ulp.
-#[test]
-fn exact_multimem_lane_one_ulp_off_differs_from_its_capture() {
+/// fixtures/r1h_nvls_bf16 copied once per front with captured outputs written from that front's
+/// simulated output, the encoding of lane `lane` of outa0 replaced by `edit` of the simulated
+/// one; `ptxv equiv` of the two copies against the original (PTX), each expected at level
+/// `expect` (`equiv_ok`); its output.
+fn nvls16_equiv_with_capture(
+    tag: &str,
+    lane: usize,
+    edit: impl Fn(u16) -> u16,
+    expect: &str,
+) -> String {
     const OUTS: [&str; 8] = [
         "outa0", "outb0", "outc0", "outm0", "outa1", "outb1", "outc1", "outm1",
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let src = root.join("fixtures/r1h_nvls_bf16");
-    let tmp = std::env::temp_dir().join(format!("ptxv-test-equiv-nvls16-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!(
+        "ptxv-test-equiv-nvls16-{tag}-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&tmp);
     let mut eq = format!(
         "reference = {{ case = \"{}\", variant = \"good\", front = \"ptx\" }}\n",
@@ -931,9 +941,9 @@ fn exact_multimem_lane_one_ulp_off_differs_from_its_capture() {
             );
         }
         std::fs::write(case.join("case.toml"), toml).unwrap();
-        // outa0 lane 1: bytes 2..4 of the first output.
-        let e = u16::from_le_bytes([sim[2], sim[3]]) + 1;
-        sim[2..4].copy_from_slice(&e.to_le_bytes());
+        // outa0 lane `lane`: bytes 2 lane .. 2 lane + 2 of the first output.
+        let e = edit(u16::from_le_bytes([sim[2 * lane], sim[2 * lane + 1]]));
+        sim[2 * lane..2 * lane + 2].copy_from_slice(&e.to_le_bytes());
         for (i, b) in OUTS.iter().enumerate() {
             std::fs::write(
                 case.join(format!("expected/{b}.bin")),
@@ -942,16 +952,40 @@ fn exact_multimem_lane_one_ulp_off_differs_from_its_capture() {
             .unwrap();
         }
         eq += &format!(
-            "\n[[candidates]]\ncase = \"{}\"\nvariant = \"good\"\nfront = \"{front}\"\nexpect = \"none (unproven)\"\n",
+            "\n[[candidates]]\ncase = \"{}\"\nvariant = \"good\"\nfront = \"{front}\"\nexpect = \"{expect}\"\n",
             case.display()
         );
     }
     let toml = tmp.join("eq.toml");
     std::fs::write(&toml, eq).unwrap();
     let t = equiv_ok(toml.to_str().unwrap(), 2);
-    let line = "candidate: simulated output at the captured inputs: outa0: differs from the captured GPU output";
-    assert_eq!(t.matches(line).count(), 2, "{t}");
     let _ = std::fs::remove_dir_all(&tmp);
+    t
+}
+
+const NVLS16_DIFFERS: &str = "candidate: simulated output at the captured inputs: outa0: differs from the captured GPU output";
+
+/// MISS 110 (N-MULTIMEM-ROUND16 in equiv): lane 1 of outa0 (an exact bf16 sum: no calibrated
+/// rounding) one encoding up in the capture. equiv's check of the simulated output against the
+/// capture reports the difference on both fronts; with every byte taken as a calibrated lane it
+/// would pass as within one ulp.
+#[test]
+fn exact_multimem_lane_one_ulp_off_differs_from_its_capture() {
+    let t = nvls16_equiv_with_capture("exact", 1, |s| s + 1, "none (unproven)");
+    assert_eq!(t.matches(NVLS16_DIFFERS).count(), 2, "{t}");
+}
+
+/// MISS 162: lane 0 of outa0 (sum 1 + 2^-8, rounded by the calibrated rule to 0x3f80 or 0x3f81)
+/// replaced in the capture by the other rounding of the sum: no difference; by the encoding one
+/// past the simulated value away from the sum (0x3f7f, 0x3f82): a difference on both fronts.
+/// Before, both passed as within one ulp.
+#[test]
+fn multimem_lane_past_the_simulated_value_differs_from_its_capture() {
+    let t = nvls16_equiv_with_capture("other", 0, |s| s ^ 1, "none (unproven)");
+    assert_eq!(t.matches(NVLS16_DIFFERS).count(), 0, "{t}");
+    let past = |s| if s == 0x3f80 { 0x3f7f } else { 0x3f82 };
+    let t = nvls16_equiv_with_capture("past", 0, past, "none (unproven)");
+    assert_eq!(t.matches(NVLS16_DIFFERS).count(), 2, "{t}");
 }
 
 /// MISS 158 (fixtures/c_equiv_local/eq_local.toml): input data keeps its taint through local
@@ -978,6 +1012,95 @@ fn failed_cas_with_input_compare_taints_its_word() {
     assert!(!t.contains("PROVEN"), "{t}");
     let line = "precondition: data-dependent: an address / control operand of";
     assert_eq!(t.matches(line).count(), 2, "{t}");
+}
+
+/// The blocks of `ptxv equiv`'s output, one per candidate: (case name, front, its lines).
+fn candidate_blocks(t: &str) -> Vec<(String, String, String)> {
+    let mut v: Vec<(String, String, String)> = vec![];
+    for line in t.lines() {
+        if let Some(rest) = line.strip_prefix("candidate ") {
+            let w: Vec<&str> = rest.split_whitespace().collect();
+            v.push((
+                w[0].to_string(),
+                w.get(2).unwrap_or(&"").to_string(),
+                String::new(),
+            ));
+        } else if let Some(b) = v.last_mut() {
+            b.2 += line;
+            b.2.push('\n');
+        }
+    }
+    v
+}
+
+/// MISS 177, defense in depth (fixtures/c_equiv_atom64/eq_atom64.toml): ref_exch64's output is the
+/// word a 64-bit exchange zeroed (0 for every input), while before MISS 177's fix its node was the
+/// x stored there before. That node does not hold the output's bits, so the output counts as
+/// untracked and no level holds on either front (without the check: L0 PROVEN). The self pair,
+/// cand_copy on both fronts, stays L0: a node that holds its output's bits is kept.
+#[test]
+fn stale_output_nodes_count_as_untracked() {
+    let t = equiv_ok("fixtures/c_equiv_atom64/eq_atom64.toml", 4);
+    let blocks = candidate_blocks(&t);
+    assert_eq!(blocks.len(), 4, "{t}");
+    for (case, front, b) in &blocks {
+        let level = if case.ends_with("ref_exch64") {
+            "=> strongest level: none (unproven)\n"
+        } else {
+            "=> strongest level: L0\n"
+        };
+        assert!(b.contains(level), "{case} {front}\n{t}");
+    }
+}
+
+/// MISS 177 (fixtures/c_equiv_atom_words, the independent review's probes and ref_bf16hisame):
+/// every word an atomic covers loses its node, both words of a 64-bit exchange or compare-and-swap,
+/// swapped or not, and the word holding a 16-bit atomic on its upper half (`num_atom_half`). No ref
+/// keeps a level against cand_copy on either front, and the self pair stays L0.
+/// ref_exch64same, ref_bf16hisame and ref_cas64maybe (eq_words_plus1.toml) equal x at the captured
+/// inputs, so the node check does not see their stale nodes: until MISS 177 they were L0 PROVEN,
+/// and on GB300 they differ from x at other inputs.
+#[test]
+fn every_word_an_atomic_covers_loses_its_node() {
+    let t = equiv_ok("fixtures/c_equiv_atom_words/eq_words.toml", 16);
+    let blocks = candidate_blocks(&t);
+    assert_eq!(blocks.len(), 16, "{t}");
+    for (case, front, b) in &blocks {
+        let level = if case.ends_with("cand_copy") {
+            "=> strongest level: L0\n"
+        } else {
+            "=> strongest level: none (unproven)\n"
+        };
+        assert!(b.contains(level), "{case} {front}\n{t}");
+    }
+    let t = equiv_ok("fixtures/c_equiv_atom_words/eq_words_plus1.toml", 2);
+    let none = "=> strongest level: none (unproven)\n";
+    assert_eq!(t.matches(none).count(), 2, "{t}");
+}
+
+/// MISS 205 (probes/stasync_num_shadow; GB300 == simulator bitwise, 20 of 20 runs per case): an
+/// st.async word takes the stored value's node and taint, into the CTA's own shared memory in
+/// one step and into a peer CTA when it lands. c1_ref_stasyncw (st.async of w over S[t] = x, a
+/// 1-CTA cluster) and c2_ref_rsaw (into the peer's S[t]) against out = x, c2_ref_rsaz (an
+/// st.async of rn(w - x) into the peer) against out = 0, at w = x: before, L0 PROVEN on both
+/// fronts from the node and taint S[t] had before the st.async; GB300 at w = x + 1 differs in 32
+/// of 32, 64 of 64 and 64 of 64 outputs. Now no level: w against x (witness), and rn(w - x)
+/// untracked as for a plain st.shared::cluster of it. c1_ref_stasync0 (st.async of 0) has no
+/// level either way (before: the MISS 177 node check).
+#[test]
+fn stasync_words_take_the_stored_value() {
+    for (r, level) in [
+        ("c1_ref_stasyncw", "none"),
+        ("c2_ref_rsaw", "none"),
+        ("c2_ref_rsaz", "none (unproven)"),
+        ("c1_ref_stasync0", "none"),
+    ] {
+        for front in ["ptx", "sass"] {
+            let t = equiv_ok(&format!("probes/stasync_num_shadow/eq_{r}_{front}.toml"), 1);
+            let want = format!("=> strongest level: {level}\n");
+            assert!(t.contains(&want), "{r} {front}\n{t}");
+        }
+    }
 }
 
 /// MISS 98 (fixtures/c_equiv_atomic/eq_offset.toml): captures of part of the output
@@ -1101,6 +1224,13 @@ fn atomic_flush_modes_are_not_bitwise() {
         if pair.starts_with("mixA") {
             assert!(t.contains(mixed), "{pair}: {t}");
             assert_eq!(t.matches(exempt).count(), 2, "{pair}: {t}");
+            // One thread's adds in program order: not "schedule-dependent" (the form does not
+            // track the order), only order-dependent.
+            assert!(
+                t.contains("order-dependent atomic adds (not L0): ")
+                    && !t.contains("schedule-dependent"),
+                "{pair}: {t}"
+            );
         } else {
             assert!(!t.contains(exempt), "{pair}: {t}");
         }
@@ -1110,6 +1240,60 @@ fn atomic_flush_modes_are_not_bitwise() {
                 "{pair}: {t}"
             );
         }
+    }
+}
+
+/// MISS 142 (fixtures/c_equiv_atomic_space): an f32 atomic add flushes subnormals in global
+/// memory only. red.shared.add.f32, and a generic red.add.f32 into shared memory, against
+/// red.global.add.f32 of the same value into +0: on the PTX front the canonical forms differ (L0
+/// fails on the model, not through the captures) and the bound with its flush term holds against
+/// GB300's captures, which differ at the 128 subnormal inputs; L2 fails on the flushing
+/// candidate's absolute term (MISS 143). On the SASS front the shared adds are CAS loops whose
+/// guard depends on the data: unproven. Before, both PTX pairs were proven L0 (refused through
+/// the captures).
+#[test]
+fn shared_atomic_adds_do_not_flush() {
+    for (pair, level) in [
+        ("shm_ptx", "L1"),
+        ("gen_ptx", "L1"),
+        ("shm_sass", "none (unproven)"),
+        ("gen_sass", "none (unproven)"),
+    ] {
+        let t = equiv_ok(&format!("fixtures/c_equiv_atomic_space/eq_{pair}.toml"), 1);
+        for s in [
+            format!("=> strongest level: {level}\n"),
+            "captured GPU outputs: 128 of 256 bitwise equal".to_string(),
+            "L0 bitwise               FAILS at 256 of 256 outputs (first: 0)\n        canonical rounding DAGs differ".to_string(),
+        ] {
+            assert!(t.contains(&s), "{pair}: {s}: {t}");
+        }
+        assert!(!t.contains("contradict"), "{pair}: {t}");
+    }
+}
+
+/// MISS 143 (fixtures/c_equiv_atomic_ftz, reversed pairs): L2 compares the absolute flush term,
+/// which only flushing adds carry. The flushing kernel as the candidate against the bulk
+/// (non-flushing) one is L1: it flushes the subnormals the reference keeps (GB300: the outputs
+/// differ at 64 and 79 words on set s, every difference within the bound). As the reference
+/// (fwd_c2) the pair is L2. Before, rev_i and rev_c2 were L2.
+#[test]
+fn l2_needs_the_flush_term() {
+    for (pair, level, equal) in [
+        ("rev_i_n", "L1", 1024),
+        ("rev_i_s", "L1", 960),
+        ("rev_c2_s", "L1", 945),
+        ("fwd_c2_s", "L2", 945),
+    ] {
+        let t = equiv_ok(&format!("fixtures/c_equiv_atomic_ftz/eq_{pair}.toml"), 1);
+        for s in [
+            format!("=> strongest level: {level}\n"),
+            format!("captured GPU outputs: {equal} of 1024 bitwise equal"),
+        ] {
+            assert!(t.contains(&s), "{pair}: {s}: {t}");
+        }
+        let note = "candidate absolute error term";
+        assert_eq!(t.contains(note), level == "L1", "{pair}: {t}");
+        assert!(!t.contains("contradict"), "{pair}: {t}");
     }
 }
 
@@ -1132,5 +1316,156 @@ fn zero_sign_needs_canonical_nans() {
         }
         assert!(!t.contains("L0~0"), "{set}: {t}");
         assert!(!t.contains("contradict"), "{set}: {t}");
+    }
+}
+
+/// MISS 135 (fixtures/c_equiv_zero_sign_choice): a choice that can pick a NaN payload, plus +0,
+/// gets no L0~0 claim. A guarded store overwrites a + b with the input b (gsel) or with the
+/// payload constant 0x7fc12345 (gselk), and the candidate adds +0 to the result. GB300's
+/// captures differ at 23 and 511 of 1024 words. Segment mode makes x + (+0) part of a slice of
+/// the choice, so nothing is peeled (level none); gselk's NaN constant also refuses every level
+/// through its non-finite polynomial coefficient.
+#[test]
+fn zero_sign_choice_is_not_l0z() {
+    for (pair, equal, level, why) in [
+        (
+            "gsel",
+            1001,
+            "none",
+            "2 monomials differ (reference vs candidate coefficient)",
+        ),
+        (
+            "gselk",
+            513,
+            "none (unproven)",
+            "polynomial coefficient cannot be represented exactly in f64",
+        ),
+    ] {
+        let t = equiv_ok(
+            &format!("fixtures/c_equiv_zero_sign_choice/eq_{pair}.toml"),
+            1,
+        );
+        for s in [
+            "relies on: N-ERRDIST-SEL (1 stores under a data-dependent guard, modeled as selections)".to_string(),
+            "L0 bitwise               FAILS at 1024 of 1024 outputs (first: 0)\n        canonical rounding DAGs differ".to_string(),
+            why.to_string(),
+            format!("captured GPU outputs: {equal} of 1024 bitwise equal"),
+            format!("=> strongest level: {level}\n"),
+        ] {
+            assert!(t.contains(&s), "{pair}: {s}: {t}");
+        }
+        assert!(!t.contains("L0~0"), "{pair}: {t}");
+        assert!(!t.contains("contradict"), "{pair}: {t}");
+    }
+}
+
+/// MISS 135 follow-up (fixtures/c_equiv_zero_sign_fmnmx): a hardware FMNMX / FMNMX3 gives the
+/// canonical NaN for NaN operands, so on the SASS front max(a, b) + 0 against max(a, b) is L0~0
+/// (GB300, set n: the outputs differ in 16 words, all zero signs; FMNMX3's pair in 8). On the PTX
+/// front a max.f32 is peeled only where its operands are: ptxas folds max.f32(a, a) into a copy,
+/// which keeps a's NaN payloads (GB300: that pair differs at 24 NaN words), so it is L2 on both
+/// fronts. Until 2026-11-12 every pair was L2 (a precision gap).
+#[test]
+fn zero_peel_takes_hardware_maxima() {
+    for (t, level) in [
+        ("eq_fmax_sass", "L0~0"),
+        ("eq_fmax3_sass", "L0~0"),
+        ("eq_fmax_ptx", "L2"),
+        ("eq_fmax3_ptx", "L2"),
+        ("eq_fmaxaa_ptx", "L2"),
+        ("eq_fmaxaa_sass", "L2"),
+    ] {
+        let text = equiv_ok(&format!("fixtures/c_equiv_zero_sign_fmnmx/{t}.toml"), 1);
+        assert!(
+            text.contains(&format!("=> strongest level: {level}\n")),
+            "{t}: {text}"
+        );
+        assert!(!text.contains("contradict"), "{t}: {text}");
+    }
+}
+
+/// MISS 197, 202 (probes/equiv_claims): a max's kind is part of its L0 form. max.f32 against a
+/// compare and select, gt against ge and gtu, FMNMX against FMNMX.NAN, and FMNMX of -inf
+/// against FMNMX of a repeated operand differ on GB300 at zeros of opposite sign or NaN operands
+/// (`run.sh`): not L0, and L2 only relying on N-FINITE (their operands are inputs).
+/// select_max's pairs run on its set g (finite, no zeros or ties), the others with their set-f
+/// captures, which agree with that. Until 2026-11-12 each was L0 (contradicted where the
+/// captures differ at zero signs).
+#[test]
+fn max_kinds_are_not_l0() {
+    for t in [
+        "select_max/eq_fmax_selgt_ptx",
+        "select_max/eq_fmax_selgt_sass",
+        "select_max/eq_selgt_selge_sass",
+        "select_max/eq_selgt_selgtu_sass",
+        "select_max/eq_clampf_clamps_sass",
+        "select_max/eq_selgt_selgtsw_sass",
+        "fmnmx_nan/eq_fmax_fmaxnan_sass",
+        "fmnmx_nan/eq_fmax_fmaxnan_seg_ptx",
+        "max_identity/eq_maxinf_maxaav_sass",
+        "max_identity/eq_maxinfb_maxab_ptx",
+    ] {
+        let text = equiv_ok(&format!("probes/equiv_claims/{t}.toml"), 0);
+        for s in [
+            "L0 bitwise               FAILS",
+            "relies on: N-FINITE (1024 outputs at a value level read a select or FMNMX.NAN maximum",
+            "=> strongest level: L2\n",
+        ] {
+            assert!(text.contains(s), "{t}: {s}: {text}");
+        }
+        assert!(!text.contains("contradict"), "{t}: {text}");
+    }
+}
+
+/// MISS 143, 145 (fixtures/c_equiv_atomic_ftz, eq_tau_i_s): L3 holds up to the bound's absolute
+/// term. GB300's outputs of this pair differ by up to 1.165e-38, beyond 4u sum|terms| (0 here:
+/// the sums are exact) but within A = 3 * 2^-126 (1 + u) = 3.526e-38. The L3 line says "+ A" and
+/// gives A, rounded up like every printed bound (3.6e-38). Until 2026-11-12 the line read
+/// "L3 tolerance (4u) PROVEN", and A printed rounded to nearest (3.5e-38).
+#[test]
+fn l3_line_carries_the_absolute_term() {
+    let t = equiv_ok("fixtures/c_equiv_atomic_ftz/eq_tau_i_s.toml", 1);
+    for s in [
+        "L3 tolerance (4u + A)    PROVEN (A = 3.6e-38, the bound's absolute term: |C - R| <= 4u * sum|terms| + A)",
+        "bound: |C - R| <= 0.00u * sum|terms| + 3.6e-38 for every output",
+        "=> strongest level: L2+L3\n",
+    ] {
+        assert!(t.contains(s), "{s}: {t}");
+    }
+    assert!(!t.contains("contradict"), "{t}");
+}
+
+/// MISS 201 (probes/equiv_claims/product_underflow): (a * b) * c against a * (b * c) with a * b
+/// in the subnormal range. That rounding errs by up to 2^-150 absolute, which c then scales: no
+/// bound, so L1, and neither L2 nor L3. GB300 exceeds the old claim (L2+L3, 4u sum|terms|) in
+/// 512 of 1024 outputs, by up to 3317x (`run.sh`). Until 2026-11-12 the pair was L2+L3.
+#[test]
+fn products_rounded_to_subnormals_have_no_bound() {
+    for t in ["eq_prodl_prodr_ptx", "eq_prodl_prodr_sass"] {
+        let text = equiv_ok(
+            &format!("probes/equiv_claims/product_underflow/{t}.toml"),
+            0,
+        );
+        for s in [
+            "L1 same function         PROVEN",
+            "L2 no less accurate      FAILS",
+            "L3 tolerance (8u)        FAILS",
+            "no bound (an absolute error term (a rounding to a subnormal, or a flush to zero) inside a product",
+            "=> strongest level: L1\n",
+        ] {
+            assert!(text.contains(s), "{t}: {s}: {text}");
+        }
+        assert!(!text.contains("contradict"), "{t}: {text}");
+    }
+}
+
+/// MISS 197, 202: where an operand may be NaN for an admissible input (s = sqrt.approx(a), NaN
+/// for finite a < 0), FMNMX and FMNMX.NAN of it share no value form: GB300 differs in 512 of
+/// 512 words there (probes/equiv_claims/fmnmx_nan, set q). Until 2026-11-12 the pair was L0.
+#[test]
+fn maxima_of_maybe_nan_operands_share_no_value_form() {
+    for t in ["eq_sfmax_sfmaxnan_ptx", "eq_sfmax_sfmaxnan_sass"] {
+        let text = equiv_ok(&format!("probes/equiv_claims/fmnmx_nan/{t}.toml"), 0);
+        assert!(text.contains("=> strongest level: none\n"), "{t}: {text}");
     }
 }

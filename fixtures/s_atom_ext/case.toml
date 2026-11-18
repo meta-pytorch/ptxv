@@ -53,4 +53,4 @@ id = "good"
 # bar.warp.sync between them: either order under the PTX model (E-WARP-ORDER), GB300 runs
 # them in program order, the explored outcome (bitwise = GB300).
 expect = ["nondeterministic"]
-expect_sass = ["clean"]
+expect_sass = ["contract"]

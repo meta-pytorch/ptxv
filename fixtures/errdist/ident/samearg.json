@@ -1,0 +1,1 @@
+{"version": 1, "seed": 1, "name": "u U[2^23, 1.5 2^23)", "tensors": {"u": {"dist": {"kind": "uniform", "lo": 8388608.0, "hi": 12582912.0}}}, "default": {"dist": {"kind": "normal"}}}

@@ -1,0 +1,48 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry r5e_c2_cand_zero(.param .u64 px, .param .u64 pw, .param .u64 pout)
+.maxntid 32, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<64>;
+    .reg .f32 %f<32>;
+    .reg .b64 %rd<32>;
+    .shared .align 16 .b8 S[128];
+    .shared .align 8 .b64 MB;
+    ld.param.u64 %rd1, [px];
+    ld.param.u64 %rd7, [pw];
+    ld.param.u64 %rd2, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd7, %rd7;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %cluster_ctarank;
+    mad.lo.u32 %r2, %r1, 32, %r0;
+    xor.b32 %r3, %r1, 1;
+    mad.lo.u32 %r4, %r3, 32, %r0;
+    mul.wide.u32 %rd3, %r2, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    mul.wide.u32 %rd13, %r4, 4;
+    add.s64 %rd14, %rd1, %rd13;
+    add.s64 %rd16, %rd7, %rd13;
+    ld.global.f32 %f4, [%rd4];
+    ld.global.f32 %f5, [%rd16];
+    ld.global.f32 %f6, [%rd14];
+    mov.u32 %r20, S;
+    mad.lo.u32 %r21, %r0, 4, %r20;
+    mov.u32 %r22, MB;
+    mov.f32 %f9, 0f00000000;
+    st.global.f32 [%rd5], %f9;
+    barrier.cluster.arrive.release.aligned;
+    barrier.cluster.wait.acquire.aligned;
+    ret;
+}

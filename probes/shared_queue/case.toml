@@ -1,0 +1,173 @@
+name = "probe_shared_queue"
+description = """
+Probe (L-OPCLASS, E-HW-SB-QUEUE) for LDS and SHFL in one shared-memory completion queue on
+GB300. ptxas (sm_103a, CUDA 13.0) issues `SHFL.BFLY PT, R7, R7, 0x1, 0x1f` (wr=SB1) at 0x700,
+`LDS R6, [R6]` (wr=SB2, a 32-way bank conflict) at 0x710, `VIADD R9, R7, 0x2` (waits on SB1)
+and `VIADD R8, R6, 0x1` (waits on SB2). The two are independent; the variants swap them (bits
+patches; the two VIADDs are swapped too, so the LDS's reader comes first) and take a write
+scoreboard away:
+- OWN_L: swapped, scoreboards kept (control).
+- COVER: LDS first with no write scoreboard, its reader waits on the later SHFL's SB1 only.
+  Correct on GB300 if and only if the LDS completes no later than the later SHFL.
+- NOWAIT: as COVER with no wait (positive control).
+- REV_COVER / REV_NOWAIT: ptxas's order, the SHFL with no write scoreboard, its reader waiting
+  on the later LDS's SB2 only / on nothing.
+GB300 (2026-11-11, `ptxv hw --scrub`, 1000 runs each, results.txt): good, OWN_L and COVER
+correct in every run; NOWAIT, REV_COVER and REV_NOWAIT wrong in every run (the 256 words of the
+column read). An LDS completes no later than a later SHFL (a measured null: COVER is a strict
+E-HW-SB-QUEUE contract, clean at gb300); a SHFL does not complete before a later LDS (MISS 106:
+REV_COVER a SCOREBOARD violation at both levels; before, clean at both)."""
+ptx = "kernel.ptx"
+entry = "shared_queue"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [512]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "u32"
+value = 2654435761
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "OWN_L"
+summary = "the LDS and the SHFL swapped (LDS first), scoreboards as ptxas set them (control)"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 2, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f0007077f89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R7, R7, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 4, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "COVER"
+summary = "LDS first with no write scoreboard; its reader waits on the later SHFL's SB1 only"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f0007077f89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R7, R7, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "NOWAIT"
+summary = "LDS first with no write scoreboard; its reader waits on nothing (positive control)"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f0007077f89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R7, R7, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "REV_COVER"
+summary = "ptxas's order: the SHFL with no write scoreboard; its reader waits on the later LDS's SB2 only"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0c201f0007077f89], [64, 41, 0xe0000]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R7, R7, 0x1, 0x1f" },
+    { at = "@0x720", wait = 4, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "REV_NOWAIT"
+summary = "ptxas's order: the SHFL with no write scoreboard; its reader waits on nothing (positive control)"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0c201f0007077f89], [64, 41, 0xe0000]], stall = 1, wbar = 7, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R7, R7, 0x1, 0x1f" },
+    { at = "@0x720", wait = 0, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["violation"]
+
+# MISS 129 (adversarial review): does a SHFL read an earlier unscoreboarded LDS result in the
+# queue? RVS_QREAD_LDS_*: no; RVS_QREAD_CTL_* its ALU-reader control, RVS_QREAD_REF_* the reference.
+[[variants]]
+id = "RVS_QREAD_LDS_S4"
+summary = "LDS R6 (32-way conflict) no SB; SHFL R7 <- R6 with no wait (wr=SB1); both readers wait on SB1"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f0006077f89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R7, R6, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "RVS_QREAD_REF_S4"
+summary = "as RVS_QREAD_LDS with the LDS on SB2 and the SHFL waiting on it (reference)"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 4, wbar = 2, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f0006077f89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 4, expect = "SHFL.BFLY PT, R7, R6, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 6, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "RVS_QREAD_CTL_S4"
+summary = "positive control: a VIADD in the SHFL's place reads R6 with no wait"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 4, wbar = 2, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0000000006077836], [64, 41, 0x0]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R7, R6, 0x0" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 4, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "RVS_QREAD_LDS_S8"
+summary = "LDS R6 (32-way conflict) no SB; SHFL R7 <- R6 with no wait (wr=SB1); both readers wait on SB1"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 8, wbar = 7, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f0006077f89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 0, expect = "SHFL.BFLY PT, R7, R6, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]
+
+[[variants]]
+id = "RVS_QREAD_REF_S8"
+summary = "as RVS_QREAD_LDS with the LDS on SB2 and the SHFL waiting on it (reference)"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 8, wbar = 2, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0c201f0006077f89], [64, 41, 0xe0000]], stall = 4, wbar = 1, rbar = 7, wait = 4, expect = "SHFL.BFLY PT, R7, R6, 0x1, 0x1f" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 6, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 2, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract"]
+
+[[variants]]
+id = "RVS_QREAD_CTL_S8"
+summary = "positive control: a VIADD in the SHFL's place reads R6 with no wait"
+patch = [
+    { at = "@0x700", bits = [[0, 64, 0x0000000006067984], [64, 41, 0x800]], stall = 8, wbar = 2, rbar = 7, wait = 0, expect = "LDS R6, [R6]" },
+    { at = "@0x710", bits = [[0, 64, 0x0000000006077836], [64, 41, 0x0]], stall = 4, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R7, R6, 0x0" },
+    { at = "@0x720", bits = [[0, 64, 0x0000000106087836], [64, 41, 0x0]], stall = 2, wbar = 7, rbar = 7, wait = 4, expect = "VIADD R8, R6, 0x1" },
+    { at = "@0x730", bits = [[0, 64, 0x0000000207097836], [64, 41, 0x0]], stall = 5, wbar = 7, rbar = 7, wait = 0, expect = "VIADD R9, R7, 0x2" },
+]
+expect = ["clean"]
+expect_sass = ["contract", "violation"]

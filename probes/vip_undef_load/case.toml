@@ -1,0 +1,81 @@
+name = "probe_vip_undef_load"
+description = """
+Repro (MISS 282, RDP2 finding K): a strong load of never-written memory (an mbarrier's word on PTX,
+a plain shared word, or a global scratch word) whose value reaches out. E-POLL-ANY ran the load as
+a value-insensitive poll and dropped its undefined bits: the default explorer gave [clean] against
+DPOR's (and the plain model's, PTXV_NO_VIP) [violation]. SASS: ptxas lowers ld.volatile.shared to
+a plain LDS, which vip does not take; LDG's ld.relaxed.gpu stays LDG.E.STRONG.GPU and shows the
+same loss on SASS. UST: the location is defined when the load runs, but another warp's strong
+store of undefined data can land first.
+"""
+ptx = "kernel.ptx"
+entry = "vip_undef_load"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "scr"
+dtype = "u32"
+shape = [4]
+init = "undef"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "scr"
+
+[[variants]]
+id = "LDW"
+summary = "a volatile load of the mbarrier's word"
+expect = ["violation"]
+
+[[variants]]
+id = "LDY"
+summary = "a volatile load of a never-written shared word"
+expect = ["violation"]
+marker = "@T"
+find = "ld.volatile.shared.u32 %r16, [%r4];"
+replace = "mov.u32 %r17, y;\n    ld.volatile.shared.u32 %r16, [%r17];"
+
+[[variants]]
+id = "LDYP"
+summary = "a plain load of a never-written shared word (the control)"
+expect = ["violation"]
+marker = "@T"
+find = "ld.volatile.shared.u32 %r16, [%r4];"
+replace = "mov.u32 %r17, y;\n    ld.shared.u32 %r16, [%r17];"
+
+[[variants]]
+id = "LDG"
+summary = "a relaxed .gpu (strong) load of a never-written scratch word (SASS LDG.E.STRONG.GPU)"
+expect = ["violation"]
+marker = "@T"
+find = "ld.volatile.shared.u32 %r16, [%r4];"
+replace = "cvta.to.global.u64 %rd3, %rd2;\n    ld.relaxed.gpu.global.u32 %r16, [%rd3];"
+
+[[variants]]
+id = "UST"
+summary = "a strong load of a defined word that a strong store of undefined (equal-byte) data may overwrite first"
+expect = ["violation"]
+[[variants.edits]]
+marker = "@T"
+find = "ld.volatile.shared.u32 %r16, [%r4];"
+replace = "cvta.to.global.u64 %rd3, %rd2;\n    ld.global.u32 %r20, [%rd3+4];\n    st.relaxed.gpu.global.u32 [%rd3+8], %r20;"
+[[variants.edits]]
+marker = "@S"
+find = "st.global.u32 [%rd1], %r15;"
+replace = ""
+[[variants.edits]]
+marker = "@Z"
+find = "// @Z"
+replace = "cvta.to.global.u64 %rd3, %rd2;\n    ld.relaxed.gpu.global.u32 %r16, [%rd3+8];\n    st.global.u32 [%rd1], %r16;"

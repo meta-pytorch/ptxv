@@ -9,14 +9,18 @@
 //! loaded from every location a multicast address names. Calibrated on GB300 (4 GPUs, one
 //! NVLink domain; probes/multimem, ASSUMPTIONS.md N-MULTIMEM):
 //! - integers (add / min / max / and / or / xor, 32 and 64 bits): exact;
-//! - f32 add: each operand truncated toward zero to a window of `F32_WINDOW` bits below the
-//!   largest operand's last mantissa bit, the truncated values summed exactly, the sum rounded
-//!   to nearest even. Bitwise on every lane where no operand bit falls below the window;
-//!   lanes where one does are reported `inexact` (99.98% still match); results are
-//!   independent of member order, of the issuing GPU and of the repetition;
+//! - f32 add: each operand truncated toward zero to a multiple of 2^(16 floor(eB / 16) - 207)
+//!   (eB: the largest operand's biased exponent), the truncated values summed exactly; a sum
+//!   whose leading bit lies below 2^(16 floor(eB / 16) - 198) is +0, any other sum is rounded
+//!   to nearest even (MISS 225). Bitwise on every recorded lane; lanes where some operand bit
+//!   falls below the window are still reported `inexact`; results are independent of member
+//!   order, of the issuing GPU and of the repetition;
 //! - f16 / bf16 add (with or without `.acc::f32`): the result is one of the two neighbours
-//!   of the sum; which one depends on the other lanes of its 8-byte group (`add16`; a
-//!   calibrated rule that reproduces most but not all measured lanes): reported `inexact`;
+//!   of the sum (operands truncated `HALF_WINDOW` bits below the largest operand's last
+//!   mantissa bit; a sum below 2^(16 floor(eB / 16) - 23 - bias) is +0, MISS 208); which one
+//!   depends on the other lanes of its 8-byte group (`add16`; a calibrated rule that
+//!   reproduces most but not all measured lanes): reported `inexact`;
+//! - a sum of zeros is +0 whatever their signs (MISS 208, MISS 225);
 //! - f16 / bf16 min / max: IEEE minNum / maxNum (a NaN operand is ignored, -0 < +0);
 //! - a NaN operand in an add: the result is one of the NaN operands, quieted; several
 //!   distinct NaNs are not modeled; inf + -inf is the canonical NaN.
@@ -36,19 +40,21 @@ use ptxv_ir::Val;
 use crate::exec::Loc;
 use crate::machine::Machine;
 
-/// Bits kept below the largest f32 operand's last mantissa bit (probes/multimem: 63
-/// reproduces 262094 of 262144 scalar lanes; every miss truncated some operand bits, and
-/// such lanes are reported `inexact`).
-pub const F32_WINDOW: i32 = 63;
+/// Bits kept below the largest f16 / bf16 operand's last mantissa bit (the f32 window before
+/// MISS 225, which reproduced 262094 of 262144 scalar f32 lanes of probes/multimem; for f16 /
+/// bf16 no GB300 sweep has shown a member bit dropped above the MISS 208 flush bound).
+pub const HALF_WINDOW: i32 = 63;
 
 /// The reduced bytes, and whether some lane's rounding direction rests on the calibrated
 /// (not exact) f16 / bf16 rule: GB300 returns that neighbour or the other one.
 pub struct Reduced {
     pub bytes: Vec<u8>,
     pub inexact: bool,
-    /// Per lane: its rounding direction rests on the calibrated f16 / bf16 rule
-    /// (N-MULTIMEM-ROUND16). Empty when no lane's does.
-    pub calibrated: Vec<bool>,
+    /// Per lane whose rounding direction rests on the calibrated f16 / bf16 rule
+    /// (N-MULTIMEM-ROUND16): whether the other neighbour of its sum is the next encoding after
+    /// the result (it rounded toward zero) rather than the previous one. Empty when no lane's
+    /// does.
+    pub calibrated: Vec<Option<bool>>,
 }
 
 /// Format of a float lane: (exponent bits, mantissa bits).
@@ -154,13 +160,12 @@ fn add16(ty: McTy, members: &[Vec<u8>], w: usize) -> Result<Reduced, String> {
     };
     let mut out = Vec::with_capacity(members[0].len());
     let mut inexact = false;
-    let mut calibrated = vec![false; nl];
+    let mut calibrated = vec![None; nl];
     for i in 0..nl {
         let bits = match &lanes[i] {
             R16::Done(b) => *b,
             R16::Between { lo, num, ulp } => {
                 inexact = true;
-                calibrated[i] = true;
                 let g0 = i / 4 * 4;
                 let others: Vec<u64> = (1..4)
                     .filter_map(|j| lanes.get(g0 + (i - g0 + j) % 4).map(trunc))
@@ -173,11 +178,9 @@ fn add16(ty: McTy, members: &[Vec<u8>], w: usize) -> Result<Reduced, String> {
                     }
                 }
                 // up iff num / ulp + r / 2^nb >= 1
-                if num << nb >= ((1u128 << nb) - r) * ulp {
-                    lo + 1
-                } else {
-                    *lo
-                }
+                let up = num << nb >= ((1u128 << nb) - r) * ulp;
+                calibrated[i] = Some(!up);
+                if up { lo + 1 } else { *lo }
             }
         };
         for k in 0..w {
@@ -196,16 +199,17 @@ fn add16(ty: McTy, members: &[Vec<u8>], w: usize) -> Result<Reduced, String> {
 
 /// N-MULTIMEM-ROUND16 provenance (`Machine::round16`, one deterministic run): the bytes that
 /// hold an f16 / bf16 multimem.ld_reduce lane whose rounding direction rests on the calibrated
-/// rule, with the lane's format. The ld_reduce puts the lane into its destination register; a
+/// rule, with the lane's mark (`Round16`: its format, and on which side of the result the other
+/// neighbour of its sum lies). The ld_reduce puts the lane into its destination register; a
 /// register move copies it; a store writes it into memory (into every location a multicast
 /// store reaches). Any other write of the register or of the bytes ends it, and a load does
-/// not carry it. Only such bytes of an output may be one unit in the last place off the
-/// captured GPU output (`ptxv_case::Case::expect_compare_tol`, MISS 110).
+/// not carry it. Only such bytes of an output may differ from the captured GPU output, by the
+/// other rounding of the sum (`ptxv_case::Case::expect_compare_tol`, MISS 110, MISS 162).
 #[derive(Clone, Debug, Default)]
 pub struct Round16Shadow {
-    /// (thread, register file, index): the format per byte of the register's value.
+    /// (thread, register file, index): the mark per byte of the register's value.
     regs: HashMap<(u32, u8, u16), [Option<Round16>; 8]>,
-    /// (space: 0 shared / 1 global, CTA or allocation, byte offset): the format.
+    /// (space: 0 shared / 1 global, CTA or allocation, byte offset): the mark.
     mem: HashMap<(u8, u64, u64), Round16>,
 }
 
@@ -224,7 +228,7 @@ impl Machine {
         self.round16 = Some(Box::default());
     }
 
-    /// Per byte of `outputs()`: the format of the calibrated f16 / bf16 lane it holds
+    /// Per byte of `outputs()`: the mark of the calibrated f16 / bf16 lane it holds
     /// (`Round16Shadow`); None when the provenance is not tracked.
     pub fn round16_marks(&self) -> Option<Vec<Option<Round16>>> {
         let s = self.round16.as_ref()?;
@@ -264,11 +268,18 @@ impl Machine {
     }
 
     /// multimem.ld_reduce of `ty` lanes wrote its result into the 4-byte registers from `d`:
-    /// the bytes of each lane the calibrated rule rounded (`calibrated`, per lane) hold it.
-    pub(crate) fn round16_ld_reduce(&mut self, t: usize, d: Reg, ty: McTy, calibrated: &[bool]) {
-        let f = match ty {
-            McTy::F16 => Round16::F16,
-            McTy::Bf16 => Round16::Bf16,
+    /// the bytes of each lane the calibrated rule rounded (`calibrated`, per lane: where the
+    /// other neighbour of its sum lies) hold it.
+    pub(crate) fn round16_ld_reduce(
+        &mut self,
+        t: usize,
+        d: Reg,
+        ty: McTy,
+        calibrated: &[Option<bool>],
+    ) {
+        let f16 = match ty {
+            McTy::F16 => true,
+            McTy::Bf16 => false,
             _ => return,
         };
         let Some(s) = self
@@ -282,8 +293,8 @@ impl Machine {
         for (i, regs) in calibrated.chunks(4 / w).enumerate() {
             let mut m = [None; 8];
             for (j, &c) in regs.iter().enumerate() {
-                if c {
-                    m[j * w..(j + 1) * w].fill(Some(f));
+                if let Some(next) = c {
+                    m[j * w..(j + 1) * w].fill(Some(Round16::new(f16, next)));
                 }
             }
             if m.iter().any(Option::is_some) {
@@ -588,30 +599,52 @@ fn add_lane(ty: McTy, xs: &[u64]) -> Result<Lane, String> {
             canonical_nan(ty)
         }));
     }
-    let fin: Vec<&Dec> = ds
+    // Finite members with their biased exponents.
+    let fin: Vec<(&Dec, i32)> = ds
         .iter()
-        .filter_map(|d| match d {
-            Cls::Fin(d) => Some(d),
+        .zip(xs)
+        .filter_map(|(d, &x)| match d {
+            Cls::Fin(d) => Some((d, ((x >> mb) & ((1 << eb) - 1)) as i32)),
             _ => None,
         })
         .collect();
-    if fin.iter().all(|d| d.man == 0) {
-        // Zeros only: -0 when every operand is -0.
-        let neg = fin.iter().all(|d| d.neg);
-        return Ok(Lane::Done((neg as u64) << (eb + mb)));
+    if fin.iter().all(|(d, _)| d.man == 0) {
+        // ASSUME(N-MULTIMEM): a sum of zeros is +0 whatever their signs (GB300: every member -0
+        // gives +0 in f16, bf16 and f32, 2 and 4 members, with and without .acc::f32;
+        // probes/multimem_add16_rules, MISS 208; probes/multimem_f32_window, MISS 225). Until
+        // then it was -0 when every member was -0.
+        return Ok(Lane::Done(0));
     }
-    // ASSUME(N-MULTIMEM): each operand truncated toward zero to `F32_WINDOW` bits below the
-    // largest operand's last mantissa bit, then summed exactly.
-    let emax = fin
-        .iter()
-        .filter(|d| d.man != 0)
-        .map(|d| d.exp)
-        .max()
-        .unwrap();
-    let lsb = emax - F32_WINDOW;
+    // 2^a16 = 2^(16 floor(eB / 16) - bias), eB the largest member's biased exponent: where
+    // GB300's window is aligned.
+    let e_b = fin.iter().map(|&(_, e)| e).max().unwrap();
+    let a16 = 16 * (e_b / 16) - ((1i32 << (eb - 1)) - 1);
+    let (lsb, flush_below) = match ty {
+        // ASSUME(N-MULTIMEM): f32: each member truncated toward zero to a multiple of
+        // 2^(a16 - 80), the truncated members summed exactly; a sum whose leading bit lies below
+        // 2^(a16 - 71) is +0 (GB300: every lane of a cancellation sweep, B - B + R with R 16 to
+        // 72 binades below B for eB 40 to 230, and of 2359296 random lanes; MISS 225,
+        // probes/multimem_f32_window). Until MISS 225: 63 bits below the largest member's last
+        // mantissa bit, no flush.
+        McTy::F32 => (a16 - 80, a16 - 71),
+        // ASSUME(N-MULTIMEM): f16 / bf16 (with and without .acc::f32): each member truncated
+        // toward zero `HALF_WINDOW` bits below the largest member's last mantissa bit, the
+        // truncated members summed exactly; a sum whose leading bit lies below 2^(a16 - 23) is
+        // +0 (GB300: every eB of both formats, 4 members; MISS 208, probes/multimem_add16_rules).
+        // With 2 members no sum is that small.
+        _ => {
+            let emax = fin
+                .iter()
+                .filter(|(d, _)| d.man != 0)
+                .map(|(d, _)| d.exp)
+                .max()
+                .unwrap();
+            (emax - HALF_WINDOW, a16 - 23)
+        }
+    };
     let mut tot: i128 = 0;
     let mut dropped = false;
-    for d in &fin {
+    for (d, _) in &fin {
         if d.man == 0 {
             continue;
         }
@@ -630,9 +663,13 @@ fn add_lane(ty: McTy, xs: &[u64]) -> Result<Lane, String> {
     if tot == 0 {
         return Ok(Lane::Done(0));
     }
+    let mag = tot.unsigned_abs();
+    if 127 - mag.leading_zeros() as i32 + lsb < flush_below {
+        return Ok(Lane::Done(0));
+    }
     Ok(Lane::Sum {
         neg: tot < 0,
-        mag: tot.unsigned_abs(),
+        mag,
         lsb,
         dropped,
     })

@@ -1,0 +1,9 @@
+# case-dir variant front explorer classes (run.sh compares each line's observed classes with
+# these). unreduced: every reduction off, the reference. Neither kernel races, so DPOR must
+# report every class the unreduced search does.
+probes/syncwarp_fast   good sass unreduced [fault,nondeterministic]
+probes/syncwarp_fast   good sass stateful  [fault,nondeterministic]
+probes/syncwarp_fast   good sass dpor      [fault,nondeterministic]
+fixtures/e_split_ur    good sass unreduced [nondeterministic]
+fixtures/e_split_ur    good sass stateful  [nondeterministic]
+fixtures/e_split_ur    good sass dpor      [nondeterministic]

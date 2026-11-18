@@ -23,6 +23,12 @@ would edit the comment), and exits 1 if there is one (a run reports such a mutan
 without building it). Either mode exits 2, before a run creates --out, when --only
 is given but names nothing, when it names a name that is not a mutant that runs, or when no
 mutant is chosen.
+
+A mutant of a file under fb/ (`SrcMutant.fb_only`: internal tooling) is skipped, in a run and in
+--check-anchors, in a tree that has neither the file nor the export manifest
+fb/OSS_EXCLUDE.txt: the open-source export, which drops fb/. The count of skipped mutants goes
+to stderr; the others are checked or run as usual. In the internal tree a missing fb/ file is
+a broken anchor like any other.
 """
 
 import argparse
@@ -58,6 +64,11 @@ class SrcMutant:
     # status rules, the python package's readers; PTXV_PYTHON has the package's dependencies,
     # default this interpreter); caught when a test that ran fails.
     py: list = field(default_factory=list)
+
+    @property
+    def fb_only(self) -> bool:
+        """The mutated file is under fb/: internal tooling that the open-source export drops."""
+        return self.file.startswith("fb/")
 
 
 def test_target(pkg: str, binary: str) -> list[str]:
@@ -317,7 +328,9 @@ MUTANTS = [
         ],
     ),
     # exec.rs `warpsync_release`: the GB300 profile's BSYNC waits for lanes parked at a
-    # WARPSYNC.COLLECTIVE again (E-HW-BSYNC-COLLECTIVE): the profile verdict deadlocks.
+    # WARPSYNC.COLLECTIVE again (E-HW-BSYNC-COLLECTIVE). Survives since MISS 81 and gap G1: no
+    # BSYNC that still holds has such a lane in its own region, and a lane blocked at a
+    # collective opens any other BSYNC (E-HW-BSYNC-YIELD); ASSUMPTIONS.md E-HW-BSYNC-COLLECTIVE.
     SrcMutant(
         "bsync-coll",
         "crates/sim/src/exec.rs",
@@ -426,6 +439,283 @@ MUTANTS = [
         'dead: b.init == "undef" && b.scratch && !m.outputs.contains(&b.name),',
         'dead: b.init == "undef" && b.scratch,',
         [("s_init_dead_out", "good", f, []) for f in ("ptx", "sass")],
+    ),
+    # spin `blocked_wpoll_read`: a blocked warp-level poll's reads without the mapping their
+    # dry iteration resolved (S-VA-ALIAS; every such read was `unmodeled`).
+    SrcMutant(
+        "wpoll-view",
+        "crates/sim/src/spin.rs",
+        "        if let (Some(v), crate::exec::Loc::Global { alloc, off }) = (view, loc) {\n"
+        "            crate::exec::va_note(t, alloc, off, bytes as u64, v);\n        }\n",
+        "        let _ = view;\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "r1h_va_wpoll")],
+    ),
+    # sass/elf.rs `bank`: R_CUDA type 35 (a function descriptor) refused again.
+    SrcMutant(
+        "desc-reloc",
+        "crates/sass/src/elf.rs",
+        "if typ != 2 && typ != R_CUDA_DESCRIPTOR {",
+        "if typ != 2 {",
+        [],
+        tests=[("ptxv-sim", "fixtures", "s_func_desc")],
+    ),
+    # ptx `parse_kernel_for`: an entry prototype taken as the kernel again.
+    SrcMutant(
+        "entry-proto",
+        "crates/ptx/src/lib.rs",
+        "            if src[rp..].find('{').is_none_or(|b| semi < b) {",
+        "            if false && src[rp..].find('{').is_none_or(|b| semi < b) {",
+        [],
+        tests=[("ptxv-ptx", "lib", "tests::entry_prototype_before_definition")],
+    ),
+    # exec `exit_checks`: a remote delivery drained by its issuer's later release loses the
+    # target's wait as cover again (S-CLUSTER-LIFE false violation).
+    SrcMutant(
+        "drain-wait",
+        "crates/sim/src/exec.rs",
+        "            if !waited && !self.observed_by(cta, issuer, clock) {",
+        "            if !self.observed_by(cta, issuer, clock) {",
+        [],
+        tests=[("ptxv-sim", "fixtures", "e_stasync_drain")],
+    ),
+    # exec `mbar_reset_seen`: the waits recorded on an mbarrier survive its inval / init again
+    # (MISS 203: a wait on the old object covers a delivery into the new one; --certify clean).
+    SrcMutant(
+        "mbar-reinit-seen",
+        "crates/sim/src/exec.rs",
+        "        if let Some(s) = self.mbar_seen.remove(&(cta, off)) {\n",
+        "        if let Some(s) = self.mbar_seen.get(&(cta, off)).copied().filter(|_| false) {\n",
+        [
+            ("e_mbar_reinit_drain", "good", "ptx", ["--certify"]),
+            ("e_mbar_reinit_drain", "good", "sass", ["--certify"]),
+            ("e_mbar_reinit_drain", "NOFENCE", "ptx", ["--certify"]),
+            ("e_mbar_reinit_drain", "NOFENCE", "sass", ["--certify"]),
+        ],
+    ),
+    # The reset at mbarrier.init only (NOINV: init over the live object, no inval).
+    SrcMutant(
+        "mbar-reinit-seen-init",
+        "crates/sim/src/exec.rs",
+        "        self.mbar_reset_seen(cta, off);\n        self.mbars.insert(\n",
+        "        self.mbars.insert(\n",
+        [
+            ("e_mbar_reinit_drain", "NOINV", "ptx", ["--certify"]),
+            ("e_mbar_reinit_drain", "NOINV", "sass", ["--certify"]),
+        ],
+    ),
+    # exec `store_over_mbar`: an STS.64 state word over a live mbarrier keeps the old object
+    # again (MISS 218: SASS misses the race / deadlock the PTX front reports).
+    SrcMutant(
+        "mbar-sts-live-reinit",
+        "crates/sim/src/exec.rs",
+        "            if self.k.front == Front::Sass && o == off && n == 8 {\n",
+        "            if false && self.k.front == Front::Sass && o == off && n == 8 {\n",
+        [
+            ("e_mbar_sts_live", "good", "sass", []),
+            ("e_mbar_sts_live", "CNT2", "sass", ["--certify"]),
+        ],
+    ),
+    # ir `Op::is_visible`: mbarrier.inval runs eagerly inside a step again (MISS 242: an
+    # arrival unordered with the inval is explored in one order only).
+    SrcMutant(
+        "mbar-inval-visible",
+        "crates/ir/src/lib.rs",
+        "                | Op::MbarInval { .. }\n                | Op::MbarArrive { .. }\n",
+        "                | Op::MbarArrive { .. }\n",
+        [
+            ("e_mbar_store_order", "ARRVS", "sass", []),
+        ],
+    ),
+    # exec `store_over_mbar`: a store not ordered after the inval of the object is not checked
+    # (MISS 241: --certify runs the inval first and calls SWAP clean).
+    SrcMutant(
+        "mbar-dead-store",
+        "crates/sim/src/exec.rs",
+        "                if d.hb(&svc) || self.mbars.contains_key(&(cta, o)) {\n",
+        "                if true || d.hb(&svc) || self.mbars.contains_key(&(cta, o)) {\n",
+        [
+            ("e_mbar_store_order", "SWAP", "ptx", ["--certify"]),
+            ("e_mbar_store_order", "SWAP", "sass", ["--certify"]),
+        ],
+    ),
+    # exec `mbar_init`: an init with no live object does not check the bytes' last plain write
+    # (MISS 241: the store run before the first init, PREU on SASS, is clean).
+    SrcMutant(
+        "mbar-init-store-unordered",
+        "crates/sim/src/exec.rs",
+        "                    .find(|e| e.actor != t as u32 && !e.hb(&svc))\n",
+        "                    .find(|e| false && e.actor != t as u32 && !e.hb(&svc))\n",
+        [
+            ("e_mbar_store_order", "PREU", "sass", []),
+            ("e_mbar_store_order", "PREU", "sass", ["--certify"]),
+        ],
+    ),
+    # exec `mbar_init`: an init not ordered after the inval of the previous object is not
+    # checked against it (MISS 241 / 242: the certificate's run takes REINITUS's inval first
+    # and reports nothing).
+    SrcMutant(
+        "mbar-dead-init",
+        "crates/sim/src/exec.rs",
+        "                if d.actor != t as u32 && !d.hb(&svc) {\n",
+        "                if false && d.actor != t as u32 && !d.hb(&svc) {\n",
+        [
+            ("e_mbar_store_order", "REINITUS", "ptx", ["--certify"]),
+            ("e_mbar_store_order", "REINITUS", "sass", ["--certify"]),
+        ],
+    ),
+    # exec `mbar_init`: the last write of each byte only, not the earlier ones the shadow keeps
+    # in `hw` (RMK4 F1: a plain store then a strong one of the same thread, unordered with the
+    # init, was clean).
+    SrcMutant(
+        "mbar-init-hidden-write",
+        "crates/sim/src/exec.rs",
+        "                    .chain(sh.hw.iter().flat_map(|h| h.iter().copied()))\n",
+        "",
+        [
+            ("e_mbar_hidden_write", "SWAP", "sass", []),
+            ("e_mbar_hidden_write", "STRONGS", "sass", []),
+            ("e_mbar_hidden_write", "STRONGS", "sass", ["--certify"]),
+        ],
+    ),
+    # exec `mbar_init`: the full clock instead of the shared-memory-only one (RMK4 F7: an inval
+    # ordered before the init only through shared memory was a race).
+    SrcMutant(
+        "mbar-init-restrict",
+        "crates/sim/src/exec.rs",
+        "            let svc = self.sh_vc(t as u32, &vc, cta).unwrap_or_else(|| vc.clone());\n            if let Some(d)",
+        "            let svc = vc.clone();\n            if let Some(d)",
+        [
+            ("e_mbar_init_restrict", "good", "ptx", []),
+            ("e_mbar_init_restrict", "INITP", "ptx", []),
+            ("e_mbar_init_restrict", "INITP", "ptx", ["--certify"]),
+        ],
+    ),
+    # exec `mbar_atomic`: an mbarrier update does not read the object's (re)initialization key
+    # (RMK4 F10: the synchronization reduction ran expect_tx / the SASS A0TR arrive before the
+    # inval only, EXPTX / EXPTXS clean).
+    SrcMutant(
+        "mbar-inval-key-atomic",
+        "crates/sim/src/exec.rs",
+        '        // the update first only (MISS 241 follow-up, fixtures/e_mbar_inval_vis EXPTX).\n        self.rec_sync(\n            Resource {\n                space: ResourceSpace::MbarInitialization,\n                owner: cta as u32,\n                start: off as u64,\n                end: off as u64 + 1,\n            },\n            false,\n        );\n        self.mbar_materialize(cta, off);\n',
+        '        // the update first only (MISS 241 follow-up, fixtures/e_mbar_inval_vis EXPTX).\n        self.mbar_materialize(cta, off);\n',
+        [
+            ("e_mbar_inval_vis", "EXPTX", "ptx", []),
+            ("e_mbar_inval_vis", "EXPTX", "sass", []),
+            ("e_mbar_inval_vis", "EXPTXS", "sass", []),
+            ("e_mbar_inval_vis", "ARRTXS", "sass", []),
+        ],
+    ),
+    # exec E-LOCKSTEP: no lane join after an inval / init (RMK4 F8: a lane's store after its
+    # converged warp's SYNCS.CCTL.IV was "not ordered" with it).
+    SrcMutant(
+        "mbar-lockstep-inval",
+        "crates/sim/src/exec.rs",
+        "                            | Op::MbarInval { .. }\n                            | Op::MbarInit { .. }\n                    ))\n",
+        "                    ))\n",
+        [
+            ("e_mbar_lane_inval", "LANESYNC", "sass", []),
+            ("e_mbar_lane_inval", "LANESYNC", "sass", ["--certify"]),
+        ],
+    ),
+    # explore.rs `needs_plain_rerun`: races only (RMK4 F4: a reuse ordered by st.release /
+    # ld.acquire after the inval was a violation without the synchronization reduction, which
+    # st.shared::cluster turns off).
+    SrcMutant(
+        "mbar-store-plain-rerun",
+        "crates/sim/src/explore.rs",
+        '    f.kind == "race" || f.sig.starts_with("mbar-store:")\n',
+        '    f.kind == "race"\n',
+        [
+            ("e_mbar_reuse_ordered", "CL", "ptx", []),
+            ("e_mbar_reuse_ordered", "CL", "sass", []),
+        ],
+    ),
+    # exec `store_over_mbar`: a SASS state word over an invalidated object, not ordered after the
+    # inval, is a store over a live mbarrier (violation) instead of an init racing with the inval
+    # (RMK4). Reached only where the store cannot run before the inval: the default explorer
+    # runs a plain store that can before it (E-DRF), and the init in that order races with the
+    # inval (REINITS); FLAG's store waits for a relaxed flag set after the inval.
+    SrcMutant(
+        "rmk4-dead-sass-word",
+        "crates/sim/src/exec.rs",
+        "                    && n == 8\n                    && self.mbar_decode_mem(cta, o).is_some()\n",
+        "                    && n == 8 && false\n                    && self.mbar_decode_mem(cta, o).is_some()\n",
+        [
+            ("e_mbar_reinits", "FLAG", "sass", []),
+            ("e_mbar_reinits", "FLAG", "sass", ["--certify"]),
+        ],
+    ),
+    # exec `mbar_init`: the low 4 bytes' writes only (RMK4).
+    SrcMutant(
+        "rmk4-init-bytes",
+        "crates/sim/src/exec.rs",
+        "        let w = (0..8u32).find_map(|i| {\n",
+        "        let w = (0..4u32).find_map(|i| {\n",
+        [
+            ("e_mbar_partial_store", "PREU_W4", "sass", []),
+            ("e_mbar_partial_store", "PREU_W4", "sass", ["--certify"]),
+            ("e_mbar_partial_store", "PREU_W1", "sass", []),
+        ],
+    ),
+    # exec `store_over_mbar`: the dead-object check only for a store at the object's offset (RMK4).
+    SrcMutant(
+        "rmk4-dead-range",
+        "crates/sim/src/exec.rs",
+        "            .filter(|&(o, d)| o.saturating_add(8) > off && d.actor != t as u32)\n",
+        "            .filter(|&(o, d)| o == off && d.actor != t as u32)\n",
+        [
+            ("e_mbar_partial_store", "DEADS_W4", "sass", []),
+            ("e_mbar_partial_store", "DEADS_W4", "sass", ["--certify"]),
+            ("e_mbar_partial_store", "DEADS_W1", "sass", []),
+        ],
+    ),
+    # explore.rs `mbar_init_pcs`: MbarInit pcs only again (RMK3's Q3: forget_dead_sync drops
+    # the arrival before the SASS STS.64 re-init).
+    SrcMutant(
+        "mbar-sts-init-pcs",
+        "crates/sim/src/explore.rs",
+        "            } => k.front == ptxv_ir::Front::Sass,\n",
+        "            } => false && k.front == ptxv_ir::Front::Sass,\n",
+        [
+            ("e_mbar_forget_initpcs", "good", "sass", []),
+            ("e_mbar_forget_initpcs", "good", "sass", ["--certify"]),
+        ],
+    ),
+    # exec `store_over_mbar`: every lane of one STS.64 re-initializes the object again (each
+    # lane's init then races with the previous lane's: WARP on SASS reports a race).
+    SrcMutant(
+        "mbar-sts-live-same",
+        "crates/sim/src/exec.rs",
+        "                    let same = old.atomics.is_empty()\n",
+        "                    let same = false && old.atomics.is_empty()\n",
+        [
+            ("e_mbar_sts_live", "WARP", "sass", []),
+        ],
+    ),
+    # exec `St`: no check of a plain store against the live mbarriers (MISS 218: a plain store
+    # over a live mbarrier is clean on both fronts).
+    SrcMutant(
+        "mbar-sts-live-hook",
+        "crates/sim/src/exec.rs",
+        "                            self.store_over_mbar(t, pc, cta, off, *bytes as u32);\n",
+        "",
+        [
+            ("e_mbar_sts_live", "PLAIN", "ptx", []),
+            ("e_mbar_sts_live", "ZERO", "sass", ["--certify"]),
+            ("e_mbar_sts_live", "CNT2PLAIN", "sass", []),
+        ],
+    ),
+    # The reset at mbarrier.inval only (STS on SASS: SYNCS.CCTL.IV, then an STS.64 init word,
+    # which materializes the new object without an MbarInit).
+    SrcMutant(
+        "mbar-reinit-seen-inval",
+        "crates/sim/src/exec.rs",
+        "                self.mbar_reset_seen(cta, off);\n                self.mbars.remove(&(cta, off));\n",
+        "                self.mbars.remove(&(cta, off));\n",
+        [
+            ("e_mbar_reinit_drain", "STS", "sass", ["--certify"]),
+        ],
     ),
 ]
 
@@ -565,6 +855,765 @@ MUTANTS += [
         [],
         [("ptxv-sim", "fixtures", "e_elect_lane_classes")],
     ),
+    # E-ELECT taint: a collective of elect's predicate (a ballot, shfl.idx from a fixed lane)
+    # is warp-uniform again (MISS 71, 79: it names the leader's lane).
+    SrcMutant(
+        "elect-coll-pattern",
+        "crates/sim/src/explore.rs",
+        "if collective && (pat_ls || ctl_ls) && !matches!(inst.op, Op::VoteAll { .. }) {",
+        "if false {",
+        [
+            ("e_elect_ballot", "good", "ptx", []),
+            ("e_elect_ballot", "POPC", "ptx", []),
+            ("e_elect_shfl", "good", "ptx", []),
+        ],
+    ),
+    # E-ELECT taint: a ballot under lane-varying control is warp-uniform again (MISS 72's
+    # family: the lanes that skip it keep their old values).
+    SrcMutant(
+        "elect-coll-ctl",
+        "crates/sim/src/explore.rs",
+        "Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. } => out_lv = ctl_lv,",
+        "Op::VoteAny { .. } | Op::VoteAll { .. } | Op::Redux { .. } => out_lv = false,",
+        [("e_elect_tid_ctl", "VOTE", "ptx", [])],
+    ),
+    # E-ELECT taint: `%tid.x >> 5` is warp-uniform under lane-varying control again (MISS 72).
+    SrcMutant(
+        "elect-tid-ctl",
+        "crates/sim/src/explore.rs",
+        "} => rows && *sh >= 5 && tidx.contains(r) && inst.guard.reg.is_none() && !rlv[pc],",
+        "} => rows && *sh >= 5 && tidx.contains(r) && inst.guard.reg.is_none(),",
+        [("e_elect_tid_ctl", "good", "ptx", [])],
+    ),
+    # E-CLOCK taint (clock.rs `succs`): a RET has no successor again, so a clock value returned
+    # by a CALL.REL callee is clock-free in the caller (MISS 70).
+    SrcMutant(
+        "clock-ret-sites",
+        "crates/sim/src/clock.rs",
+        "            let mut v = rets.to_vec();",
+        "            let mut v = Vec::new();",
+        [("e_clock_callee", "good", "sass", [])],
+    ),
+    # E-CLOCK: a clock choice of several lanes on a lane-varying predicate is not reported
+    # (MISS 76: one side for the whole split).
+    SrcMutant(
+        "clock-lanes-off",
+        "crates/sim/src/exec.rs",
+        "            if members.len() > 1 && self.clock_lane_pcs.contains(&pc) {",
+        "            if false {",
+        [("e_clock_lanes", "good", "ptx", []), ("e_clock_lanes", "good", "sass", [])],
+    ),
+    # E-CLOCK: an indexed branch's clock-derived index is ignored again (MISS 77).
+    SrcMutant(
+        "clock-brx-index",
+        "crates/sim/src/clock.rs",
+        "                let idx = matches!(i.op, Op::Brx { .. })",
+        "                let idx = false && matches!(i.op, Op::Brx { .. })",
+        [("e_clock_brx", "good", "ptx", []), ("e_clock_brx", "good", "sass", [])],
+    ),
+    # E-CLOCK: every hang guard is exempt again, whatever its bound (MISS 78).
+    SrcMutant(
+        "clock-hang-any",
+        "crates/sim/src/machine.rs",
+        "                    if m.prd(t, g) == sl.trap_when {",
+        "                    if false {",
+        [("e_clock_hang", "good", "ptx", []), ("e_clock_hang", "good", "sass", [])],
+    ),
+    # E-CLOCK: a hang-guard bound of 1024 clock units is enough (the 2000-cycle guard exempt).
+    # E-CLOCK: a hang guard's AND / OR combine peeled on both sides, also where the trap side
+    # does not force the operand (OR true, AND false: the short compare alone traps).
+    SrcMutant(
+        "clock-hang-peel",
+        "crates/sim/src/clock.rs",
+        "        if *or == v {",
+        "        if false {",
+        [
+            ("e_clock_hang_or", "good", "ptx", []),
+            ("e_clock_hang_or", "good", "sass", []),
+            ("e_clock_hang_or", "ANDF", "ptx", []),
+            ("e_clock_hang_or", "ANDF", "sass", []),
+        ],
+    ),
+    # E-CLOCK: a register with no definition on some path from the entry has its one
+    # definition as the only reaching one (DL: the deadline computed on one path only; in
+    # good the clock reads' dominance rule refuses the skipped start read as well).
+    SrcMutant(
+        "clock-hang-undef",
+        "crates/sim/src/clock.rs",
+        """        if q == entry {
+            return Vec::new();
+        }
+        work.extend(preds[q].iter().copied());""",
+        """        work.extend(preds[q].iter().copied());""",
+        [
+            ("e_clock_hang_undef", "good", "ptx", []),
+            ("e_clock_hang_undef", "DL", "ptx", []),
+            ("e_clock_hang_undef", "DL", "sass", []),
+        ],
+    ),
+    SrcMutant(
+        "clock-hang-threshold",
+        "crates/sim/src/clock.rs",
+        "pub const HANG_BOUND: u64 = 1 << 31;",
+        "pub const HANG_BOUND: u64 = 1 << 10;",
+        [("e_clock_hang", "good", "ptx", []), ("e_clock_hang", "good", "sass", [])],
+    ),
+    # Op::dst_regs: the SASS 64-bit clock read writes its low register only again (the taint
+    # misses the high half).
+    SrcMutant(
+        "clock-pair-hi",
+        "crates/ir/src/lib.rs",
+        "                Val::SReg(SReg::Clock) if d.file == File::R => span(*d, 2),",
+        "                Val::SReg(SReg::Clock) if d.file == File::R => span(*d, 1),",
+        [("e_clock_hi", "good", "sass", [])],
+    ),
+    # E-HW-SB-QUEUE: the GB300 queue rules apply at the strict level too (no `sb-hwq:`
+    # contract findings: REDUX in order on a measured null).
+    SrcMutant(
+        "sb-hwq-strict",
+        "crates/sass/src/scoreboard.rs",
+        "    let strict = check_rules(lines, code, sm, false, false)?;",
+        "    let strict = check_rules(lines, code, sm, true, false)?;",
+        [("../probes/redux_queue", "COVER", "sass", [])],
+    ),
+    # L-OPCLASS: FRND back in the conversion queue (refuted on GB300 by probes/frnd_queue).
+    SrcMutant(
+        "frnd-xu",
+        "crates/sass/src/scoreboard.rs",
+        '        "POPC" | "FLO" if hw => "bit",',
+        '        "MUFU" | "FRND" => "xu",\n        "POPC" | "FLO" if hw => "bit",',
+        [("../probes/frnd_queue", "COVER", "sass", [])],
+    ),
+    # E-CLOCK hang guards: starts with low 32 bits 0 only (a wrapping deadline is "proven").
+    SrcMutant(
+        "clock-hang-starts",
+        "crates/sim/src/machine.rs",
+        "                starts.push(hi | lo);",
+        "                starts.push(hi);",
+        [("e_clock_hang_wrap", "good", "ptx", []), ("e_clock_hang_wrap", "good", "sass", [])],
+    ),
+    # elect_lanes::Cfg: an indexed branch falls through again (no lane-varying region).
+    SrcMutant(
+        "cfg-brx",
+        "crates/sim/src/elect_lanes.rs",
+        "                    Op::Brx { targets, .. } => targets.clone(),",
+        "                    Op::Brx { .. } => vec![pc + 1],",
+        [("e_elect_tid_brx", "good", "ptx", []), ("e_clock_lanes_brx", "good", "ptx", [])],
+    ),
+    # E-ELECT taint: an indexed branch's index starts no region.
+    SrcMutant(
+        "elect-brx-idx",
+        "crates/sim/src/explore.rs",
+        "                    Op::Brx { .. } => inst.op.src_regs(),",
+        "                    Op::Brx { .. } => Vec::new(),",
+        [("e_elect_tid_brx", "good", "ptx", [])],
+    ),
+    # E-CLOCK: an indexed branch on a loaded clock value is no effect.
+    SrcMutant(
+        "clock-brx-mem",
+        "crates/sim/src/clock.rs",
+        "    let mt = if clock_stores(k).is_empty() {",
+        "    let mt = if true {",
+        [("e_clock_brx_mem", "good", "ptx", []), ("e_clock_brx_mem", "good", "sass", [])],
+    ),
+    # L-OPREAD (MISS 101): a TMA op's bracketed base register is its only read again (since MISS
+    # 181 the whole uniform group is the lift's: `def_use_lifted` drops the lift's URs). Also
+    # MISS 181 H1: UR pairs one register again.
+    SrcMutant(
+        "tma-ur-group",
+        "crates/sass/src/scoreboard.rs",
+        "        File::UR if r.idx < crate::URZ => Some((b'U', r.idx)),\n",
+        "        File::UR if false => Some((b'U', r.idx)),\n",
+        [("../probes/utmastg_queue", "COVER", "sass", [])],
+        tests=[("ptxv-sass", "lib", "lift_widths_are_tracked"), ("ptxv-sim", "fixtures", "miss181_lift_width_repros")],
+    ),
+    # E-HW-SB-QUEUE (review item 6): GB300-measured queue rules at the strict level again.
+    SrcMutant(
+        "f64-strict",
+        "crates/sass/src/scoreboard.rs",
+        '        "DADD" | "DMUL" | "DFMA" | "DSETP" if hw => "f64",',
+        '        "DADD" | "DMUL" | "DFMA" | "DSETP" => "f64",',
+        # A DADD with no write scoreboard covered by a later f64 op's (probes/f64_queue's
+        # strict contract is an operand-read one: opread-strict).
+        [("../probes/f64_dsetp", "good", "sass", [])],
+    ),
+    SrcMutant(
+        "popc-strict",
+        "crates/sass/src/scoreboard.rs",
+        '        "POPC" | "FLO" if hw => "bit",',
+        '        "POPC" | "FLO" => "bit",',
+        [("../probes/flo_popc", "good", "sass", [])],
+    ),
+    SrcMutant(
+        "frnd-strict",
+        "crates/sass/src/scoreboard.rs",
+        '            ) || hw && matches!(base, "REDUX" | "FRND")',
+        '            ) || base == "FRND" || hw && base == "REDUX"',
+        [("../probes/frnd_queue", "good", "sass", [])],
+    ),
+    SrcMutant(
+        "opread-strict",
+        "crates/sass/src/scoreboard.rs",
+        "    if !hw {\n        return None;\n    }\n    let q = inorder_queue(opcode, true, broad);",
+        "    let q = inorder_queue(opcode, true, broad);",
+        [("../probes/xu_war", "rd_sb", "sass", [])],
+    ),
+    # L-OPCLASS (MISS 96): MUFU / F2I / I2F / F2F one queue again (refuted on GB300 by
+    # probes/xu_queue COVER).
+    SrcMutant(
+        "xu-mufu",
+        "crates/sass/src/scoreboard.rs",
+        '        "POPC" | "FLO" if hw => "bit",',
+        '        "MUFU" | "F2I" | "I2F" | "F2F" => "xu",\n        "POPC" | "FLO" if hw => "bit",',
+        [
+            ("../probes/xu_queue", "COVER", "sass", []),
+            ("../probes/xu_queue_rev", "COVER", "sass", []),
+        ],
+    ),
+    # L-OPCLASS (MISS 106): an earlier SHFL covered by a later LDS's write scoreboard again
+    # (refuted on GB300 by probes/shared_queue REV_COVER).
+    SrcMutant(
+        "shfl-shared",
+        "crates/sass/src/scoreboard.rs",
+        "                            && (!shfl(&lines[k.2].opcode) || shfl(base))\n",
+        "",
+        [("../probes/shared_queue", "REV_COVER", "sass", [])],
+    ),
+    # E-HW-SB-QUEUE: the shared-memory queue across opcodes at the strict level again.
+    SrcMutant(
+        "shared-strict",
+        "crates/sass/src/scoreboard.rs",
+        '        "LDS" | "SHFL" if hw => "shared",',
+        '        "LDS" | "SHFL" => "shared",',
+        [("../probes/shared_queue", "COVER", "sass", [])],
+        # COVER's strict verdict also carries the STS write cover's contract (gb300 only):
+        # the test asserts the LDS contract itself.
+        tests=[("ptxv-sim", "fixtures", "probe_shared_queue")],
+    ),
+    # E-HW-SB-QUEUE (review item 4): untracked reads attach to another opcode's read scoreboard
+    # at the strict level again (sb_mio_order rd_on_ldg is a strict contract).
+    SrcMutant(
+        "att-cross-strict",
+        "crates/sass/src/scoreboard.rs",
+        '                            || !matches!(ub, "UTMASTG" | "utc") && kb == base\n',
+        '                            || !matches!(ub, "UTMASTG" | "utc")\n',
+        [("../probes/sb_mio_order/fixture", "rd_on_ldg", "sass", [])],
+    ),
+    # The same-opcode exception: same-opcode read attachment refused at the strict level too
+    # (sb_mio_order inorder, GB300 0 / 1000 wrong, is strict clean).
+    SrcMutant(
+        "att-same-gated",
+        "crates/sass/src/scoreboard.rs",
+        '                            || !matches!(ub, "UTMASTG" | "utc") && kb == base\n',
+        '                            || hw && !matches!(ub, "UTMASTG" | "utc") && kb == base\n',
+        [("../probes/sb_mio_order/fixture", "inorder", "sass", [])],
+    ),
+    # E-HW-SB-QUEUE: a memory write's completion covers another opcode's earlier reads at the
+    # strict level again (sb_mio_order wcov is a strict contract).
+    SrcMutant(
+        "wcov-strict",
+        "crates/sass/src/scoreboard.rs",
+        "                    if !k.1 && MIO_INORDER.contains(&kb) && (kb == base || broad || hw && measured())\n",
+        "                    if !k.1 && MIO_INORDER.contains(&kb)\n",
+        [("../probes/sb_mio_order/fixture", "wcov", "sass", [])],
+    ),
+    # E-HW-SB-QUEUE: a load writes after another opcode's earlier reads at the strict level
+    # again (sb_mio_order qwar_lds is a strict contract).
+    SrcMutant(
+        "qwar-strict",
+        "crates/sass/src/scoreboard.rs",
+        "                    && (base_of(pc) == base_of(ppc)\n",
+        "                    && (true\n",
+        [("../probes/sb_mio_order/fixture", "qwar_lds", "sass", [])],
+    ),
+    # MISS 128: a SHFL clears earlier untracked memory-queue reads again (refuted on GB300 by
+    # probes/sb_mio_order rvs_shfl_retain).
+    SrcMutant(
+        "shfl-retain",
+        "crates/sass/src/scoreboard.rs",
+        "        let cguard = l.guard.as_deref();\n",
+        "        if l.opcode.split('.').next() == Some(\"SHFL\") {\n"
+        "            st.retain(|k, _| k.0 != UNTRACKED || !MIO_INORDER.contains(&lines[k.2].opcode.split('.').next().unwrap_or(\"\")));\n"
+        "        }\n"
+        "        let cguard = l.guard.as_deref();\n",
+        [("../probes/sb_mio_order/fixture", "rvs_shfl_retain", "sass", [])],
+    ),
+    # MISS 129: a SHFL reads an earlier unscoreboarded LDS result in the queue again (refuted by
+    # probes/shared_queue RVS_QREAD_LDS_S4).
+    SrcMutant(
+        "shfl-queued-read",
+        "crates/sass/src/scoreboard.rs",
+        "                let kind = if write && uses.contains(&r) {",
+        "                let kind = if write && uses.contains(&r) && !(sb == NO_SB && l.opcode.split('.').next() == Some(\"SHFL\") && lines[ppc].opcode.split('.').next() == Some(\"LDS\")) {",
+        [("../probes/shared_queue", "RVS_QREAD_LDS_S4", "sass", [])],
+    ),
+    # MISS 130: an earlier 64-bit-integer conversion covered by a later 32-bit one again.
+    SrcMutant(
+        "conv-width",
+        "crates/sass/src/scoreboard.rs",
+        "    if w64(earlier) && !w64(later) {\n        return false;\n    }\n",
+        "",
+        [("../probes/cvt64_queue", "F2I64_COVER_S4", "sass", [])],
+    ),
+    # MISS 131: UBLKCP's operand reads untracked again.
+    SrcMutant(
+        "ublkcp-async",
+        "crates/sass/src/scoreboard.rs",
+        '    "UBLKCP",\n',
+        "",
+        [("../probes/bulk_s2s", "NORB", "sass", [])],
+    ),
+    # Narrowing: unmeasured conversion pairs (ptxas's I2F.U32 covered by a later I2F.S64) as
+    # measured again: probes/cvt64_queue good is an sb-unmeasured: contract.
+    SrcMutant(
+        "conv-unmeasured",
+        "crates/sass/src/scoreboard.rs",
+        "    earlier == later\n        || broad\n",
+        "    earlier == later\n        || true\n",
+        [("../probes/cvt64_queue", "good", "sass", [])],
+        # good's strict classes are a contract either way (sb-hwq: or sb-unmeasured:): the test
+        # asserts the sb-unmeasured: one.
+        tests=[("ptxv-sim", "fixtures", "probe_cvt64_queue")],
+    ),
+    # E-HW-SB-QUEUE (check levels): a hazard every level finds is labelled an sb-unmeasured:
+    # contract again, so a read no order covers is no violation (probes/i2f8_queue NOWAIT).
+    # (Retargeted at the per-hazard level merge, RVS2 P1: its old anchor no longer existed.)
+    SrcMutant(
+        "broad-kind",
+        "crates/sass/src/scoreboard.rs",
+        "        } else if !broad.contains_key(&k) {\n",
+        "        } else if true {\n",
+        [("../probes/i2f8_queue", "NOWAIT_S4", "sass", [])],
+        tests=[("ptxv-sim", "fixtures", "probe_i2f8_queue")],
+    ),
+    # E-HW-SB-QUEUE: the broad rules cover an I2F.S8 by a later I2F.S16 again
+    # (probes/i2f8_queue COVER: GB300 wrong).
+    SrcMutant(
+        "i2f-narrow-cover",
+        "crates/sass/src/scoreboard.rs",
+        "    if narrow_i2f(earlier) {\n        return false;",
+        "    if narrow_i2f(earlier) && !broad {\n        return false;",
+        [("../probes/i2f8_queue", "COVER_S4", "sass", [])],
+        tests=[("ptxv-sim", "fixtures", "probe_i2f8_queue")],
+    ),
+    # MISS 155: a narrow I2F covered by a later I2F of its own full opcode again (RVS2 W1).
+    SrcMutant(
+        "i2f-same-cover",
+        "crates/sass/src/scoreboard.rs",
+        "    if narrow_i2f(earlier) {\n        return false;",
+        "    if narrow_i2f(earlier) && earlier != later {\n        return false;",
+        [("../probes/i2f8_same", "SAME_COVER_S4", "sass", [])],
+        tests=[("ptxv-sim", "fixtures", "probe_i2f8_same")],
+    ),
+    # MISS 156: FRND keyed by base opcode at the gb300 level again (RVS2 W2).
+    SrcMutant(
+        "frnd-width",
+        "crates/sass/src/scoreboard.rs",
+        "        \"FRND\" if hw && f64_op => \"FRND.F64\",\n",
+        "",
+        [("../probes/frnd64", "COVER_S2", "sass", [])],
+        tests=[("ptxv-sim", "fixtures", "probe_frnd_width_queues")],
+    ),
+    # Item 1 (SND3): a late WAW on a narrow I2F's register a violation again (not `sb:lat:`).
+    SrcMutant(
+        "waw-lat",
+        "crates/sass/src/scoreboard.rs",
+        '(kind == "nosb" || kind == "waw" && sb == NO_SB)',
+        'kind == "nosb"',
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_i2f8_lat_classes")],
+    ),
+    # The f64 narrow I2F in the narrow (uncovered) class again.
+    SrcMutant(
+        "lat-f64",
+        "crates/sass/src/scoreboard.rs",
+        '        && !opcode.split(\'.\').any(|x| x == "F64")\n',
+        '',
+        [],
+        tests=[("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # MISS 170 R4: FLO by a later POPC at the gb300 level again.
+    SrcMutant(
+        "r4-flo-popc",
+        "crates/sass/src/scoreboard.rs",
+        '        ("LDS", "SHFL") => true,\n',
+        '        ("LDS", "SHFL") | ("FLO", "POPC") => true,\n',
+        [],
+        tests=[("ptxv-sim", "fixtures", "miss170_unmeasured_gb300_rules"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # MISS 170 R5: the f64 pipe across DADD / DMUL / DFMA / DSETP at the gb300 level again.
+    SrcMutant(
+        "r5-f64-pipe",
+        "crates/sass/src/scoreboard.rs",
+        '        ("LDS", "SHFL") => true,\n',
+        '        ("LDS", "SHFL") => true,\n        ("DADD" | "DMUL" | "DFMA" | "DSETP", "DADD" | "DMUL" | "DFMA" | "DSETP") => true,\n',
+        [],
+        tests=[("ptxv-sim", "fixtures", "miss170_unmeasured_gb300_rules"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # MISS 170 R2: every f64 conversion pair of one base opcode at the gb300 level again.
+    SrcMutant(
+        "r2-f64-conv",
+        "crates/sass/src/scoreboard.rs",
+        '        _ => matches!(\n            (earlier, later),',
+        '        _ if f64_op(earlier) => true,\n        _ => matches!(\n            (earlier, later),',
+        [],
+        tests=[("ptxv-sim", "fixtures", "miss170_unmeasured_gb300_rules"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # MISS 170 R8: the conversion / f64 units' queued WAR at the gb300 level again.
+    SrcMutant(
+        "r8-qwar",
+        "crates/sass/src/scoreboard.rs",
+        'fn hw_queued_war_measured(_reader: &str, _writer: &str) -> bool {\n    false',
+        'fn hw_queued_war_measured(_reader: &str, _writer: &str) -> bool {\n    true',
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_xu_war_matches_hardware"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # MISS 170 R10 / R11: every memory-queue cover across opcodes at the gb300 level again.
+    SrcMutant(
+        "r10-r11-cover",
+        "crates/sass/src/scoreboard.rs",
+        '    pair && gap.0 >= 4 && gap.1 <= HW_QUEUE_GAP_MAX && !later_guarded\n',
+        '    let _ = (pair, gap, later_guarded);\n    true\n',
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_sb_mio_order_matches_hardware"),
+("ptxv-sim", "fixtures", "probe_sb_mio_gap_2048"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # MISS 170 (probes/sb_mio_gap): the R10 to R12 windows' upper end at 2048, where no control
+    # is wrong (the windows at 2048 become clean).
+    SrcMutant(
+        "queue-gap-2048",
+        "crates/sass/src/scoreboard.rs",
+        "const HW_QUEUE_GAP_MAX: u16 = 1024;\n",
+        "const HW_QUEUE_GAP_MAX: u16 = 2048;\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_sb_mio_gap_2048"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # ... back at 22 (the windows measured at 64 and 1024 become contracts).
+    SrcMutant(
+        "queue-gap-22",
+        "crates/sass/src/scoreboard.rs",
+        "const HW_QUEUE_GAP_MAX: u16 = 1024;\n",
+        "const HW_QUEUE_GAP_MAX: u16 = 22;\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_sb_mio_gap_64_address")],
+    ),
+    # ... the gap's maximum over the paths capped at 64 again: a longer (or a loop's) gap reads
+    # as 64, inside the windows (the windows at 2048 become clean).
+    SrcMutant(
+        "gap-cap-64",
+        "crates/sass/src/scoreboard.rs",
+        "const CMAX_CAP: u16 = HW_QUEUE_GAP_MAX + 1;\n",
+        "const CMAX_CAP: u16 = 64;\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_sb_mio_gap_2048"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # ... the new pairs (other widths, LDG / SHFL covers, STG readers) unmeasured again.
+    SrcMutant(
+        "cover-wide-off",
+        "crates/sass/src/scoreboard.rs",
+        "    let pair = both || write && cover == Cover::Write;\n",
+        "    let pair = matches!((earlier, later), (\"STS\", \"LDS\")) && (both || write);\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_sb_mio_gap_64_covers")],
+    ),
+    # ... the write-scoreboard-only pairs trusted through the read scoreboard too.
+    SrcMutant(
+        "cover-write-only-read",
+        "crates/sass/src/scoreboard.rs",
+        "    let pair = both || write && cover == Cover::Write;\n",
+        "    let pair = both || write;\n    let _ = cover;\n",
+        [],
+        tests=[("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    SrcMutant(
+        "war-wide-off",
+        "crates/sass/src/scoreboard.rs",
+        '''        | ("STSM.16.M88.4", "LDS.128" | "LDSM.16.M88.4" | "LDS") => {
+            data && within(HW_QUEUE_GAP_MAX)
+        }
+''',
+        '''        | ("STSM.16.M88.4", "LDS.128" | "LDSM.16.M88.4" | "LDS") => {
+            data && within(HW_QUEUE_GAP_MAX) && reader == "STS"
+        }
+''',
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_sb_mio_gap_64_data")],
+    ),
+    # ... the data-only pairs trusted on address registers too.
+    SrcMutant(
+        "war-data-only-addr",
+        "crates/sass/src/scoreboard.rs",
+        '''        | ("STSM.16.M88.4", "LDS.128" | "LDSM.16.M88.4" | "LDS") => {
+            data && within(HW_QUEUE_GAP_MAX)
+        }
+''',
+        '''        | ("STSM.16.M88.4", "LDS.128" | "LDSM.16.M88.4" | "LDS") => {
+            (data || true) && within(HW_QUEUE_GAP_MAX)
+        }
+''',
+        [],
+        tests=[("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # MISS 250: an attached entry's gap counters restart at the attach (the windows then count
+    # from the later instruction: an R12 WAR 2009 cycles after an untracked STS reads as 1005).
+    SrcMutant(
+        "attach-gap-reset",
+        "crates/sass/src/scoreboard.rs",
+        "        (e.cyc, e.cmax, e.cov) = (p.cyc, p.cmax, p.cov);\n",
+        "        (e.cyc, e.cmax, e.cov) = (0, 0, p.cov);\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_sb_mio_gap_attach")],
+    ),
+    # MISS 264 (a): a fresh attached entry one DEPBAR count too high (the attach before the
+    # attaching op's issue): DEPBAR.LE SBk, 1 drops it with only that op outstanding.
+    SrcMutant(
+        "attach-newer-fresh-one",
+        "crates/sass/src/scoreboard.rs",
+        "    e.newer = 0;\n    if fresh {\n",
+        "    e.newer = u8::from(fresh);\n    if fresh {\n",
+        [],
+        tests=[("ptxv-sass", "lib", "attach")],
+    ),
+    # MISS 264 (b): attached onto an entry already there, its larger count kept.
+    SrcMutant(
+        "attach-newer-merge-keeps",
+        "crates/sass/src/scoreboard.rs",
+        "    e.newer = 0;\n    if fresh {\n",
+        "    if fresh {\n",
+        [],
+        tests=[("ptxv-sass", "lib", "attach")],
+    ),
+    # attach onto an entry already there: the incoming covers replace the existing ones'.
+    SrcMutant(
+        "attach-cov-overwrite",
+        "crates/sass/src/scoreboard.rs",
+        "        e.cov = e.cov.intersection(&p.cov).copied().collect();\n",
+        "        e.cov = p.cov;\n",
+        [],
+        tests=[("ptxv-sass", "lib", "attach")],
+    ),
+    # ... the guard holds if either held.
+    SrcMutant(
+        "attach-gok-either",
+        "crates/sass/src/scoreboard.rs",
+        "    e.gok &= p.gok;\n    e.regs.extend(p.regs);\n",
+        "    e.gok |= p.gok;\n    e.regs.extend(p.regs);\n",
+        [],
+        tests=[("ptxv-sass", "lib", "attach")],
+    ),
+    # ... the existing entry's gaps kept.
+    SrcMutant(
+        "attach-existing-keeps-own-gap",
+        "crates/sass/src/scoreboard.rs",
+        "        e.cyc = e.cyc.min(p.cyc);\n        e.cmax = e.cmax.max(p.cmax);\n        e.cov = e.cov",
+        "        e.cov = e.cov",
+        [],
+        tests=[("ptxv-sass", "lib", "attach")],
+    ),
+    # MISS 170 R12: every queued load WAR across opcodes at the gb300 level again.
+    SrcMutant(
+        "r12-load-war",
+        "crates/sass/src/scoreboard.rs",
+        '    let within = |hi: u16| gap.0 >= 4 && gap.1 <= hi;\n',
+        '    let within = |_hi: u16| true;\n    let data = data || true;\n',
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_sb_mio_order_dq_windows"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # MISS 170 R13: TMA stores' and tcgen05 ops' reads attached to a later read scoreboard of
+    # their unit at the gb300 level again.
+    SrcMutant(
+        "r13-tma-attach",
+        "crates/sass/src/scoreboard.rs",
+        '                            || !matches!(ub, "UTMASTG" | "utc") && kb == base\n',
+        '                            || !matches!(ub, "UTMASTG" | "utc") && kb == base\n'
+        '                            || hw && matches!(ub, "UTMASTG" | "utc")\n',
+        [],
+        tests=[("ptxv-sim", "fixtures", "tma_store_reads_its_coordinate_registers")],
+    ),
+    # MISS 170 R9: UGETNEXTWORKID's reads at issue at the gb300 level again.
+    SrcMutant(
+        "r9-ugnwi",
+        "crates/sass/src/scoreboard.rs",
+        'fn hw_ugetnextworkid_measured() -> bool {\n    false',
+        'fn hw_ugetnextworkid_measured() -> bool {\n    true',
+        [],
+        tests=[("ptxv-sim", "fixtures", "clc_war_operands_read_at_issue"),
+("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # Item 4: the LDSM / LDS covers past the measured gaps (2 to 8 stall cycles).
+    SrcMutant(
+        "smem-gap-hi",
+        "crates/sass/src/scoreboard.rs",
+        '                && gap.1 <= 8\n',
+        '                && gap.1 <= 64\n',
+        [],
+        tests=[("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # Item 4: the LDSM / LDS covers below the measured gaps.
+    SrcMutant(
+        "smem-gap-lo",
+        "crates/sass/src/scoreboard.rs",
+        '            ) && gap.0 >= 2\n',
+        '            ) && gap.0 >= 1\n',
+        [],
+        tests=[("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # Item 4: the LDSM / LDS covers by a guarded later op (only unguarded measured).
+    SrcMutant(
+        "smem-guard",
+        "crates/sass/src/scoreboard.rs",
+        '                && !later_guarded\n',
+        '\n',
+        [],
+        tests=[("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # Item 4: the LDSM covers by any later shared op width / SHFL mode.
+    SrcMutant(
+        "smem-width",
+        "crates/sass/src/scoreboard.rs",
+        '                ("LDSM.16.M88.4", "LDS" | "SHFL.BFLY")\n',
+        '                ("LDSM.16.M88.4", _)\n',
+        [],
+        tests=[("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
+    # Item 4: the measured LDSM / LDS covers dropped (precision: the probes' COVER must be sb-hwq:).
+    SrcMutant(
+        "smem-pairs-off",
+        "crates/sass/src/scoreboard.rs",
+        '        "LDSM" if hw => "shared",\n',
+        '',
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_smem_queue_classes")],
+    ),
+    # Item 4: the gap's upper end joined as a minimum (a longer path's gap unseen).
+    SrcMutant(
+        "cmax-join",
+        "crates/sass/src/scoreboard.rs",
+        '                if f.cmax > p.cmax {',
+        '                if f.cmax < p.cmax {',
+        [],
+        tests=[("ptxv-sass", "lib", "join_gap_bounds")],
+    ),
+    # MISS 181: an f64 operand one register again (a read of the high word unchecked).
+    SrcMutant(
+        "f64-width",
+        "crates/sass/src/scoreboard.rs",
+        '        "DADD" | "DMUL" | "DFMA" | "DMNMX" => all(true),\n',
+        '        "DADD" | "DMUL" | "DFMA" | "DMNMX" => none(false),\n',
+        [],
+        tests=[("ptxv-sim", "fixtures", "f64_pairs_are_tracked"), ("ptxv-sass", "lib", "def_use_forms")],
+    ),
+    # MISS 181 (RVS3 H1..H8): the lift's register groups untracked again (the text's widths only:
+    # `LDCU.64 UR6` defines UR6, STG.E.ENL2.256 reads 2 of its 8 data registers).
+    SrcMutant(
+        "lift-widths-off",
+        "crates/sass/src/scoreboard.rs",
+        "        for (regs, out) in [(op.dst_regs(), &mut defs), (op.src_regs(), &mut uses)] {\n",
+        "        for (regs, out) in [(Vec::new(), &mut defs), (Vec::<ptxv_ir::Reg>::new(), &mut uses)] {\n",
+        [],
+        tests=[("ptxv-sass", "lib", "lift_widths_are_tracked"), ("ptxv-sim", "fixtures", "miss181_lift_width_repros")],
+    ),
+    # MISS 181: only the lift's destinations (sources untracked again: STG.256 data, MATCH.U64).
+    SrcMutant(
+        "lift-widths-uses",
+        "crates/sass/src/scoreboard.rs",
+        "        for (regs, out) in [(op.dst_regs(), &mut defs), (op.src_regs(), &mut uses)] {\n",
+        "        for (regs, out) in [(op.dst_regs(), &mut defs), (Vec::new(), &mut uses)] {\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "miss181_lift_width_repros")],
+    ),
+    # MISS 181 (RVS3 R1): a REDG / ATOMG .ADD.BF16x4's data one register again (R5 unchecked).
+    SrcMutant(
+        "atom-bf16x4-width",
+        "crates/ir/src/lib.rs",
+        "                        if matches!(op, AtomOp::FAddFtz | AtomOp::AddBf16x2) && *bytes > 4 =>\n",
+        "                        if matches!(op, AtomOp::FAddFtz) && *bytes > 4 =>\n",
+        [],
+        tests=[("ptxv-sass", "lib", "lift_widths_are_tracked")],
+    ),
+    # MISS 151: ptxas's 128 stall cycles trusted again (f64 reads measured wrong at 256 become
+    # contracts).
+    SrcMutant(
+        "f64-lat-128",
+        "crates/sass/src/scoreboard.rs",
+        "                        || f64 && pend.cyc >= F64_LAT);",
+        "                        || f64 && pend.cyc >= 128);",
+        [],
+        tests=[("ptxv-sim", "fixtures", "f64_lat_classes")],
+    ),
+    # MISS 151: no f64 latency contract at all (a late read a violation at every distance).
+    SrcMutant(
+        "f64-lat-off",
+        "crates/sass/src/scoreboard.rs",
+        "                        || f64 && pend.cyc >= F64_LAT);",
+        "                        || f64 && pend.cyc >= u16::MAX);",
+        [],
+        tests=[("ptxv-sim", "fixtures", "f64_lat_classes")],
+    ),
+    # MISS 181: the 64-bit conversion operands one register again.
+    SrcMutant(
+        "cvt64-width",
+        "crates/sass/src/scoreboard.rs",
+        '        "I2F" => (has("F64"), Box::new(move |_| int64)),\n',
+        '        "I2F" => (false, Box::new(move |_| false)),\n',
+        [],
+        tests=[("ptxv-sass", "lib", "def_use_forms")],
+    ),
+    # MISS 157: STAS's operand reads at issue again (RVS2 W3).
+    SrcMutant(
+        "stas-async",
+        "crates/sass/src/scoreboard.rs",
+        "    \"UBLKCP\",\n    \"STAS\",\n",
+        "    \"UBLKCP\",\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "async_read_ops_read_late")],
+    ),
+    # RVS2 P1: what only a broader level finds is reported again (the strict rules prove
+    # probes/sq_guard MERGE_FALSEV safe).
+    SrcMutant(
+        "merge-strict-only",
+        "crates/sass/src/scoreboard.rs",
+        "    for (k, h) in strict {\n",
+        "    let mut strict = strict;\n    for (k, h) in hw.iter().chain(broad.iter()) {\n        strict.entry(*k).or_insert_with(|| h.clone());\n    }\n    for (k, h) in strict {\n",
+        [("../probes/sq_guard", "MERGE_FALSEV", "sass", [])],
+        tests=[("ptxv-sim", "fixtures", "level_merge_per_hazard")],
+    ),
+    # L-OPCLASS: an I2F.S8 read past CONV_LAT_CYC is a violation again (no latency contract).
+    SrcMutant(
+        "i2f-lat-class",
+        "crates/sass/src/scoreboard.rs",
+        "                    && (lat_measured(&lines[ppc].opcode) && pend.cyc >= CONV_LAT_CYC\n",
+        "                    && (lat_measured(&lines[ppc].opcode) && pend.cyc >= u16::MAX\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_i2f8_lat_classes")],
+    ),
+    # MISS 186: the latency contract from 17 stall cycles again (reads measured wrong at 33
+    # under saturation become contracts).
+    SrcMutant(
+        "i2f-lat-16",
+        "crates/sass/src/scoreboard.rs",
+        "                    && (lat_measured(&lines[ppc].opcode) && pend.cyc >= CONV_LAT_CYC\n",
+        "                    && (lat_measured(&lines[ppc].opcode) && pend.cyc > 16\n",
+        [],
+        tests=[("ptxv-sim", "fixtures", "probe_i2f8_lat_classes")],
+    ),
+    # MISS 186: every narrow I2F in the latency class again (forms no probe measured).
+    SrcMutant(
+        "i2f-lat-forms",
+        "crates/sass/src/scoreboard.rs",
+        '    opcode == "I2F.S8"\n',
+        "    narrow_i2f(opcode)\n",
+        [],
+        tests=[("ptxv-sass", "lib", "hw_measured_windows")],
+    ),
     # E-HW-SPLIT-UR (urwin.rs, GB300 profile): no uniform-register windows, the splits switch anywhere
     # again (MISS 52: a false deadlock on probes/warpsync_pairs under the cross-check).
     SrcMutant(
@@ -680,6 +1729,161 @@ MUTANTS += [
         [],
         [("ptxv-sim", "fixtures", "dpor_backtracks_a_consumed_async_op")],
     ),
+    # MISS 232: a remote op's landing writes its pipe key in DPOR footprints only again, so the
+    # synchronization reduction expands the landing alone ahead of another lane's drain:
+    # probes/sync_pipe_issue_order SASS [clean] in the default explorer, and
+    # probes/sync_pipe_landing_count SASS [clean] where the last-arrival keys (MISS 231
+    # follow-up) order the first probe's landing without the pipe key.
+    # Coverage: since MISS 275 this mutant survives. Both probes observe the landing through a
+    # test_wait, which now writes the count keys of the phases it reads; the landing reads them,
+    # so the reduction orders the landing against the test without the pipe key. Other
+    # observers of a landing read or write space 16 too (arrivals, tx changes); a blocking wait
+    # is enabled only after the completion. What the key alone still separates is the landing's
+    # clock (inside a drain the op joins the drainer's clock): an st.async variant observed by a
+    # read after the drainer's release gave [race] with and without the key (the landing alone
+    # has fewer happens-before edges, so every race of the drained order). No kernel found that
+    # depends on the key; not shown equivalent either. Both probes pin the default explorer,
+    # nosyncpor, certify, DPOR and the unreduced search (run.sh). The two keys overlap: with
+    # both the landing key and the peek's count keys left out, sync_pipe_landing_count SASS is
+    # [clean] again (RDP2), so the landing key stays (a coverage gap, MISS 232 residual; not
+    # equivalent).
+    SrcMutant(
+        "sync-pipe-landing-nokey",
+        "crates/sim/src/exec.rs",
+        '        // the landing alone; probes/sync_pipe_issue_order SASS was clean).\n        if self.fp.is_some() {',
+        '        // the landing alone; probes/sync_pipe_issue_order SASS was clean).\n        if self.fp.as_ref().is_some_and(|f| !f.sync_only) {',
+        [],
+        [("ptxv-sim", "fixtures", "sync_reduction_orders_a_landing_against_a_drain")],
+    ),
+    # MISS 230: the race check joins the clock of every update a blocking wait acquires again,
+    # also for a parity poll's later phase (the releaser's whole history counts as ordered
+    # before the wait): probes/dpor_aba_wait good DPOR [clean] against the stateful [race].
+    SrcMutant(
+        "dpor-wait-joins-history",
+        "crates/sim/src/dpor.rs",
+        "                            if fp.waits_on_once(&e.fp) {\n",
+        "                            if fp.waits_on(&e.fp) {\n",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_explores_a_blocking_wait_before_earlier_phases")],
+    ),
+    # MISS 230 follow-up: no join for waits whose generation cannot repeat (skip only the
+    # releasers everywhere): e_exitbound XB2 DPOR keeps one outcome, e_sym good PTX 713 states.
+    SrcMutant(
+        "dpor-no-once-join",
+        "crates/sim/src/dpor.rs",
+        "                            if fp.waits_on_once(&e.fp) {\n",
+        "                            if fp.waits_on_once(&e.fp) && false {\n",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "fixtures",
+                "dpor_orders_releasers_history_before_a_wait_that_cannot_repeat",
+            )
+        ],
+    ),
+    # MISS 231: a pure tx increment made with no arrival pending writes no count key (it
+    # commutes with decrements in the footprints): probes/dpor_tx_commute DPOR [clean].
+    SrcMutant(
+        "tx-increment-nokey",
+        "crates/sim/src/exec.rs",
+        "        let write = (delta > 0 && !arrival) || (under && pending == 0);\n",
+        "        let write = under && pending == 0;\n",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 231: the phase's last arrival does not write its last-arrival key, so DPOR never
+    # runs it before a pure expect_tx made with an arrival pending (probes/dpor_tx_commute).
+    SrcMutant(
+        "tx-last-arrival-nokey",
+        "crates/sim/src/exec.rs",
+        "        if last {\n            // The phase's last arrival writes its own tx increment's level",
+        "        if false && last {\n            // The phase's last arrival writes its own tx increment's level",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 231: a pure expect_tx made with an arrival pending reads no last-arrival key.
+    SrcMutant(
+        "tx-increment-pending-nokey",
+        "crates/sim/src/exec.rs",
+        '            let (lo, hi) = mbar_last_keys(key, 0, u64::MAX);\n            self.rec_mbar_count(cta, lo, hi, false);\n            return;\n',
+        '            return;\n',
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 231: a decrement that takes tx below 0 reads no last-arrival key, so DPOR never runs
+    # the last arrival before it (with tx 0 that arrival completes the phase first).
+    SrcMutant(
+        "tx-underflow-nolast",
+        "crates/sim/src/exec.rs",
+        "        if under && pending > 0 {\n",
+        "        if false {\n",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 273: a decrement that takes tx below 0 with an arrival pending writes no under key,
+    # so DPOR runs one order of the decrements, whose deficits against the last arrival differ
+    # by order: probes/dpor_tx_level DPOR [deadlock], probes/tx_level_po stateful [deadlock].
+    SrcMutant(
+        "tx-under-nowrite",
+        "crates/sim/src/exec.rs",
+        '            self.rec_mbar_count(cta, u, u + 1, under);',
+        '            self.rec_mbar_count(cta, u, u + 1, false);',
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 231: a decrement that takes tx below 0 with no arrival pending writes no count key,
+    # so DPOR and the synchronization reduction take it as independent of another decrement
+    # that would complete the phase first: probes/dpor_tx_overdec DPOR [deadlock],
+    # probes/sync_tx_overdec_tma stateful [deadlock].
+    SrcMutant(
+        "tx-overdec-nowrite",
+        "crates/sim/src/exec.rs",
+        "        let write = (delta > 0 && !arrival) || (under && pending == 0);\n",
+        "        let write = delta > 0 && !arrival;\n",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 231: a TMA landing's complete_tx records no count key: probes/dpor_tx_commute_async
+    # TMA DPOR [clean].
+    SrcMutant(
+        "tx-tma-landing-nokey",
+        "crates/sim/src/exec.rs",
+        "                self.rec_tx(cta, mbar, -bytes, false);\n",
+        "",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 231: a CLC response's complete_tx records no count key: probes/dpor_tx_commute_async
+    # CLC DPOR [clean].
+    SrcMutant(
+        "tx-clc-nokey",
+        "crates/sim/src/exec.rs",
+        "                self.rec_tx(c, mbar, -16, false);\n",
+        "",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 231: a landing remote expect_tx records no count key: probes/dpor_tx_commute_remote
+    # SASS DPOR [clean].
+    SrcMutant(
+        "tx-remote-landing-nokey",
+        "crates/sim/src/exec.rs",
+        "            self.rec_tx(cta, mbar, tx, n > 0);\n",
+        "",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tx_increments_against_decrements")],
+    ),
+    # MISS 233: tcgen05.alloc / dealloc record only the allocator key again:
+    # probes/dpor_tmem_dealloc NOFREEWAIT SASS DPOR [race] against [race, violation].
+    SrcMutant(
+        "tmem-mark-nowords",
+        "crates/sim/src/exec.rs",
+        '                space: ResourceSpace::Tmem,\n                owner: cta as u32,\n                start: lo as u64,\n                end: hi as u64,\n',
+        '                space: ResourceSpace::Tmem,\n                owner: cta as u32,\n                start: lo as u64,\n                end: lo as u64,\n',
+        [],
+        [("ptxv-sim", "fixtures", "dpor_orders_tmem_dealloc_against_tmem_access")],
+    ),
     # MISS 146: a trap that exits every thread no longer backtracks the splits it kills;
     # e_dpor_trap: DPOR [trap] against the stateful [fault, trap] (the test runs both).
     SrcMutant(
@@ -690,16 +1894,215 @@ MUTANTS += [
         [],
         [("ptxv-sim", "fixtures", "dpor_backtracks_a_disabled_process")],
     ),
-    # MISS 146 / MISS 136 follow-up: only consumed ops that are an alternative's head disable
-    # their process again; e_dpor_nonhead NH consumes B behind a pending head, and the test
-    # requires that backtrack (dpor::NONHEAD_BACKTRACKS).
+    # MISS 221: a peek's success acquires as a blocking wait again, so DPOR's race check skips
+    # the completion it observed and never runs the test before it: probes/dpor_testwait good
+    # DPOR [clean] against the stateful [nondeterministic] (the test runs both explorers).
     SrcMutant(
-        "dpor-nonhead-nobacktrack",
-        "crates/sim/src/dpor.rs",
-        "            if Some(id) != a.op && !live.contains(&id) {",
-        "            if Some(id) != a.op && !live.contains(&id) && alts.iter().any(|b| b.op == Some(id)) {",
+        "dpor-peek-acquires",
+        "crates/sim/src/exec.rs",
+        "                            self.rec_obs(sync_key(2, cta as u64, off as u64, k));",
+        "                            self.rec_acq(sync_key(2, cta as u64, off as u64, k));",
         [],
-        [("ptxv-sim", "fixtures", "dpor_backtracks_a_disabled_process")],
+        [("ptxv-sim", "fixtures", "dpor_explores_both_outcomes_of_a_test_wait")],
+    ),
+    # MISS 274: DPOR enters a successor equal to a state on its stack again, and a thread that
+    # repeats one state (probes/mbar_zero upto0) gives one path without end: the test bounds
+    # DPOR to 10000 states and fails on the incomplete search.
+    SrcMutant(
+        "dpor-no-cycle-cut",
+        "crates/sim/src/dpor.rs",
+        "        if let Some(&j) = on_stack.get(&h) {",
+        "        if let Some(&j) = on_stack.get(&h).filter(|_| false) {",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_stops_at_a_cycle")],
+    ),
+    # MISS 279: a poll of an uninitialized mbarrier records no footprint again, so the
+    # reductions run it before the init only: probes/uninit_poll_publish good SASS default and
+    # DPOR [violation] against [nondeterministic, race, violation].
+    SrcMutant(
+        "uninit-poll-nokey",
+        "crates/sim/src/exec.rs",
+        '                        {\n                            self.rec_mbar_query(cta, off, None);\n                        }\n                        _ => self.rec_fault(),',
+        '                        {\n                            let _ = (cta, off);\n                        }\n                        _ => self.rec_fault(),',
+        [],
+        [("ptxv-sim", "fixtures", "reductions_order_a_poll_before_init_against_the_init")],
+    ),
+    # MISS 279 (RDP2 finding J): the landings of a bulk copy, a tcgen05.commit, a
+    # cp.async.mbarrier.arrive and a CLC response read no (re)initialization key before the
+    # init again: probes/uninit_mbar_landing TMA / COMMIT default [deadlock, violation].
+    SrcMutant(
+        "landing-no-init-key",
+        "crates/sim/src/exec.rs",
+        '    fn rec_mbar_init_key(&mut self, cta: u16, off: u32) {\n        self.rec_sync(\n            Resource {\n                space: ResourceSpace::MbarInitialization,\n                owner: cta as u32,\n                start: off as u64,\n                end: off as u64 + 1,\n            },\n            false,\n        );\n    }\n',
+        '    fn rec_mbar_init_key(&mut self, cta: u16, off: u32) {\n        let _ = (cta, off);\n    }\n',
+        [],
+        [("ptxv-sim", "fixtures", "reductions_order_a_poll_before_init_against_the_init")],
+    ),
+    # MISS 282: E-POLL-ANY takes a load of a currently undefined byte for a poll again, and its
+    # concrete candidates drop the undefined bits: probes/vip_undef_load LDW/LDY/LDG default
+    # [clean] against [violation].
+    SrcMutant(
+        "vip-undef-now",
+        "crates/sim/src/exec.rs",
+        "        if (0..*bytes as usize).any(undef) {\n            return false;\n        }\n",
+        "        let _ = undef;\n",
+        [],
+        [("ptxv-sim", "fixtures", "e_poll_any_keeps_undefined_bytes")],
+    ),
+    # MISS 282: a write that leaves a watched location undefined is not learned, so a load
+    # that sees defined bytes passes for a poll before that write runs: probes/vip_undef_load
+    # UST default [undef-insensitive] against [violation].
+    SrcMutant(
+        "vip-undef-unlearned",
+        "crates/sim/src/exec.rs",
+        "                                if und && vl.undef.lock().unwrap().insert((a, o, nb)) {",
+        "                                if und && false {",
+        [],
+        [("ptxv-sim", "fixtures", "e_poll_any_keeps_undefined_bytes")],
+    ),
+    # MISS 295: the synchronization reduction learns a value-insensitive poll's step without
+    # its read again: probes/sync_vip_learned ACQ SASS default [clean] against
+    # [nondeterministic, violation] (four workers).
+    SrcMutant(
+        "sync-vip-unlearned",
+        "crates/sim/src/explore.rs",
+        "    for r in std::mem::take(&mut m.vip_learn) {\n        fp.r.push(r);\n    }\n",
+        "    m.vip_learn.clear();\n",
+        [],
+        [("ptxv-sim", "fixtures", "sync_reduction_learns_a_value_insensitive_polls_read")],
+    ),
+    # MISS 274: DPOR cuts a cycle without adding the processes enabled on it (the stack
+    # proviso): probes/dpor_cycle_proviso PTX DPOR [violation] against [race, violation] (the
+    # repeating thread is picked first and the racing warps never run).
+    SrcMutant(
+        "dpor-no-proviso",
+        "crates/sim/src/dpor.rs",
+        "                f.backtrack.extend(en);",
+        "                let _ = en;",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_stops_at_a_cycle")],
+    ),
+    # MISS 275: a test of an mbarrier phase writes no count key again, so an arrival that does not
+    # complete the phase in DPOR's first trace never conflicts with the test, and DPOR never
+    # runs the test before it: probes/dpor_peek_arrival DPOR [clean] against the stateful
+    # [nondeterministic] (the test runs both explorers).
+    SrcMutant(
+        "dpor-peek-nocounts",
+        "crates/sim/src/exec.rs",
+        "        for p in ph.saturating_sub(2)..=ph {",
+        "        for p in ph..ph {",
+        [],
+        [("ptxv-sim", "fixtures", "dpor_explores_both_outcomes_of_a_test_wait")],
+    ),
+    # MISS 222: issuing into a remote pipe records no footprint again, so DPOR never reverses
+    # two lanes' issues into one pipe: probes/dpor_pipe_issue_order SWAP PTX DPOR [clean]
+    # against the stateful [nondeterministic] (the test runs both explorers).
+    SrcMutant(
+        "dpor-pipe-issue-nokey",
+        "crates/sim/src/exec.rs",
+        '                space: ResourceSpace::RemotePipe,\n                owner: 2,\n                start: k,\n                end: k.saturating_add(1),\n',
+        '                space: ResourceSpace::RemotePipe,\n                owner: 2,\n                start: k,\n                end: k,\n',
+        [],
+        [("ptxv-sim", "fixtures", "dpor_reverses_issues_into_one_pipe")],
+    ),
+    # S-REMOTE-INFLIGHT: an op enters its in-order pipe at position 0 (every op of a pipe can
+    # land first; MISS 154's issue-order positions dropped).
+    SrcMutant(
+        "pipe-seq-zero",
+        "crates/sim/src/exec.rs",
+        "op.seq = self.pending.iter().filter(|o| o.fifo == Some(f)).count() as u32;",
+        "op.seq = self.pending.iter().filter(|o| o.fifo == Some(f)).count() as u32 * 0;",
+        [("e_remote_pipe_order", "good", f, []) for f in ("ptx", "sass")],
+    ),
+    # E-LOCKSTEP: no join after an instruction whose scoreboard wait completed an LDTM (MISS
+    # 163).
+    SrcMutant(
+        "lockstep-noldtmwait",
+        "crates/sim/src/exec.rs",
+        ".any(|(&t, &n)| self.threads[t].ldtm_pend.len() < n);",
+        ".any(|(&t, &n)| self.threads[t].ldtm_pend.len() < n && false);",
+        [("e_ldtm_join", "good", "sass", [])],
+    ),
+    # exec.rs `dead_target`: the issue-time liveness check of a remote access records no read
+    # of the target's exit key again, so DPOR takes the issue and the target's exit as
+    # independent (MISS 152; e_stasync SA2's DPOR cross-check then misses the race).
+    SrcMutant(
+        "dead-target-nokey",
+        "crates/sim/src/exec.rs",
+        '                owner: target as u32,\n                start: 1,\n                end: 2,\n',
+        '                owner: target as u32,\n                start: 1,\n                end: 1,\n',
+        [],
+        [("ptxv-sim", "fixtures", "e_stasync_complete_tx")],
+    ),
+    # S-REMOTE-INFLIGHT: an in-flight st.async writes under its issuer's clock again, so the
+    # issuer's later releases cover the write before it lands (MISS 184; the certificate's one
+    # schedule certifies e_dpor_nonhead good).
+    SrcMutant(
+        "stasync-issuer-actor",
+        "crates/sim/src/exec.rs",
+        "                    let actor = self.async_actor(t)?;\n"
+        "                    let mut vc = vc;\n"
+        "                    vc_tick(&mut vc, actor);\n"
+        "                    let r = self.mbar_async_rel(t as u32, cta, vc.clone());",
+        "                    let actor = t as u32;\n"
+        "                    let r = self.mbar_async_rel(t as u32, cta, vc.clone());",
+        [],
+        [("ptxv-sim", "fixtures", "stasync_inflight_is_not_covered_by_issuer_releases")],
+    ),
+    # S-REMOTE-INFLIGHT: a cluster release drains its thread's remote ops in pending order,
+    # ahead of another lane's earlier op in the same pipe (MISS 184; e_remote_pipe_order DRN
+    # becomes a false race).
+    SrcMutant(
+        "drain-skips-pipe-head",
+        "crates/sim/src/exec.rs",
+        "            } else {\n                self.take_pending(k)\n            };",
+        "            } else {\n                self.take_pending(i + 0 * k)\n            };",
+        [("e_remote_pipe_order", v, f, []) for v in ("good", "DRN") for f in ("ptx", "sass")],
+    ),
+    # S-REMOTE-INFLIGHT: a remote store's words are not recorded for their lane's next drain
+    # (`Thread::remote_landed`), so no drain orders them, whether they land in it or before
+    # (MISS 184 follow-up; e_stasync_early_land FEN / FENLD and e_stasync_coalesce C1 race).
+    SrcMutant(
+        "remote-landed-nojoin",
+        "crates/sim/src/exec.rs",
+        "            if vc_get(&th.remote_landed, l.actor) < c {",
+        "            if false && vc_get(&th.remote_landed, l.actor) < c {",
+        [("e_stasync_early_land", "FENLD", "ptx", [])],
+        [("ptxv-sim", "fixtures", "stasync_landed_before_its_drain_is_ordered_by_it")],
+    ),
+    # S-REMOTE-INFLIGHT: a lane's drain lands the whole coalesced operation that carries its
+    # part again, the other lanes' words and transaction bytes with it, before its release
+    # (the review's wrong-cleans: e_stasync_coalesce C0 loses the unwritten-y outcome,
+    # probes/stasync_coalesce_lanes L2_D0_TW / L2_D1_TW turn clean).
+    SrcMutant(
+        "drain-lands-whole-coalesced",
+        "crates/sim/src/exec.rs",
+        "            let op = if mine(&self.pending[k]) && several {",
+        "            let op = if mine(&self.pending[k]) && several && false {",
+        [("e_stasync_coalesce", "C0", f, []) for f in ("ptx", "sass")],
+        [("ptxv-sim", "fixtures", "stasync_landed_before_its_drain_is_ordered_by_it")],
+    ),
+    # S-REMOTE-INFLIGHT: a lane's drain takes only operations whose first lane it is, skipping
+    # its part in an operation another lane of its instruction issued, which then stays
+    # unordered (e_stasync_coalesce C1 races again, the old false race).
+    SrcMutant(
+        "drain-skips-lane-words",
+        "crates/sim/src/exec.rs",
+        "                if lanes.iter().any(|l| l.thread == tt))",
+        "                if lanes.iter().take(1).any(|l| l.thread == tt))",
+        [("e_stasync_coalesce", "C1", f, []) for f in ("ptx", "sass")],
+        [("ptxv-sim", "fixtures", "stasync_landed_before_its_drain_is_ordered_by_it")],
+    ),
+    # E-REMOTE-FIFO / S-REMOTE-INFLIGHT: the delivery before a landing takes the ordered op
+    # behind another lane's pending head of its pipe again (MISS 154's order broken; DPOR's
+    # non-head backtrack runs on e_remote_fifo_nonhead SASS, dpor::NONHEAD_BACKTRACKS).
+    SrcMutant(
+        "fifo-skips-pipe-head",
+        "crates/sim/src/exec.rs",
+        "            let a = self.take_pending(k);",
+        "            let a = self.take_pending(i + 0 * k);",
+        [],
+        [("ptxv-sim", "fixtures", "deliver_fifo_before_lands_the_pipe_head_first")],
     ),
     # MISS 149: the SASS lockstep join no longer follows FENCE.VIEW.ASYNC.T; the softmax warps'
     # STTM writes (complete at the thread's own fence since MISS 107) do not reach the elected
@@ -707,13 +2110,14 @@ MUTANTS += [
     SrcMutant(
         "lockstep-nowaitst",
         "crates/sim/src/exec.rs",
-        "                        | Op::TmemSt { .. }\n                        | Op::TmemWaitSt\n",
-        "                        | Op::TmemSt { .. }\n",
+        "                            | Op::TmemSt { .. }\n                            | Op::TmemWaitSt\n",
+        "                            | Op::TmemSt { .. }\n",
         [],
         [("ptxv-sim", "fixtures", "c_fa4_fwd_certifies")],
     ),
-    # E-HW-SPLIT-UR at every level: the strict level drops the switches too (MISS 52's
-    # refutation at the strict level must stand: a measured null result is a bound).
+    # E-HW-SPLIT-UR at every level: the strict level drops the switches too (a measured null
+    # result is a bound): e_split_ur's strict verdict, nondeterministic through the other
+    # split's VOTEU inside a window, turns clean.
     SrcMutant(
         "split-ur-ungated",
         "crates/sim/src/exec.rs",
@@ -722,7 +2126,8 @@ MUTANTS += [
         "            && self.ur_window_blocks(members, pc)",
         "        if !self.ur_window.is_empty() && self.ur_window_blocks(members, pc)",
         [],
-        [("ptxv-sim", "wellsync", "cert_crosscheck_deadlocking_schedule_refutes")],
+        [("ptxv-sim", "wellsync", "cert_crosscheck_deadlocking_schedule_refutes"),
+         ("ptxv-sim", "fixtures", "e_split_ur_strict_level_switches_inside_a_window")],
     ),
     # E-HW-SPLIT-UR: a stalling instruction (STS) ends a window, so the window after
     # `VOTEU.ANY UR5` misses the LOP3 that reads it.
@@ -751,6 +2156,112 @@ MUTANTS += [
             ("ptxv-sim", "fixtures", "probe_div_ftz_matches_hardware"),
             ("ptxv-sim", "fixtures", "r4_kernel_classes"),
         ],
+    ),
+    # E-BSYNC (MISS 81): every BSYNC form is a reconvergence point again: ptxas's plain
+    # BSSY B0 / BSYNC B0 around the elected lane's nanosleep spin holds the waiting lanes, and
+    # e_bsync_plain good is SASS clean (GB300: 10,000 of 10,000 runs wrong).
+    SrcMutant(
+        "bsync-plain-holds",
+        "crates/sim/src/exec.rs",
+        "    form == BarForm::Reconvergent\n}",
+        "    let _ = form;\n    true\n}",
+        [("e_bsync_plain", "good", "sass", [])],
+        [("ptxv-sim", "fixtures", "e_bsync_plain_is_no_reconvergence_point")],
+    ),
+    # E-BSYNC (MISS 81): the lifter drops .RECONVERGENT: BSYNC.RECONVERGENT holds no lane, and
+    # e_bsync_plain LATE_RECONV (ptxas reconverges the clock spin's region) races on SASS.
+    SrcMutant(
+        "bsync-form-plain",
+        "crates/sass/src/lib.rs",
+        "                let form = if has(\"RECONVERGENT\") {",
+        "                let form = if has(\"RECONVERGENT_\") {",
+        [("e_bsync_plain", "LATE_RECONV", "sass", [])],
+        [("ptxv-sim", "fixtures", "e_bsync_plain_is_no_reconvergence_point")],
+    ),
+    # E-BSYNC gap G1: the lifter keeps every .RECONVERGENT BSYNC a reconvergence point, also
+    # around a region that can yield: e_bsync_plain SLEEP_RECONV (the elected lane's nanosleep
+    # spin joined by BSYNC.RECONVERGENT) is SASS clean (GB300: 10,000 of 10,000 runs wrong).
+    SrcMutant(
+        "bsync-g1-off",
+        "crates/sass/src/lib.rs",
+        "    reconvergent_yields(&lines, &mut code);\n",
+        "",
+        [("e_bsync_plain", "SLEEP_RECONV", "sass", [])],
+        [("ptxv-sim", "fixtures", "e_bsync_plain_is_no_reconvergence_point")],
+    ),
+    # G1's region walk: a called function's yield is outside the region.
+    SrcMutant(
+        "bsync-g1-nocall",
+        "crates/sass/src/lib.rs",
+        "                    work.push((*target, true));\n",
+        "",
+        [],
+        [("ptxv-sass", "lib", "tests::reconvergent_bsync_region_walk")],
+    ),
+    # G1's region walk: a WARPSYNC.COLLECTIVE (BRA.DIV's slow path) does not count.
+    SrcMutant(
+        "bsync-g1-nocoll",
+        "crates/sass/src/lib.rs",
+        "                || o.starts_with(\"NANOSLEEP\")\n                || matches!(",
+        "                || o.starts_with(\"NANOSLEEP\")\n                || false && matches!(",
+        [],
+        [("ptxv-sass", "lib", "tests::reconvergent_bsync_region_walk")],
+    ),
+    # G1's region walk: any guarded BREAK of the barrier ends the path (the lanes that do not
+    # break stay in the region).
+    SrcMutant(
+        "bsync-g1-break",
+        "crates/sass/src/lib.rs",
+        "                Op::Break { b: c, cond: None } if *c == b && always => {}",
+        "                Op::Break { b: c, cond: None } if *c == b => {}",
+        [],
+        [("ptxv-sass", "lib", "tests::reconvergent_bsync_region_walk")],
+    ),
+    # E-HW-BSYNC-YIELD (GB300 profile): no yield or block opens a barrier, so a BSYNC without
+    # .RECONVERGENT holds as .RECONVERGENT does: e_bsync_plain good is clean under the profile
+    # (GB300: wrong in every run).
+    SrcMutant(
+        "bsync-yield-off",
+        "crates/sim/src/exec.rs",
+        "            if self.launch.hw_bsync_yield\n                && k.front == Front::Sass\n                && self.bsync_yield_check(warp, pc, &members)",
+        "            if false\n                && k.front == Front::Sass\n                && self.bsync_yield_check(warp, pc, &members)",
+        [],
+        [("ptxv-sim", "fixtures", "e_bsync_plain_is_no_reconvergence_point")],
+    ),
+    # E-HW-BSYNC-YIELD at the strict level (a measured null as a strict rule): the plain BSYNC
+    # holds probes/syncwarp_fast's passing lanes until the elected lane yields, and the strict
+    # level's uniform-register clobber (a fault at the bulk copy) disappears.
+    SrcMutant(
+        "bsync-yield-strict",
+        "crates/sim/src/lib.rs",
+        "        hw_bsync_yield: false,",
+        "        hw_bsync_yield: true,",
+        [],
+        [("ptxv-sim", "fixtures", "probe_syncwarp_fast_matches_hardware")],
+    ),
+    # E-HW-BSYNC-YIELD: only a YIELD / NANOSLEEP opens a barrier, a blocked lane does not:
+    # e_bsync_block good and WARPSYNC (lane 1 blocked at another barrier's BSYNC / at a
+    # WARPSYNC while lanes 2-31 wait at a plain BSYNC) are clean under the profile.
+    SrcMutant(
+        "bsync-yield-noblock",
+        "crates/sim/src/exec.rs",
+        "            if rec & !parked[b] & (yl | blocked | elsewhere) == 0 {",
+        "            if rec & !parked[b] & yl == 0 {",
+        [],
+        [("ptxv-sim", "fixtures", "s_warpcoll_matches_hardware"),
+         ("ptxv-sim", "fixtures", "probe_syncwarp_fast_matches_hardware"),
+         ("ptxv-sim", "fixtures", "bsync_releases"),
+         ("ptxv-sim", "fixtures", "e_bsync_block_opens_a_plain_bsync_under_the_gb300_profile")],
+    ),
+    # C-WARP under the GB300 profile: the certificate follows its run through a BSYNC without
+    # .RECONVERGENT, whose holding depends on when lanes yield or block.
+    SrcMutant(
+        "bsync-cert-yield",
+        "crates/sim/src/wellsync.rs",
+        "        Op::Bsync { form, .. } if m.launch.hw_bsync_yield && !crate::exec::bsync_holds(*form) => {",
+        "        Op::Bsync { form, .. } if false && !crate::exec::bsync_holds(*form) => {",
+        [],
+        [("ptxv-sim", "fixtures", "e_bsync_plain_is_no_reconvergence_point")],
     ),
     # E-BSYNC: a BSYNC waits only for the lanes that reached it (not for its BSSY's mask).
     SrcMutant(
@@ -809,6 +2320,17 @@ MUTANTS += [
         [("e_dsmem_rank", "PEER", f, []) for f in ("ptx", "sass")],
         [("ptxv-sim", ADV, "e_dsmem")],
     ),
+    # explore.rs `exit_ends_reachable_smem`: the exit of a CTA's last running threads taken
+    # as commuting with a peer CTA's access to its shared memory again (MISS 153).
+    SrcMutant(
+        "exit-ample-smem",
+        "crates/sim/src/explore.rs",
+        "let Some(&t0) = split.first() else {",
+        "let Some(&t0) = split.first().filter(|_| false) else {",
+        [("e_dsmem_rank", "CLUSTER", "ptx", [])]
+        + [("e_dsmem_exit", "NOBAR", f, []) for f in ("ptx", "sass")],
+        [("ptxv-sim", ADV, "e_dsmem")],
+    ),
     # S-SMEM-ADDR32: shared address parts add in 64 bits.
     SrcMutant(
         "addr32-nowrap",
@@ -822,8 +2344,8 @@ MUTANTS += [
     SrcMutant(
         "ginit-zero",
         "crates/sim/src/lib.rs",
-        "init: g.init.clone().unwrap_or_else(|| vec![0; g.size as usize]),",
-        "init: vec![0; g.size as usize],",
+        "init: std::sync::Arc::new(g.init.clone().unwrap_or_else(|| vec![0; g.size as usize])),",
+        "init: std::sync::Arc::new(vec![0; g.size as usize]),",
         [],
         [
             ("ptxv-sim", "fixtures", "s_globals_variants"),
@@ -1254,7 +2776,7 @@ MUTANTS += [
     SrcMutant(
         "scope-cta-all",
         "crates/sim/src/exec.rs",
-        "            Scope::Cta => cx == cy,",
+        "            Scope::Cta => cx == cy && !self.nic_apart(x, y),",
         "            Scope::Cta => true,",
         [
             ("e_scope_cta", v, f, [])
@@ -1268,14 +2790,10 @@ MUTANTS += [
         "alloc-noblock",
         "crates/sim/src/exec.rs",
         (
-            "                                available: self\n"
-            "                                    .tmem_find(self.threads[t].cta, (n / 32) as u32)\n"
-            "                                    .is_some(),"
+            '                            available: self\n                                .tmem_find(self.threads[t].cta, (n / 32) as u32)\n                                .is_some(),'
         ),
         (
-            "                                available: self\n"
-            "                                    .tmem_find(self.threads[t].cta, (n / 32) as u32)\n"
-            "                                    .is_some() || true,"
+            '                            available: self\n                                .tmem_find(self.threads[t].cta, (n / 32) as u32)\n                                .is_some() || true,'
         ),
         [("e_tmem_alloc_block", "HOLD", f, []) for f in ("ptx", "sass")],
     ),
@@ -1717,8 +3235,8 @@ MUTANTS += [
     SrcMutant(
         "lo-strict-default",
         "crates/sim/src/lib.rs",
-        '        Ok("ordered") => {}\n        Err(_) | Ok("concurrent") => {',
-        '        Err(_) | Ok("ordered") => {}\n        Ok("concurrent") => {',
+        '        Ok("ordered") => Ok(true),\n        Err(_) | Ok("concurrent") => Ok(false),',
+        '        Err(_) | Ok("ordered") => Ok(true),\n        Ok("concurrent") => Ok(false),',
         [("e_launch_order", "PLAIN_UNKNOWN", f, []) for f in ("ptx", "sass")],
         [
             ("ptxv", LO_CLI, "unrecorded_order_concurrent_drops_unknown_predecessors"),
@@ -1765,7 +3283,7 @@ MUTANTS += [
     SrcMutant(
         "model-version-11",
         "crates/cli/src/errdist.rs",
-        "pub(crate) const MODEL_VERSION: u32 = 12;",
+        "pub(crate) const MODEL_VERSION: u32 = 26;",
         "pub(crate) const MODEL_VERSION: u32 = 11;",
         [],
         [("ptxv", "bin:ptxv", "errdist::tests::models_before_the_variant_order_are_refused")],
@@ -1947,7 +3465,8 @@ MUTANTS += [
 # a u32 store nondeterministic (e_warp_order_mixed MIXED). scope-overlap-race: the race
 # filter's moral strength ignores overlap (`morally_strong`), the acquire still does not
 # synchronize. scope-overlap-sync: a partially overlapping acquire synchronizes again
-# (`sync_observe_cell`): the flag race remains, the data race goes (test only).
+# (`sync_observe_cell`): the flag race remains, the data race goes (test only; with the NIC's
+# fetch-add, e_nic_cta PART_SRC, MISS 194).
 # scope-elem-vector: a vector load is one location of its whole width (a precision mutant:
 # VEC races).
 SCOPE_OVERLAP = ("ptxv-sim", "fixtures", "scope_complete_overlap")
@@ -1964,18 +3483,18 @@ MUTANTS += [
     SrcMutant(
         "scope-overlap-race",
         "crates/sim/src/exec.rs",
-        "        self.overlap_complete(a, pa, b, pb) && self.scopes_mutual(a, sa, b, sb)",
-        "        self.scopes_mutual(a, sa, b, sb)",
+        "            Overlap::Partial => (false, false),\n",
+        "            Overlap::Partial => (self.scopes_mutual(a, sa, b, sb), false),\n",
         [("e_warp_order_mixed", "MIXED", "ptx", [])],
         [SCOPE_OVERLAP],
     ),
     SrcMutant(
         "scope-overlap-sync",
         "crates/sim/src/exec.rs",
-        "        if !self.overlap_complete(c.writer, c.pc, me, pc) {",
-        "        if false && !self.overlap_complete(c.writer, c.pc, me, pc) {",
+        "        if ov == Overlap::Partial {\n            return;\n        }\n",
+        "        if false && ov == Overlap::Partial {\n            return;\n        }\n",
         [],
-        [SCOPE_OVERLAP],
+        [SCOPE_OVERLAP, ("ptxv-sim", "fixtures", "e_nic_cta_overlap")],
     ),
     SrcMutant(
         "scope-elem-vector",
@@ -2093,8 +3612,156 @@ MUTANTS += [
     ),
 ]
 
+# The NIC sibling of MISS 100 / MISS 112 (`nic_publish`): a NIC atomic continues the release
+# sequence of the write it reads only when the two are morally strong (nic-rseq-moral: always),
+# and keeps the write's own release pattern apart with its thread and scope (nic-rseq-join: the
+# pattern joined into the NIC atomic's system-scope release again, the fix undone; FREL, a .cta
+# fence heading the pattern, and NICHEAD, a NIC atomic heading it, MISS 166).
+NIC_RSEQ = ("ptxv-sim", "fixtures", "e_nic_rseq_morally_strong")
+MUTANTS += [
+    SrcMutant(
+        "nic-rseq-moral",
+        "crates/sim/src/nic.rs",
+        "                    || self.scopes_mutual(old.writer, strong_code(old.scope), actor, STRONG_SYS)\n",
+        "                    || true\n",
+        [("e_nic_rseq", "good", f, []) for f in ("ptx", "sass")],
+        [NIC_RSEQ],
+    ),
+    SrcMutant(
+        "nic-rseq-join",
+        "crates/sim/src/nic.rs",
+        "                        cont = old.cont.clone();\n"
+        "                        cont_join = old.cont_join.clone();\n"
+        "                        SyncCell::add_cont(\n"
+        "                            &mut cont,\n"
+        "                            &mut cont_join,\n"
+        "                            old.writer,\n"
+        "                            &old.rel,\n"
+        "                            old.rel_scope,\n"
+        "                        );",
+        "                        vc_join(&mut rel, &old.rel);\n"
+        "                        cont = old.cont.clone();\n"
+        "                        cont_join = old.cont_join.clone();",
+        [("e_nic_rseq", "FREL", f, []) for f in ("ptx", "sass")]
+        + [("e_nic_rseq", "NICHEAD", "ptx", [])],
+        [NIC_RSEQ],
+    ),
+]
+
+# MISS 193: the NIC is in no CTA or cluster (`nic_apart`); nic-scope-cta and nic-scope-cluster
+# put it back in its doorbell thread's CTA or cluster.
+NIC_CTA = ("ptxv-sim", "fixtures", "e_nic_cta_scope")
+MUTANTS += [
+    SrcMutant(
+        "nic-scope-cta",
+        "crates/sim/src/exec.rs",
+        "            Scope::Cta => cx == cy && !self.nic_apart(x, y),\n",
+        "            Scope::Cta => cx == cy,\n",
+        [("e_nic_cta", "CTA", "ptx", [])],
+        [NIC_CTA],
+    ),
+    SrcMutant(
+        "nic-scope-cluster",
+        "crates/sim/src/exec.rs",
+        "                self.launch.cluster_of(cx).0 == self.launch.cluster_of(cy).0\n"
+        "                    && !self.nic_apart(x, y)\n",
+        "                self.launch.cluster_of(cx).0 == self.launch.cluster_of(cy).0\n",
+        [("e_nic_cta", "CLUSTER", "ptx", [])],
+        [NIC_CTA],
+    ),
+]
+
+# MISS 194: complete overlap with the NIC's strong accesses (`overlap_with_nic`,
+# `NicState::elem`). nic-overlap: a pair with the NIC is one location again (PART, WORDPART,
+# PART_SRC clean, CQEPART clean). nic-overlap-word4: an RDMA write's 4-byte edge chunk is not
+# one (WORD4 races; the unit test compares `NicState::elem` with `complete_nic`'s chunks).
+# nic-overlap-cqe: a CQE field is an exact location, so a read spanning fields is a mixed-size
+# race, not unmodeled (CQEPART: its masked value makes that race dead, clean).
+# nic-overlap-scope: a pair the scopes already decide is reported unmodeled too (CQECTA).
+# nic-overlap-rseq: a NIC atomic continues a partial write's release sequence (e_nic_rseq
+# SYSREL_PART: the d2 race goes, the mixed-size race stays; test only). acc-unhashed: the state
+# hash leaves out NicState::acc, so states that differ only in the element a NIC access covers
+# merge (e_nic_conv2 CONV2_XY: race -> clean). cqe-rule-off: two CQE writes of one CQE are not one
+# location (e_nic_sharedcq good: clean -> unmodeled).
+NIC_OVERLAP = ("ptxv-sim", "fixtures", "e_nic_cta_overlap")
+NIC_ACC_CQE = ("ptxv-sim", "fixtures", "e_nic_acc_hash_and_shared_cqe")
+MUTANTS += [
+    SrcMutant(
+        "nic-overlap",
+        "crates/sim/src/exec.rs",
+        "    let (Some((alloc, off)), true) = (at, na.is_some() || nb.is_some()) else {\n",
+        "    let (Some((alloc, off)), true) = (at, false && (na.is_some() || nb.is_some())) else {\n",
+        [("e_nic_cta", v, "ptx", []) for v in ("PART", "WORDPART", "PART_SRC", "CQEPART")],
+        [NIC_OVERLAP],
+    ),
+    SrcMutant(
+        "nic-overlap-word4",
+        "crates/sim/src/nic.rs",
+        "                    } else if w4 >= x.addr && w4 + 4 <= end {\n",
+        "                    } else if false && w4 >= x.addr && w4 + 4 <= end {\n",
+        [("e_nic_cta", "WORD4", "ptx", [])],
+        [NIC_OVERLAP, ("ptxv-sim", "lib", "nic::elem_tests::words_elem_matches_the_chunks")],
+    ),
+    SrcMutant(
+        "nic-overlap-cqe",
+        "crates/sim/src/exec.rs",
+        "            NicElem::Field(_, w) => Some(Some((w, true))),\n",
+        "            NicElem::Field(_, w) => Some(Some((w, false))),\n",
+        [("e_nic_cta", "CQEPART", "ptx", [])],
+        [NIC_OVERLAP],
+    ),
+    SrcMutant(
+        "nic-overlap-scope",
+        "crates/sim/src/exec.rs",
+        "                (ms, ms && o == Overlap::Unmodeled)\n",
+        "                (ms, o == Overlap::Unmodeled)\n",
+        [("e_nic_cta", "CQECTA", "ptx", [])],
+        [NIC_OVERLAP],
+    ),
+    SrcMutant(
+        "nic-overlap-rseq",
+        "crates/sim/src/nic.rs",
+        "                        && self.overlap_at(old.writer, old.pc, actor, u32::MAX, Some((alloc, off)))\n"
+        "                            != crate::exec::Overlap::Partial\n",
+        "",
+        [],
+        [NIC_OVERLAP],
+    ),
+    SrcMutant(
+        "acc-unhashed",
+        "crates/sim/src/nic.rs",
+        "        self.acc.hash(h);\n",
+        "",
+        [("e_nic_conv2", "CONV2_XY", "ptx", [])],
+        [NIC_ACC_CQE],
+    ),
+    SrcMutant(
+        "cqe-rule-off",
+        "crates/sim/src/exec.rs",
+        "        if p.is_some() && p == q {\n",
+        "        if false && p.is_some() && p == q {\n",
+        [("e_nic_sharedcq", "good", "ptx", [])],
+        [NIC_ACC_CQE],
+    ),
+]
+
 # Entries no fixture reaches, with the reason.
 EXCLUDED = {
+    "clock-hang-callee": (
+        "E-CLOCK hang guards, no slice instruction in a callee: subsumed by the path rule. A "
+        "callee called from two sites is in a cycle through its return edges, and the uses of "
+        "its one clock read after each call are users not on every path from the read to the "
+        "guard, so the path rule refuses fixtures/e_clock_hang_callee's slice as well (the "
+        "mutant leaves its verdict unchanged); a callee called once is one execution"
+    ),
+    "cfg-call": (
+        "elect_lanes::Cfg call edges (a callee under lane-varying control in the region): "
+        "ptxas copies a callee's result into its caller-side register right after the CALL, "
+        "inside the region, so the value is lane-varying through that copy with or without "
+        "the edge (fixtures/e_clock_lanes_call: `IMAD.MOV.U32 R2, RZ, RZ, R4` after "
+        "CALL.REL); a callee's other results reach the caller through memory, lane-varying "
+        "as loads. No compiled kernel tells the edge apart; it is kept for completeness"
+    ),
     "cbra-agree": (
         "E-CONST-BRA's fold across grids (a pc reached by several grids is folded only where they "
         "agree): grids share code only within one launch (a preferred cluster shape), with equal "
@@ -2542,7 +4209,7 @@ MUTANTS += [
     SrcMutant(
         "num-atom-old",
         "crates/sim/src/num.rs",
-        "                    op: AtomOp::FAddFtz | AtomOp::FAdd64 | AtomOp::AddBf16x2 | AtomOp::AddBf16,",
+        "                    op: AtomOp::FAddFtz\n                        | AtomOp::FAdd64\n                        | AtomOp::AddBf16x2\n                        | AtomOp::AddBf16\n                        | AtomOp::AddF16x2\n                        | AtomOp::AddF16,",
         "                    op: AtomOp::Exch,",
         [],
         [NUM_ATOMS],
@@ -2868,8 +4535,8 @@ MUTANTS += [
     SrcMutant(
         "round16-unmarked",
         "crates/case/src/lib.rs",
-        "                            .all(|k| r16[start + off + e + k].is_some_and(|f| f.dtype() == b.dtype))",
-        "                            .all(|k| r16[start + off + e + k].is_some() || true)",
+        "                            mark(e).is_some_and(|m| w == m.other(g)) && ulp_class(&b.dtype, g, w)",
+        "                            ulp_class(&b.dtype, g, w)",
         [],
         [ROUND16_LANES, ROUND16_PROBES, ROUND16_CASE],
     ),
@@ -2878,8 +4545,8 @@ MUTANTS += [
     SrcMutant(
         "round16-format",
         "crates/case/src/lib.rs",
-        "                            .all(|k| r16[start + off + e + k].is_some_and(|f| f.dtype() == b.dtype))",
-        "                            .all(|k| r16[start + off + e + k].is_some())",
+        "                        let m = r16[start + off + e].filter(|f| f.dtype() == b.dtype)?;",
+        "                        let m = r16[start + off + e]?;",
         [],
         [ROUND16_CASE],
     ),
@@ -2901,8 +4568,8 @@ MUTANTS += [
     SrcMutant(
         "round16-every-lane",
         "crates/sim/src/multimem.rs",
-        "                if c {\n                    m[j * w..(j + 1) * w].fill(Some(f));",
-        "                if true || c {\n                    m[j * w..(j + 1) * w].fill(Some(f));",
+        "                if let Some(next) = c {\n",
+        "                if let Some(next) = c.or(Some(true)) {\n",
         [],
         [ROUND16_LANES],
     ),
@@ -3246,6 +4913,16 @@ MUTANTS += [
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_checks_extra_judged_at_their_own_revs")],
     ),
+    # soundness.py `race_parts`: a record with checks_extra but no check or check_ptx is judged
+    # at its extras' own builds again (extras that only timed out grade there).
+    SrcMutant(
+        "kdb-snd-extras-only-own-builds",
+        "fb/kernel_db/soundness.py",
+        "        if not chk:\n            # checks_extra only:",
+        "        if False:\n            # checks_extra only:",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_checks_extra_only_is_unknown")],
+    ),
     # soundness.py `of_record`: a part at an unknown rev drops its tags' entries from the open
     # list again, those open at int7's tip included.
     SrcMutant(
@@ -3275,6 +4952,49 @@ MUTANTS += [
         [],
         py=[("fb/kernel_db", "test_run_collect.py", "test_ptx_front_build_rev")],
     ),
+    # MISS 192, soundness.py `num_parts`: an errdist result's null stamp (an unstamped errdist
+    # binary) is judged at the check's rev again, not as an unknown build.
+    SrcMutant(
+        "kdb-snd-num-null-at-check-rev",
+        "fb/kernel_db/soundness.py",
+        '            if isinstance(n, dict) and "ptxv_rev" in n and n["ptxv_rev"] != crev:\n',
+        '            if isinstance(n, dict) and n.get("ptxv_rev") and n["ptxv_rev"] != crev:\n',
+        [],
+        py=[
+            ("fb/kernel_db", "test_soundness.py", "test_errdist_results_judged_at_their_own_builds"),
+            ("fb/kernel_db", "test_soundness.py", "test_base_counts_errdist_builds"),
+        ],
+    ),
+    # MISS 192, soundness.py `num_parts`: entries under numerics_extra are judged at the check's
+    # rev again, whatever errdist build they store.
+    SrcMutant(
+        "kdb-snd-num-extra-at-check-rev",
+        "fb/kernel_db/soundness.py",
+        '        results += [("numerics_extra", x) for x in extra]\n',
+        '        results += [("numerics_extra", {}) for x in extra]\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_errdist_results_judged_at_their_own_builds")],
+    ),
+    # MISS 192, soundness.py `of_record`: the errdist part is judged at the check's rev only, not
+    # at the builds num_parts names.
+    SrcMutant(
+        "kdb-snd-num-parts-unused",
+        "fb/kernel_db/soundness.py",
+        "                judged = [(p_rev, p_tags) for p_rev, p_tags, _ in nparts]\n",
+        "                judged = [(rev, tags)]\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_errdist_results_judged_at_their_own_builds")],
+    ),
+    # MISS 192, export_records.py `base`: the errdist builds are left out of the export status
+    # and missing_fixes again.
+    SrcMutant(
+        "kdb-export-base-num-builds-ignored",
+        "fb/kernel_db/export_records.py",
+        '        own += [p[0] for p in soundness.Soundness.num_parts(r) if p[2] != "check"]\n',
+        "        own += []\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_base_counts_errdist_builds")],
+    ),
     # export_records.py `apply_rev_fix`: a stored check_ptx rev is not audited.
     SrcMutant(
         "kdb-export-rev-fix-check-only",
@@ -3283,6 +5003,66 @@ MUTANTS += [
         '    for k in ("check",):\n',
         [],
         py=[("fb/kernel_db", "test_run_collect.py", "test_rev_fix")],
+    ),
+    # export_records.py `apply_stale`: the stale list is not consulted, so a record whose case is
+    # on it grades from its check alone (clean on a case whose stored bytes are no capture).
+    SrcMutant(
+        "kdb-export-stale-case-ignored",
+        "fb/kernel_db/export_records.py",
+        "    row = stale_case(r, stale)\n",
+        "    row = None\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_case_cannot_grade_clean")],
+    ),
+    # kdb_summary.py `load_trees` (--glob): the records it grades skip the stale list.
+    SrcMutant(
+        "kdb-summary-stale-ignored-glob",
+        "fb/kernel_db/kdb_summary.py",
+        '        r["soundness"] = snd.of(r, lv)\n        export_records.apply_stale(r, stale)\n',
+        '        r["soundness"] = snd.of(r, lv)\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summary_reads_the_stale_list")],
+    ),
+    # kdb_summary.py `main` (--recompute, or an exported record without a grade): the records it
+    # grades skip the stale list.
+    SrcMutant(
+        "kdb-summary-stale-ignored-recompute",
+        "fb/kernel_db/kdb_summary.py",
+        "            export_records.apply_stale(r, stale)\n",
+        "            pass\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summary_reads_the_stale_list")],
+    ),
+    # export_records.py `stale_case`: any hash matches, so a case captured again since it was
+    # listed stays unconfirmed.
+    SrcMutant(
+        "kdb-export-stale-case-any-hash",
+        "fb/kernel_db/export_records.py",
+        '            if row["case_hash"] == h:\n',
+        "            if rows:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_case_cannot_grade_clean")],
+    ),
+    # export_records.py `stale_case`: a listed case this host cannot read is passed over, so its
+    # record grades from its check alone (fails open where the store is absent).
+    SrcMutant(
+        "kdb-export-stale-unreadable-open",
+        "fb/kernel_db/export_records.py",
+        "            return dict(rows[0], unreadable=True)\n",
+        "            continue\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_fails_closed")],
+    ),
+    # export_records.py `load_stale`: a missing list reads as an empty one, so the export grades
+    # every record from its check alone without saying so.
+    SrcMutant(
+        "kdb-export-stale-missing-list-open",
+        "fb/kernel_db/export_records.py",
+        '    with open(path, newline="") as fh:\n        for row in csv.DictReader(fh):\n',
+        '    if not os.path.isfile(path):\n        return stale\n'
+        '    with open(path, newline="") as fh:\n        for row in csv.DictReader(fh):\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_fails_closed")],
     ),
     # audit_ptxv_rev.py `resolve`: check_ptx's rev is taken from the runner's logs of the check
     # task (a run of the check is no evidence of check_ptx's binary).
@@ -3539,6 +5319,48 @@ MUTANTS += [
         "tools/mutate/srcmut.py",
         "    for m in mutants:\n",
         "    mutants = mutants[: (len(mutants) - len(mutants) % 64) or len(mutants)]\n    for m in mutants:\n",
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    # srcmut.py `comment_spans`: doc comments (`///`, `//!`) are read as code, so an anchor kept
+    # only in one passes (test_srcmut_check_anchors' doc-comment cases).
+    SrcMutant(
+        "srcmut-anchors-doc-comment-code",
+        "tools/mutate/srcmut.py",
+        '        if tok in ("//", "#"):\n',
+        '        if tok in ("//", "#") and not text.startswith(("///", "//!"), s):\n',
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    # srcmut.py `broken_anchors`: a find text over several lines is not checked
+    # (test_srcmut_check_anchors' multi-line cases).
+    SrcMutant(
+        "srcmut-anchors-multiline-skipped",
+        "tools/mutate/srcmut.py",
+        "        why = anchor_problem(text, m.file, m.find, spans)\n",
+        '        why = None if "\\n" in m.find.rstrip("\\n") else anchor_problem(text, m.file, m.find, spans)\n',
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    # srcmut.py `fb_only_skipped`: the export's skip of the mutants of fb/ files applies in the
+    # internal tree too (its manifest is not read), so an fb/ file gone from there is skipped
+    # instead of a broken anchor (test_srcmut_skips_fb_only_mutants_in_an_export).
+    SrcMutant(
+        "srcmut-fb-skip-internal",
+        "tools/mutate/srcmut.py",
+        '    if (tree / "fb" / "OSS_EXCLUDE.txt").is_file():\n        return []\n',
+        "",
+        [],
+        [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
+    ),
+    # srcmut.py `fb_only_skipped`: the mutants of fb/ files are skipped whether the tree holds
+    # the file or not, so the whole-list test's scratch tree, which holds them all, loses them
+    # (test_srcmut_anchors_whole_list, test_srcmut_skips_fb_only_mutants_in_an_export).
+    SrcMutant(
+        "srcmut-fb-skip-present",
+        "tools/mutate/srcmut.py",
+        "    return [m for m in mutants if m.fb_only and not (tree / m.file).is_file()]\n",
+        "    return [m for m in mutants if m.fb_only]\n",
         [],
         [("ptxv", "srcmut_anchors", "the_mutation_tools_tests_pass")],
     ),
@@ -3913,6 +5735,47 @@ MUTANTS += [
 ]
 # One thread's adds counted as a free order (`AtomChain::order_explains` without its
 # `self.sources < 2`): equivalent since the MISS 84 follow-up, which added `free`.
+# MISS 146 / MISS 136 follow-up (dpor.rs `successors`): only consumed ops that are an
+# alternative's head disable their process again ("if Some(id) != a.op &&
+# !live.contains(&id) {" gains "&& alts.iter().any(|b| b.op == Some(id))").
+# MISS 278: local_ample's plain-arrival rule ignoring peeks. The rule itself is gone since
+# the merge of upstream #82 (explore.rs local_ample: "Even plain arrivals can cross a
+# generation before this action runs"), so nothing is left to mutate; the regression test
+# local_reduction_keeps_a_peek_after_its_own_arrival still runs.
+EXCLUDED["local-arrival-ignores-peeks"] = (
+    "local_ample's plain-arrival rule (MISS 278 narrowed it for peeks) was removed by upstream "
+    "#82: every visible mbarrier arrival is a scheduling point of local_ample, so the peek "
+    "condition has no code left; probes/local_peek_arrival stays pinned by "
+    "local_reduction_keeps_a_peek_after_its_own_arrival"
+)
+EXCLUDED["dpor-nonhead-nobacktrack"] = (
+    "DPOR's backtrack of a FIFO whose op behind the head was consumed while the head stayed "
+    "pending: dead. Every op leaves a pipe as its head. Async steps take heads only; "
+    "drain_remote lands a remote pipe's head before the drained op behind it (MISS 184; "
+    "fixtures/e_dpor_nonhead NH reached the case until then); deliver_fifo_before (the opt-in "
+    "E-REMOTE-FIFO) does the same since the MISS 184 follow-up (fixtures/e_remote_fifo_nonhead "
+    "SASS reached the case until then). The remaining removals (complete_async, complete_clc) "
+    "take an action's own op. fixtures.rs deliver_fifo_before_lands_the_pipe_head_first "
+    "asserts dpor::NONHEAD_BACKTRACKS stays 0 (srcmut fifo-skips-pipe-head and "
+    "drain-skips-pipe-head break the head-first landing). The rule stays as a conservative "
+    "backtrack"
+)
+
+# S-REMOTE-INFLIGHT / S-CLUSTER-LIFE (exec.rs `complete_remote_op`): a coalesced remote
+# operation that lands outside a drain records the first lane's cluster-lifetime obligation
+# only ("for l in lanes {" in the remote_obs block becomes "for l in lanes.iter().take(1) {").
+EXCLUDED["remote-obs-first-lane"] = (
+    "a non-first lane's remote_obs entry matters only when the first lane's is discharged and "
+    "its own is not. The target's wait on the phase discharges every lane alike (they share it), "
+    "so the first lane must be discharged by its own drain happening before the target's exit; "
+    "in another schedule that drain splits the first lane out first, and the undrained lanes' "
+    "remainder then lands as its own operation whose first lane is undrained: it records that "
+    "lane's obligation or lands after the exit, a violation either way. So the per-lane entries "
+    "add only obligations another schedule already reports (complete exploration assumed); the "
+    "mutant gave identical verdicts on 46 generated and 24 hand-written runs and on "
+    "fixtures/e_stasync_lanes, both fronts. The per-lane entries stay (conservative)"
+)
+
 EXCLUDED["atom-sources-off"] = (
     "AtomChain::order_explains without `self.sources < 2`: since the MISS 84 follow-up a chain "
     "is free only where two adds adjacent in the run's order come from different actors and "
@@ -3954,17 +5817,19 @@ MUTANTS += [
 ]
 
 # MISS 57 at 0 Tier 3 inputs outside: Tier 3 widens by the share's bound as well (errdist.rs;
-# fixtures/errdist/k0).
-MUTANTS += [
-    SrcMutant(
-        "t3-widen-k0-off",
-        "crates/cli/src/errdist.rs",
-        "    if let Some(u) = unknown {\n        widen_unknown(&mut est, u);\n    }",
-        "    if let (Some(u), true) = (unknown, obs.ident_off_inputs > 0) {\n        widen_unknown(&mut est, u);\n    }",
-        [],
-        [("ptxv", "errdist_guard", "tier3_takes_the_unknown_bound_at_zero_inputs_off")],
-    ),
-]
+# fixtures/errdist/k0). Redundant for Tier 3 since MISS 139 (below).
+EXCLUDED["t3-widen-k0-off"] = (
+    "Tier 3 without MISS 57's widening at 0 inputs outside (`widen_unknown` only where some "
+    "input took a pattern outside): since MISS 139 Tier 3's P(differ) interval takes the "
+    "input-level bound at every count (mc.rs `p_interval`, `input_bound`), which holds however "
+    "the outputs of an input differ together, an unseen share of inputs outside included: an "
+    "input of that share is a value g in [0, 1] like any other, and at 0 seen the bound's upper "
+    "end is Clopper-Pearson over inputs, which covers a share up to U at the same level. So the "
+    "widening cannot move Tier 3's claim out of a sound one; it is kept (conservative), and the "
+    "analytic tiers, which use the identified functions on every input, keep it as their only "
+    "cover (fifth review, item 5: the argument holds once the bound is taken at every k, "
+    "left_share included)"
+)
 
 # --pre-round keeps Tier 3's validation refusal (errdist.rs `t3_claim`; fixtures/errdist/miss58/rare):
 # the mutant skips it whenever --pre-round is given, as before MISS 87. Since the MISS 87
@@ -4005,8 +5870,8 @@ MUTANTS += [
     SrcMutant(
         "pair-elem-unknown-off",
         "crates/sim/src/errdist/nonlin/enumerate.rs",
-        "                        pair_out += p;\n                        pair_p2 += p * p;",
-        "                        outside += p;\n                        pair_p2 += 0.0 * p;",
+        "                    pair_mass += p;\n                    pair_p2 += p * p;\n                    pair_pd += p * d;\n                    pair_out += p;",
+        "                    outside += p;\n                    pair_p2 += 0.0 * p;\n                    pair_pd += 0.0 * d;",
         [],
         [
             (
@@ -4154,6 +6019,150 @@ MUTANTS += [
     ),
 ]
 
+# MISS 138: an identified form reads every argument the slice depends on, has exact constants,
+# and no form with fitted constants fits EXACT_VETO times better (ident.rs `arg_dependence`,
+# `admit`, `choose`; fixtures/errdist/ident).
+IDENT_FS3 = ("ptxv", "errdist_guard", "slice_form_that_leaves_out_an_argument_is_refused")
+MUTANTS += [
+    # Forms that leave out an argument the slice depends on are kept (the miss: y = u for
+    # RM(floor(x / 1024) + u); fs3c's step of one ulp is within the veto's margin).
+    SrcMutant(
+        "ident-dep-off",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "    if (0..dep.len()).all(|k| !dep[k] || reads_arg(&r, k)) {",
+        "    if true || (0..dep.len()).all(|k| !dep[k] || reads_arg(&r, k)) {",
+        [],
+        [IDENT_FS3],
+    ),
+    # A form with fitted constants stands where none with exact constants fits.
+    SrcMutant(
+        "ident-fitted-ok",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "    match (best, fitted) {\n        (Some(b), Some(f)) if EXACT_VETO",
+        "    if let (None, Some(f)) = (best, fitted) {\n        return Ok(f.clone());\n    }\n    match (best, fitted) {\n        (Some(b), Some(f)) if EXACT_VETO",
+        [],
+        [
+            IDENT_FS3,
+            ("ptxv", "errdist_guard", "slice_fit_with_fitted_constants_is_refused"),
+            (
+                "ptxv-sim",
+                "lib",
+                "errdist::nonlin::ident::tests::a_fitted_form_alone_is_no_exact_reference",
+            ),
+        ],
+    ),
+    # A form with exact constants stands however much better a fitted one fits.
+    SrcMutant(
+        "ident-veto-off",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "        (Some(b), Some(f)) if EXACT_VETO * f.fit_err + 2f64.powi(-23) < b.fit_err => Err(format!(",
+        "        (Some(b), Some(f)) if false && EXACT_VETO * f.fit_err + 2f64.powi(-23) < b.fit_err => Err(format!(",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "lib",
+                "errdist::nonlin::ident::tests::a_much_better_fitted_form_vetoes_an_exact_one",
+            ),
+        ],
+    ),
+    # No products of two slice constants among the snap candidates: the affine control
+    # (rE_ex2ovf, slope 2^100 C) has fitted constants and is refused (precision only).
+    SrcMutant(
+        "ident-snap-products-off",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "            if v > 1e-30 && v < 1e30 {\n                out.push((v, 2));",
+        "            if false {\n                out.push((v, 2));",
+        [],
+        [("ptxv", "errdist_guard", "slice_slope_from_two_constants_is_exact")],
+    ),
+]
+
+# MISS 147: forms of another shape that fit the probes as well are the identified form's
+# alternatives; where they disagree the exact value is not established and the outputs above
+# are left out (ident.rs `alternatives`, `RealFn::agrees`; real.rs `Table::ambig`;
+# fixtures/errdist/ident/ex2ovf.ptx).
+IDENT_ALTS = ("ptxv", "errdist_guard", "forms_the_probes_cannot_tell_apart_leave_the_exact_value_open")
+MUTANTS += [
+    # No alternatives: the first of equally good forms stands alone (the miss).
+    SrcMutant(
+        "ident-alts-off",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "            b.alts = alternatives(&found, &b, n);",
+        "            b.alts = Vec::new();",
+        [],
+        [
+            IDENT_ALTS,
+            (
+                "ptxv-sim",
+                "lib",
+                "errdist::nonlin::ident::tests::forms_the_probes_cannot_tell_apart_are_alternatives",
+            ),
+        ],
+    ),
+    # The exact table ignores the alternatives' disagreement.
+    SrcMutant(
+        "real-alts-ignored",
+        "crates/sim/src/errdist/nonlin/real.rs",
+        "                            am |= !f.agrees(&a, v);",
+        "                            am |= false && !f.agrees(&a, v);",
+        [],
+        [IDENT_ALTS],
+    ),
+    # A slice of FP adds, multiplies and FMAs takes the curved forms too: the exact scaling's
+    # tanh match and ex2ovf2's exp2 match are alternatives again (refused where the affine form
+    # is exact).
+    SrcMutant(
+        "ident-poly-off",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "    let poly = polynomial(p);",
+        "    let poly = false && polynomial(p);",
+        [],
+        [IDENT_ALTS],
+    ),
+    # Their outputs labelled as above an unidentified slice.
+    SrcMutant(
+        "ambig-mislabelled",
+        "crates/sim/src/errdist/mc.rs",
+        "            } else if ambig {\n                obs.ambiguous += 1;",
+        "            } else if ambig {\n                obs.unidentified += 1;",
+        [],
+        [IDENT_ALTS],
+    ),
+    # A form with fitted constants counts as an alternative (a rounding-size coefficient on an
+    # argument the output does not move with leaves out every output where it is large).
+    SrcMutant(
+        "ident-alts-fitted",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "    for r in found.iter().filter(|r| r.snapped && r.fit_err <= tol) {",
+        "    for r in found.iter().filter(|r| r.fit_err <= tol) {",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "lib",
+                "errdist::nonlin::ident::tests::forms_the_probes_cannot_tell_apart_are_alternatives",
+            ),
+        ],
+    ),
+    # NaN from both forms disagrees: an output whose exact value is not determined is labelled
+    # as having alternatives that disagree.
+    SrcMutant(
+        "ident-agrees-nan",
+        "crates/sim/src/errdist/nonlin/ident.rs",
+        "            if w == v || (w.is_nan() && v.is_nan()) {",
+        "            if w == v {",
+        [],
+        [
+            (
+                "ptxv-sim",
+                "lib",
+                "errdist::nonlin::ident::tests::forms_the_probes_cannot_tell_apart_are_alternatives",
+            ),
+        ],
+    ),
+]
+
 # MISS 120: Tier 3's P(differ) interval counts inputs where few differ (mc.rs `p_interval` /
 # `input_bound`), and Tier 3 grows at P 0 (errdist.rs, the growth loop; fixtures/errdist/clus).
 # An observed run that refutes a claim keeps the narrower interval (`p_interval_obs`).
@@ -4162,20 +6171,34 @@ MUTANTS += [
     SrcMutant(
         "t3-input-bound-off",
         "crates/sim/src/errdist/mc.rs",
-        "    if !f.is_empty() && f.iter().filter(|&&x| x > 0.0).count() < SMALL_K {",
-        "    if false && !f.is_empty() && f.iter().filter(|&&x| x > 0.0).count() < SMALL_K {",
+        "    if !obs.input_differ.is_empty() {",
+        "    if false && !obs.input_differ.is_empty() {",
         [],
         [
             ("ptxv-sim", "lib", "errdist::mc::tests::p_interval_counts_inputs_where_few_differ"),
             ("ptxv", "errdist_adv", "tier3_interval_counts_inputs_where_outputs_differ_together"),
         ],
     ),
+    # MISS 139: the input-level bound only below 20 inputs with a differing output again (the
+    # third review's rE_mix, fixtures/errdist/mix: single outputs differ on most inputs, a rare
+    # cluster of 4032 outputs on 2e-3 of them).
+    SrcMutant(
+        "t3-input-bound-small-k",
+        "crates/sim/src/errdist/mc.rs",
+        "    if !obs.input_differ.is_empty() {",
+        "    if !obs.input_differ.is_empty() && obs.input_differ.iter().filter(|&&x| x > 0.0).count() < 20 {",
+        [],
+        [
+            ("ptxv-sim", "lib", "errdist::mc::tests::p_interval_counts_inputs_at_any_count"),
+            ("ptxv", "errdist_adv", "tier3_interval_counts_inputs_at_any_count"),
+        ],
+    ),
     # No growth at P 0.
     SrcMutant(
         "t3-grow-p0-off",
         "crates/cli/src/errdist.rs",
-        "            let (mut want, mut bud) = if p == 0.0 && obs.compared > 0 {\n                (f64::INFINITY, budget)",
-        "            let (mut want, mut bud) = if p == 0.0 && obs.compared > 0 {\n                (0.0, 0.0)",
+        "    let (mut want, mut bud) = if p == 0.0 && compared {\n        (f64::INFINITY, budget)",
+        "    let (mut want, mut bud) = if p == 0.0 && compared {\n        (0.0, 0.0)",
         [],
         [("ptxv", "errdist_adv", "tier3_interval_counts_inputs_where_outputs_differ_together")],
     ),
@@ -4184,8 +6207,8 @@ MUTANTS += [
     SrcMutant(
         "t3-grow-ood",
         "crates/cli/src/errdist.rs",
-        "            let (mut want, mut bud) = if p == 0.0 && obs.compared > 0 {",
-        "            let (mut want, mut bud) = if p == 0.0 {",
+        "    let (mut want, mut bud) = if p == 0.0 && compared {",
+        "    let (mut want, mut bud) = if p == 0.0 {",
         [],
         [("ptxv", "errdist_guard", "nonfinite_outputs_are_out_of_domain")],
     ),
@@ -4208,12 +6231,279 @@ MUTANTS += [
     SrcMutant(
         "ed-no-cmp-kept",
         "crates/cli/src/errdist.rs",
-        "    if obs.compared > 0 {\n        return;\n    }",
+        "    if obs.compared > obs.nonfinite_cmp || obs.nonfinite_differ > 0 {\n        return;\n    }",
         "    if true {\n        return;\n    }",
         [],
         [
             ("ptxv", "nonfinite", "errdist_every_input_out_of_domain_is_refused"),
             ("ptxv", "errdist_guard", "nonfinite_outputs_are_out_of_domain"),
+        ],
+    ),
+]
+
+# MISS 66 (N-ERRDIST-NONFINITE): outputs with a NaN / Inf value are compared against their
+# reference (mc.rs `nonfinite_outcome`, `count_nonfinite`; the elementwise law; errdist.rs
+# `refuse_analytic_nonfinite`, `flag_nonfinite`, `refuse_no_compared`).
+MUTANTS += [
+    # A single kernel's NaN / Inf output left out of the domain again (the miss).
+    SrcMutant(
+        "nf-skip-restored",
+        "crates/sim/src/errdist/mc.rs",
+        "        if !rv.is_finite() {\n            count_nonfinite(\n                obs,\n                st,\n                o,\n                ev.r_out[k],\n                NonfiniteRef::Exact(round_out(ex.y, ex.y_lo, f)),\n            );\n            continue;\n        }",
+        "        if !rv.is_finite() {\n            obs.nonfinite += 1;\n            continue;\n        }",
+        [],
+        [("ptxv", "nonfinite", "errdist_nonfinite_outputs_that_differ_are_counted")],
+    ),
+    # An output equal to RN of its exact value as the same infinity counted as differing.
+    SrcMutant(
+        "nf-inf-differs",
+        "crates/sim/src/errdist/mc.rs",
+        "        NonfiniteRef::Exact(rn) => Some(out as f64 != rn),",
+        "        NonfiniteRef::Exact(_) => Some(true),",
+        [],
+        [("ptxv", "nonfinite", "errdist_nonfinite_outputs_equal_to_rn_exact_match")],
+    ),
+    # Linearized tiers kept where Tier 3 has NaN / Inf outputs that differ.
+    SrcMutant(
+        "nf-analytic-kept",
+        "crates/cli/src/errdist.rs",
+        "    if obs.nonfinite_differ == 0 {\n        return;\n    }",
+        "    if true {\n        return;\n    }",
+        [],
+        [("ptxv", "nonfinite", "errdist_nonfinite_outputs_that_differ_are_counted")],
+    ),
+    # A validation of a linearized tier agrees although its observed run has such outputs.
+    SrcMutant(
+        "nf-validation-kept",
+        "crates/cli/src/errdist.rs",
+        "        if o.nonfinite_differ > 0 && (!models || t3.nonfinite_differ == 0) {",
+        "        if false {",
+        [],
+        [("ptxv", "nonfinite", "errdist_nonfinite_outputs_that_differ_are_counted")],
+    ),
+    # The elementwise law skips NaN / Inf outputs again (a P(differ) conditional on finite ones).
+    SrcMutant(
+        "nf-elem-skip",
+        "crates/sim/src/errdist/nonlin/enumerate.rs",
+        "            Some(Some(d)) => {\n                tot += p;\n                sum_p2 += p * p;\n                pd += p * d as u8 as f64;\n                nf_mass += p;\n                nf_pd += p * d as u8 as f64;\n                if d {\n                    off_lattice += p;\n                } else {\n                    *pmf.entry(0).or_default() += p;\n                }\n                continue;\n            }",
+        "            Some(Some(_)) => {\n                skipped += p;\n                continue;\n            }",
+        [],
+        [("ptxv", "nonfinite", "errdist_nonfinite_outputs_that_differ_are_counted")],
+    ),
+    # A Tier 3 that compared only NaN / Inf outputs kept (every output +Inf: P(differ) 0).
+    SrcMutant(
+        "nf-no-finite-kept",
+        "crates/cli/src/errdist.rs",
+        "    if obs.compared > obs.nonfinite_cmp || obs.nonfinite_differ > 0 {\n        return;\n    }",
+        "    if obs.compared > 0 {\n        return;\n    }",
+        [],
+        [("ptxv", "errdist_guard", "nonfinite_outputs_are_out_of_domain")],
+    ),
+]
+
+# MISS 66 / 88: outputs left out of P(differ) widen every estimate's interval by their share's
+# bound and gate it (mc.rs `left_share`, errdist.rs `widen_left`, the elementwise law's own
+# share, importance sampling); an unidentified slice's outputs have no exact value, by their
+# own cause, above a maximum too (real.rs `Table::unident`).
+MUTANTS += [
+    # No widening: the interval covers the compared outputs only (the miss).
+    SrcMutant(
+        "ed-left-unwidened",
+        "crates/cli/src/errdist.rs",
+        "    e.p_differ = Some((p, (lo - q).max(0.0), (hi + q).min(1.0)));\n    let ok = q <= EST_MAX_REL * p;",
+        "    let ok = q <= EST_MAX_REL * p;",
+        [],
+        [("ptxv", "nonfinite", "errdist_outputs_left_out_widen_the_interval")],
+    ),
+    # No gate: an estimate stands with a share left out more than 10% of its P.
+    SrcMutant(
+        "ed-left-gate-off",
+        "crates/cli/src/errdist.rs",
+        "    let ok = q <= EST_MAX_REL * p;",
+        "    let ok = true;",
+        [],
+        [("ptxv", "nonfinite", "errdist_a_large_share_left_out_is_refused")],
+    ),
+    # The share's interval from the outputs alone (outputs of an input left out together).
+    SrcMutant(
+        "ed-left-share-outputs",
+        "crates/sim/src/errdist/mc.rs",
+        "    let (lo, hi) = p_interval(&view, alpha);",
+        "    let (lo, hi) = super::special::clopper_pearson(view.differ, view.compared, alpha);",
+        [],
+        [("ptxv-sim", "lib", "errdist::mc::tests::left_share_counts_inputs")],
+    ),
+    # The elementwise law skips its mass without a determined exact value again.
+    SrcMutant(
+        "ed-elem-undet-skip",
+        "crates/sim/src/errdist/nonlin/enumerate.rs",
+        "                None => undet += p,",
+        "                None => skipped += p,",
+        [],
+        [("ptxv", "nonfinite", "errdist_a_large_share_left_out_is_refused")],
+    ),
+    # An unidentified slice's outputs counted as a non-finite exact value again.
+    SrcMutant(
+        "ed-unidentified-mislabelled",
+        "crates/sim/src/errdist/mc.rs",
+        "            } else if unident {\n                obs.unidentified += 1;",
+        "            } else if unident {\n                obs.nonfinite += 1;",
+        [],
+        [
+            ("ptxv", "nonfinite", "errdist_unidentified_slice_is_not_nonfinite"),
+            ("ptxv", "nonfinite", "errdist_outputs_left_out_widen_the_interval"),
+        ],
+    ),
+    # The unknown exact value not propagated: a maximum passes on its other child.
+    SrcMutant(
+        "ed-unident-max-masked",
+        "crates/sim/src/errdist/nonlin/real.rs",
+        "        let mut un = reads(&unident) || matches!(op, Op::Nl(NlOp::Seg { real: None, .. }));",
+        "        let mut un = matches!(op, Op::Nl(NlOp::Seg { real: None, .. }));",
+        [],
+        [("ptxv", "nonfinite", "errdist_unidentified_slice_is_not_passed_over_by_a_maximum")],
+    ),
+    # Importance sampling over inputs with outputs left out kept.
+    SrcMutant(
+        "is-left-kept",
+        "crates/cli/src/errdist.rs",
+        "    if obs.left() > 0 {",
+        "    if false {",
+        [],
+        [("ptxv", "errdist_is", "is_refuses_outputs_left_out")],
+    ),
+]
+
+# MISS 66 follow-ups (the fifth review): round_out at the output format's overflow tie (D1,
+# mc.rs `round_out`; fixtures/errdist/tie), correct overflows outside the worst-case bound (D5,
+# `count_nonfinite`).
+TIE = ("ptxv", "errdist_guard", "overflow_tie_rounds_by_the_low_part")
+TIE_UNIT = (
+    "ptxv-sim",
+    "lib",
+    "errdist::mc::tests::round_out_breaks_the_overflow_tie_by_the_low_part",
+)
+MUTANTS += [
+    # The infinity at the tie whatever the low part (the miss).
+    SrcMutant(
+        "round-out-tie-off",
+        "crates/sim/src/errdist/mc.rs",
+        "        return if y.abs() == max + ulp_out(max, f) / 2.0 && y.signum() != y_lo.signum() {",
+        "        return if false && y.abs() == max + ulp_out(max, f) / 2.0 {",
+        [],
+        [TIE, TIE_UNIT],
+    ),
+    # The fix as first proposed (a negative low part gives max): wrong at the negative tie.
+    SrcMutant(
+        "round-out-tie-neg-lo",
+        "crates/sim/src/errdist/mc.rs",
+        "        return if y.abs() == max + ulp_out(max, f) / 2.0 && y.signum() != y_lo.signum() {",
+        "        return if y.abs() == max + ulp_out(max, f) / 2.0 && y_lo < 0.0 {",
+        [],
+        [TIE, TIE_UNIT],
+    ),
+    # Every single kernel's NaN / Inf output over the worst-case bound again.
+    SrcMutant(
+        "wc-equal-inf-over",
+        "crates/sim/src/errdist/mc.rs",
+        "    if st.wc.is_some() && !pre && d {",
+        "    if st.wc.is_some() && !pre && (d || matches!(reference, NonfiniteRef::Exact(_))) {",
+        [],
+        [TIE],
+    ),
+]
+
+# MISS 66 follow-ups (the fifth review): the widened interval's level (D7, mc.rs
+# `level_share`; fixtures/errdist/lmix), the validation's left-out share against Tier 3's bound
+# (D6, errdist.rs `flag_nonfinite`).
+MUTANTS += [
+    # Tier 3's own interval at 95% under the bounds that widen it again (about 92.5% together).
+    SrcMutant(
+        "t3-level-unsplit",
+        "crates/cli/src/errdist.rs",
+        "    if let (Some((p, _, _)), true) = (est.p_differ, lv < 0.05) {",
+        "    if let (Some((p, _, _)), true) = (est.p_differ, false) {",
+        [],
+        [("ptxv", "errdist_guard", "left_out_share_holds_at_any_count")],
+    ),
+    # The validation prints the observed left-out share without testing it against q.
+    SrcMutant(
+        "val-left-share-untested",
+        "crates/cli/src/errdist.rs",
+        "        if slo > q {",
+        "        if false && slo > q {",
+        [],
+        [
+            (
+                "ptxv",
+                "bin:ptxv",
+                "errdist::tests::validation_tests_the_left_out_share_against_tier3s_bound",
+            ),
+        ],
+    ),
+]
+
+# MISS 64 follow-up (the fifth review): a Tier 3 whose compared outputs are all NaN / Inf
+# stands where some differ from their reference (errdist.rs `refuse_no_compared`), and so does
+# a validation's agreement on them (`flag_nonfinite`).
+MUTANTS += [
+    SrcMutant(
+        "nf-differ-refused",
+        "crates/cli/src/errdist.rs",
+        "    if obs.compared > obs.nonfinite_cmp || obs.nonfinite_differ > 0 {\n        return;\n    }",
+        "    if obs.compared > obs.nonfinite_cmp {\n        return;\n    }",
+        [],
+        [
+            ("ptxv", "errdist_guard", "all_nonfinite_tier3_with_differing_outputs_stands"),
+            (
+                "ptxv",
+                "bin:ptxv",
+                "errdist::tests::all_nonfinite_tier3_stands_only_with_differing_outputs",
+            ),
+        ],
+    ),
+    # A validation whose NaN / Inf outputs differ disagrees again for want of a finite output.
+    SrcMutant(
+        "nf-val-differ-disagrees",
+        "crates/cli/src/errdist.rs",
+        "    let vacuous = o.compared == o.nonfinite_cmp && o.nonfinite_differ == 0;",
+        "    let vacuous = o.compared == o.nonfinite_cmp;",
+        [],
+        [
+            (
+                "ptxv",
+                "bin:ptxv",
+                "errdist::tests::all_nonfinite_tier3_stands_only_with_differing_outputs",
+            ),
+        ],
+    ),
+    # A validation of equal infinities alone agrees (the rule MISS 64's follow-up keeps).
+    SrcMutant(
+        "nf-val-vacuous-agrees",
+        "crates/cli/src/errdist.rs",
+        "    let vacuous = o.compared == o.nonfinite_cmp && o.nonfinite_differ == 0;",
+        "    let vacuous = false;",
+        [],
+        [
+            ("ptxv", "errdist_guard", "nonfinite_outputs_are_out_of_domain"),
+            (
+                "ptxv",
+                "bin:ptxv",
+                "errdist::tests::all_nonfinite_tier3_stands_only_with_differing_outputs",
+            ),
+        ],
+    ),
+    # A compiled model of another version loads (errdist.rs `Model::load`): its slices'
+    # identified functions are those of another ptxv (MISS 138, MISS 147 bumped the version).
+    SrcMutant(
+        "model-version-unchecked",
+        "crates/cli/src/errdist.rs",
+        "        if version != Some(MODEL_VERSION as u64) {",
+        "        if version.is_none() {",
+        [],
+        [
+            ("ptxv", "errdist_nonlin", "a_model_of_another_version_is_refused"),
+            ("ptxv", "bin:ptxv", "errdist::tests::models_before_the_variant_order_are_refused"),
         ],
     ),
 ]
@@ -4255,6 +6545,31 @@ MUTANTS += [
         "                    if jlo < plo && jhi > phi && jlo < 0.0 {",
         [],
         [("ptxv", "errdist_adv", "tier2_needs_resolution_and_joins_tier3s_interval")],
+    ),
+    # The resolution a linearized headline needs, Tier 3's half-width at most 2.5% of p3, at 5%
+    # (the review of the heavy-tier fixes: every test passed with it).
+    SrcMutant(
+        "xcheck-t2-hw-5",
+        "crates/cli/src/errdist.rs",
+        "const XCHECK_T2_HW: f64 = 0.025;",
+        "const XCHECK_T2_HW: f64 = 0.05;",
+        [],
+        [("ptxv", "errdist_inerr", "errstate_feeds_the_next_kernel")],
+    ),
+]
+
+# Tier 3's growth (cli/src/errdist.rs `grow_step`): the flip bound drives it where Tier 3's own
+# target asks for fewer inputs (N-ERRDIST-SEL; the review of the heavy-tier fixes: since MISS
+# 139 no test took the override).
+MUTANTS += [
+    # The flip bound never asks for inputs.
+    SrcMutant(
+        "flip-override-off",
+        "crates/cli/src/errdist.rs",
+        "                (want, bud, for_flips) = (w, budget, true);",
+        "                (want, bud, for_flips) = (want, bud, false);",
+        [],
+        [("ptxv", "bin:ptxv", "errdist::tests::the_flip_bound_drives_growth_where_tier3_is_fine")],
     ),
 ]
 
@@ -4447,6 +6762,48 @@ MUTANTS += [
         [],
         [("ptxv-sim", "fixtures", "launch_group_boundary_orders_a_bulk_store_s_writes")],
     ),
+    # groups.rs `explore_meet`: `explore` inside a second smem::two_pass again, so an explored
+    # SASS group whose weak verdict goes to the strong pass runs the weak pass twice (the
+    # strong pass's `explore` runs it again) and its verdict carries the S-SMEM-STRONG note
+    # twice.
+    SrcMutant(
+        "groups-meet-two-pass-twice",
+        "crates/sim/src/groups.rs",
+        "    let v = crate::explore::explore(m, max_states);\n",
+        "    let v = crate::smem::two_pass(m, |m| crate::explore::explore(m, max_states));\n",
+        [],
+        [("ptxv-sim", "fixtures", "explored_launch_group_runs_each_smem_pass_once")],
+    ),
+    # The first-race option of group checks (groups::Opts::first_race, opt-in): not passed to
+    # the explored group's machine, so the search runs on past the race and is rerun.
+    SrcMutant(
+        "groups-first-race-dropped",
+        "crates/sim/src/groups.rs",
+        "                start.race_stop = opts.first_race;\n",
+        "                start.race_stop = false;\n",
+        [],
+        [("ptxv-sim", "fixtures", "group_first_race_option_stops_at_the_race")],
+    ),
+    # explore.rs: a search stopped at its first race (Machine::race_stop) is rerun in the
+    # plain model after the race.
+    SrcMutant(
+        "first-race-rerun",
+        "crates/sim/src/explore.rs",
+        "        && !m0.race_stop\n        && std::env::var(\"PTXV_NO_RACE_RERUN\").is_err()\n",
+        "        && std::env::var(\"PTXV_NO_RACE_RERUN\").is_err()\n",
+        [],
+        [("ptxv-sim", "fixtures", "group_first_race_option_stops_at_the_race")],
+    ),
+    # explore.rs: a search stopped at its first race before any terminal state gets the
+    # deterministic depth run.
+    SrcMutant(
+        "first-race-depth-run",
+        "crates/sim/src/explore.rs",
+        "        && v.terminal_states == 0\n        && !m0.race_stop\n",
+        "        && v.terminal_states == 0\n",
+        [],
+        [("ptxv-sim", "fixtures", "group_first_race_option_stops_at_the_race")],
+    ),
 ]
 
 
@@ -4458,8 +6815,8 @@ MUTANTS += [
     SrcMutant(
         "over-arrival-late-off",
         "crates/sim/src/exec.rs",
-        "let late = k > 0 && !vc_covers(vc, &mb.done_land[((k - 1) % 2) as usize]);",
-        "let late = false;",
+        "        let late = k > 0 && {\n            let prev = &mb.done_land[((k - 1) % 2) as usize];\n",
+        "        let late = false && k > 0 && {\n            let prev = &mb.done_land[((k - 1) % 2) as usize];\n",
         [("mbar_over_arrival", "good", "sass", []), ("mbar_over_arrival", "good", "ptx", [])],
         [("ptxv-sim", "fixtures", "mbar_over_arrival_reaches_late_order")],
     ),
@@ -4936,9 +7293,41 @@ MUTANTS += [
 ]
 
 
+# MISS 134 follow-up: the report names an order-dependent chain as such (one thread's mixed adds
+# are in program order, not schedule-dependent), and a 16-bit bulk-reduction chain that changes
+# format is unordered rather than cut short silently.
+MUTANTS += [
+    # The header back to "schedule-dependent order".
+    SrcMutant(
+        "unordered-header",
+        "crates/cli/src/equiv.rs",
+        "            println!(\"    order-dependent atomic adds (not L0): {u}\");",
+        "            println!(\"    schedule-dependent order: {u}\");",
+        [],
+        ATOM_FTZ_TESTS,
+    ),
+    # A format change inside a 16-bit chain read as one format's add.
+    SrcMutant(
+        "atom16-mix-silent",
+        "crates/sim/src/equiv.rs",
+        "                    if g != f16 {\n                        // Not reached:",
+        "                    if g != f16 && false {\n                        // Not reached:",
+        [],
+        [("ptxv-sim", "lib", "equiv::soundness_tests::atomic16_format_change_is_unordered")],
+    ),
+]
+
+
 # MISS 135: L0~0 only where the peeled x + (+0) keeps x's NaNs (x holds no NaN but the canonical
 # one; fixtures/c_equiv_zero_sign_nan). Each mutant peels an operand that can hold a NaN payload.
+# l0z-nan-leaf changes no level end to end: a NaN constant's non-finite coefficient refuses every
+# level first. l0z-nan-choice is caught end to end on the PTX front: ptxas folds max.f32(a, a)
+# into a copy, which keeps a's NaN payloads, and the mutant's L0~0 for it plus +0 is false on
+# GB300 (fixtures/c_equiv_zero_sign_fmnmx, fmaxaa). In segment mode, where selects and guarded
+# stores can pass a payload, x + (+0) is part of a slice and is not peeled
+# (fixtures/c_equiv_zero_sign_choice). The unit test catches both mutants.
 ZERO_NAN_UNIT = [("ptxv-sim", "lib", "equiv::soundness_tests::zero_peel_needs_canonical_nans")]
+ZERO_HW_CLI = [("ptxv", "equiv", "zero_peel_takes_hardware_maxima")]
 MUTANTS += [
     # Any operand peeled again: a copy against the copy + 0 is L0~0.
     SrcMutant(
@@ -4956,7 +7345,25 @@ MUTANTS += [
         "                NodeKind::Max { a, b, .. } | NodeKind::Sel { a, b, .. } => stack.extend([*a, *b]),",
         "                NodeKind::Max { .. } | NodeKind::Sel { .. } => {}",
         [],
-        ZERO_NAN_UNIT,
+        ZERO_NAN_UNIT + ZERO_HW_CLI,
+    ),
+    # A hardware FMNMX's max peeled only where its operands are again (the old rule).
+    SrcMutant(
+        "l0z-fmnmx-hw-off",
+        "crates/sim/src/equiv.rs",
+        "                NodeKind::Max { .. } if self.ns.fmnmx_hw.contains(&k) => {}",
+        "                NodeKind::Max { .. } if false && self.ns.fmnmx_hw.contains(&k) => {}",
+        [],
+        ZERO_NAN_UNIT + ZERO_HW_CLI,
+    ),
+    # A PTX max.f32's node taken for a hardware FMNMX.
+    SrcMutant(
+        "l0z-fmnmx-hw-any-front",
+        "crates/sim/src/num.rs",
+        "        let sass = self.k.front == ptxv_ir::Front::Sass;",
+        "        let sass = true;",
+        [],
+        ZERO_HW_CLI,
     ),
     # A constant NaN with a payload accepted.
     SrcMutant(
@@ -4966,6 +7373,262 @@ MUTANTS += [
         "                    if false {",
         [],
         ZERO_NAN_UNIT,
+    ),
+]
+
+# Forum post 76 (MISS 174 / 175): every condition of the CAS retry-loop recognizer
+# (`ptxv_ir::casloop::cas_retry_loop`, E-SPIN) and of the seed-load rule (`seed_load`,
+# E-CAS-SEED). Each mutant drops one condition; `spin::cas_tests` holds a SASS loop that needs it.
+CAS_POLL = [("ptxv-sim", "lib", "spin::cas_tests::cas_loops_that_poll_stay_polls")]
+CAS_SEED = [("ptxv-sim", "lib", "spin::cas_tests::seed_loads_used_elsewhere_stay_plain")]
+CASLOOP = "crates/ir/src/casloop.rs"
+MUTANTS += [
+    SrcMutant(
+        "casretry-refresh-any",
+        CASLOOP,
+        "    if c <= l || copy_src(&code[c].op) != Some((cmp, old)) || code[c].op.dst_regs() != [cmp] {",
+        "    if c <= l || code[c].op.dst_regs() != [cmp] {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-cmp-once",
+        CASLOOP,
+        "    let [c] = cmp_writes[..] else {",
+        "    let Some(&c) = cmp_writes.last() else {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-old-kept",
+        CASLOOP,
+        "    if (l + 1..=b).any(|q| code[q].op.dst_regs().contains(&old)) {",
+        "    if false {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-p-once",
+        CASLOOP,
+        "    let [s] = p_writes[..] else {",
+        "    let Some(&s) = p_writes.first() else {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-exit-operands",
+        CASLOOP,
+        "    if *d != p || s <= l || s >= c || !and.is_always() || !operands || !repeats_on_failure {",
+        "    if *d != p || s <= l || s >= c || !and.is_always() || !repeats_on_failure {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-exit-direction",
+        CASLOOP,
+        "    if *d != p || s <= l || s >= c || !and.is_always() || !operands || !repeats_on_failure {",
+        "    if *d != p || s <= l || s >= c || !and.is_always() || !operands {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-exit-and",
+        CASLOOP,
+        "    if *d != p || s <= l || s >= c || !and.is_always() || !operands || !repeats_on_failure {",
+        "    if *d != p || s <= l || s >= c || !operands || !repeats_on_failure {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-exit-before-refresh",
+        CASLOOP,
+        "    if *d != p || s <= l || s >= c || !and.is_always() || !operands || !repeats_on_failure {",
+        "    if *d != p || s <= l || !and.is_always() || !operands || !repeats_on_failure {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-addr-invariant",
+        CASLOOP,
+        "    if (h..=b).any(|q| q != l && code[q].op.dst_regs().iter().any(|r| aregs.contains(r))) {",
+        "    if false {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-carried",
+        CASLOOP,
+        "            .any(|r| *r != cmp && written.contains(r) && !done.contains(r))",
+        "            .any(|r| false && *r != cmp && written.contains(r) && !done.contains(r))",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-pure",
+        CASLOOP,
+        "    if h > l || !(h..b).all(|q| q == l || (code[q].guard.is_always() && pure(&code[q].op))) {",
+        "    if h > l || !(h..b).all(|q| q == l || code[q].guard.is_always()) {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "casretry-unguarded",
+        CASLOOP,
+        "    if h > l || !(h..b).all(|q| q == l || (code[q].guard.is_always() && pure(&code[q].op))) {",
+        "    if h > l || !(h..b).all(|q| q == l || pure(&code[q].op)) {",
+        [],
+        CAS_POLL,
+    ),
+    SrcMutant(
+        "seed-offset",
+        CASLOOP,
+        "        || addr.off != caddr.off",
+        "",
+        [("e_cas_retry", "seedaddr", "sass", [])],
+        CAS_SEED,
+    ),
+    SrcMutant(
+        "seed-base",
+        CASLOOP,
+        "        || addr.base != caddr.base\n",
+        "\n",
+        [],
+        CAS_SEED,
+    ),
+    SrcMutant(
+        "seed-space",
+        CASLOOP,
+        "        || space != cspace",
+        "",
+        [],
+        CAS_SEED,
+    ),
+    SrcMutant(
+        "seed-guard",
+        CASLOOP,
+        "        || !code[s].guard.is_always()",
+        "",
+        [],
+        CAS_SEED,
+    ),
+    SrcMutant(
+        "seed-width",
+        CASLOOP,
+        "        bytes: 4,\n        addr,\n        sync,",
+        "        addr,\n        sync,",
+        [],
+        CAS_SEED,
+    ),
+    SrcMutant(
+        "seed-gap-reads",
+        CASLOOP,
+        "            && !reads(&code[q]).contains(&cr.cmp)",
+        "",
+        [("e_cas_retry", "seedused", "sass", [])],
+        CAS_SEED,
+    ),
+    SrcMutant(
+        "seed-gap-pure",
+        CASLOOP,
+        "            && (pure(&code[q].op) || matches!(code[q].op, Op::Bssy { .. }))",
+        "",
+        [],
+        CAS_SEED,
+    ),
+    SrcMutant(
+        "seed-gap-addr",
+        CASLOOP,
+        "            && !code[q].op.dst_regs().iter().any(|r| aregs.contains(r))",
+        "",
+        [],
+        CAS_SEED,
+    ),
+    SrcMutant(
+        "seed-enter",
+        CASLOOP,
+        "            Op::Bra { target, .. } => inside(*target) && !(q == cr.branch && *target == cr.head),",
+        "            Op::Bra { .. } => false,",
+        [],
+        CAS_SEED,
+    ),
+    # The lifts and their semantics (probes/half_add = GB300 on both fronts).
+    SrcMutant(
+        "half-atom-generic-type",
+        "crates/sass/src/lib.rs",
+        "                op: if has(\"F16x2\") {\n                    AtomOp::AddF16x2",
+        "                op: if !has(\"F16x2\") {\n                    AtomOp::AddF16x2",
+        [],
+        [("ptxv-sim", "fixtures", "probe_half_add_matches_hardware")],
+    ),
+    SrcMutant(
+        "half-atomg-f16x2",
+        "crates/sass/src/lib.rs",
+        "        [\"ADD\", \"F16x2\", \"RN\"] => Some((AtomOp::AddF16x2, 4)),",
+        "        [\"ADD\", \"F16x2\", \"RN\"] => Some((AtomOp::AddBf16x2, 4)),",
+        [],
+        [("ptxv-sim", "fixtures", "probe_half_add_matches_hardware")],
+    ),
+    SrcMutant(
+        "half-atom-f16-semantics",
+        "crates/sim/src/atomic_exec.rs",
+        '        fp::f16_fma_rn(old, 0x3c00, value)\n',
+        '        fp::bf16_fma(old, 0x3c00, value)\n',
+        [],
+        [("ptxv-sim", "fixtures", "probe_half_add_matches_hardware")],
+    ),
+    SrcMutant(
+        "half-ptx-f16x2",
+        "crates/ptx/src/lib.rs",
+        "                    (true, true) => AtomOp::AddF16x2,",
+        "                    (true, true) => AtomOp::AddBf16x2,",
+        [],
+        [("ptxv-sim", "fixtures", "probe_half_add_matches_hardware")],
+    ),
+    # A faulting thread left parked-on: the derived deadlock of e_atom_half exact_size returns.
+    SrcMutant(
+        "fault-release",
+        "crates/sim/src/exec.rs",
+        "                if let Err(e) = self.release_after_stop(&members) {",
+        "                if let Err(e) = Ok::<(), String>(()) {",
+        [("e_atom_half", "exact_size", "sass", [])],
+        [("ptxv-sim", "fixtures", "half_atomics_emulated_and_packed")],
+    ),
+    # MISS 171: two NaNs with different payloads counted bitwise equal again.
+    SrcMutant(
+        "compare-nan-bitwise",
+        "crates/cli/src/compare.rs",
+        "        if ra[i] == rb[i] {",
+        "        if ra[i] == rb[i] || (x.is_nan() && y.is_nan()) {",
+        [],
+        [("ptxv", "bin:ptxv", "compare::tests::nan_payloads_are_not_bitwise_equal")],
+    ),
+    # MISS 174 / 175 (RHA hole A): the exit branch's `.U`, second condition and `.DIV` forms
+    # accepted as a CAS retry loop's plain `@P BRA` again.
+    SrcMutant(
+        "casretry-bra-plain",
+        CASLOOP,
+        "        all: false,\n        cond: None,\n        div: None,\n    } = &code[b].op",
+        "        ..\n    } = &code[b].op",
+        [],
+        CAS_POLL,
+    ),
+    # MISS 171 (RHA): raw codes of two output dtypes compared and counted bitwise equal again.
+    SrcMutant(
+        "compare-dtype-mixed",
+        "crates/cli/src/compare.rs",
+        "    let mixed = dt[0] != dt[1];",
+        "    let mixed = false;",
+        [],
+        [("ptxv", "bin:ptxv", "compare::tests::mixed_dtype_codes_have_no_bitwise_count")],
+    ),
+    # A generic access to the (unmapped) local window reported as a stray global address again.
+    SrcMutant(
+        "fault-local-window",
+        "crates/sim/src/exec.rs",
+        "                            } else if space == Space::Generic\n                                && a >> 32 == LOCAL_GENERIC_BASE >> 32\n",
+        "                            } else if false\n",
+        [],
+        [("ptxv-sim", "fixtures", "generic_half_atomics_on_local_memory_fault")],
     ),
 ]
 
@@ -4995,7 +7658,7 @@ MUTANTS += [
         "round16-equiv-fab",
         "crates/cli/src/equiv.rs",
         "    let marks = run.m.round16_marks();\n",
-        "    let marks = run.m.round16_marks().map(|v| vec![Some(ptxv_case::Round16::Bf16); v.len()]);\n",
+        "    let marks = run.m.round16_marks().map(|v| vec![Some(ptxv_case::Round16::Bf16Next); v.len()]);\n",
         [],
         [ROUND16_EXACT],
     ),
@@ -5102,6 +7765,1976 @@ MUTANTS += [
     ),
 ]
 
+# MISS 160: SASS claims of a kernel whose PTX the PTX front-end refuses, and the PTX forms it now
+# takes (fixtures/c_num_fold_ptxref_f32, c_atom_dec_cas16).
+NUM_PTXREF = ("ptxv", "num_untracked", "sass_claims_need_a_ptx_front_that_runs")
+MUTANTS += [
+    # The SASS front claims alone again where the PTX front-end refuses the PTX (variant
+    # refused: 32 claims at 0.50 ulp, 19 under-claimed).
+    SrcMutant(
+        "num-ptx-refused",
+        "crates/cli/src/main.rs",
+        "                ptx_refused.as_ref().filter(|_| f == \"sass\").map(|why| {\n",
+        "                ptx_refused.as_ref().filter(|_| false).map(|why| {\n",
+        [],
+        [NUM_PTXREF],
+    ),
+    # atom.dec refused by the PTX front-end again (variant good: no PTX run).
+    SrcMutant(
+        "ptx-atom-dec",
+        "crates/ptx/src/lib.rs",
+        "                        | \"dec\"\n",
+        "",
+        [],
+        [NUM_PTXREF, ("ptxv", "gpu_compare", "ptx_atom_dec_and_cas16_match_gb300")],
+    ),
+    # atom.cas.b16 refused again.
+    SrcMutant(
+        "ptx-cas16",
+        "crates/ptx/src/lib.rs",
+        "            let cas16 = bits == 16 && op == AtomOp::Cas;\n",
+        "            let cas16 = false;\n",
+        [],
+        [("ptxv", "gpu_compare", "ptx_atom_dec_and_cas16_match_gb300")],
+    ),
+]
+
+# MISS 161: the ulp figure at +-FLT_MAX (fixtures/c_num_fltmax_f32).
+MUTANTS += [
+    # FLT_MAX's ulp is its distance to +inf again: the even lanes' figure is 0.
+    SrcMutant(
+        "ulp-top-binade",
+        "crates/sim/src/num.rs",
+        "    if a == f32::MAX {\n        return (a - f32::from_bits(a.to_bits() - 1)) as f64;\n    }\n",
+        "",
+        [],
+        [("ptxv", "num_untracked", "ulp_figure_at_flt_max_uses_the_top_binade")],
+    ),
+]
+
+# MISS 162: a calibrated lane is within one ulp only of the other rounding of its sum
+# (fixtures/r1h_nvls_bf16 copied with constructed captures).
+MUTANTS += [
+    # Either neighbour of the simulated value passes again.
+    SrcMutant(
+        "round16-direction",
+        "crates/case/src/lib.rs",
+        "                            mark(e).is_some_and(|m| w == m.other(g)) && ulp_class(&b.dtype, g, w)",
+        "                            mark(e).is_some() && ulp_class(&b.dtype, g, w)",
+        [],
+        [
+            ("ptxv", "gpu_compare", "only_the_other_rounding_of_a_calibrated_lane_is_within_one_ulp"),
+            ("ptxv", "equiv", "multimem_lane_past_the_simulated_value_differs_from_its_capture"),
+            ("ptxv-case", "gpu_compare", "only_the_other_rounding_of_the_sum_is_within_one_ulp"),
+            ROUND16_CASE,
+        ],
+    ),
+    # The other rounding taken on the wrong side: a lane rounded toward zero is marked as if
+    # rounded away.
+    SrcMutant(
+        "round16-side",
+        "crates/sim/src/multimem.rs",
+        "                calibrated[i] = Some(!up);\n",
+        "                calibrated[i] = Some(up);\n",
+        [],
+        [
+            ("ptxv", "gpu_compare", "only_the_other_rounding_of_a_calibrated_lane_is_within_one_ulp"),
+            ("ptxv", "equiv", "multimem_lane_past_the_simulated_value_differs_from_its_capture"),
+            ROUND16_LANES,
+        ],
+    ),
+]
+
+# MISS 177 (defense in depth): an output whose node does not hold its simulated bits is untracked
+# in equiv and errdist (fixtures/c_equiv_atom64, the unit test).
+EQUIV_STALE = ("ptxv", "equiv", "stale_output_nodes_count_as_untracked")
+MUTANTS += [
+    # Stale nodes kept: an output's node is used whatever value it holds.
+    SrcMutant(
+        "equiv-node-bits",
+        "crates/cli/src/equiv.rs",
+        "            let stale = node.is_some_and(|n| nodes[n as usize].hw != *bits);\n",
+        "            let stale = false;\n",
+        [],
+        [("ptxv", "bin:ptxv", "equiv::captured_tests::stale_output_nodes_are_dropped"), EQUIV_STALE],
+    ),
+]
+
+# MISS 177: every word an atomic covers loses its node in equiv and errdist
+# (fixtures/c_equiv_atom_words; the probes whose stale node equals the output at the captured inputs
+# are past the node check, so only the fix catches them).
+EQUIV_WORDS = ("ptxv", "equiv", "every_word_an_atomic_covers_loses_its_node")
+MUTANTS += [
+    # Only the word at the atomic's address loses its node again: ref_exch64same and
+    # ref_cas64maybe are L0 PROVEN against cand_copy.
+    SrcMutant(
+        "equiv-atom-words",
+        "crates/sim/src/num.rs",
+        "                let words = ((k.2 & !3)..k.2 + a.bytes as u64).step_by(4);\n",
+        "                let words = (k.2..k.2 + 1).step_by(4);\n",
+        [],
+        [EQUIV_WORDS],
+    ),
+    # A 16-bit atomic on a word's upper half leaves the word's node again (num_atom_half):
+    # ref_bf16hisame is L0 PROVEN.
+    SrcMutant(
+        "equiv-atom-bf16-word",
+        "crates/sim/src/num.rs",
+        "        if !ns.rounding_taint {\n            let w = (k.0, k.1, k.2 & !3);\n",
+        "        if false {\n            let w = (k.0, k.1, k.2 & !3);\n",
+        [],
+        [EQUIV_WORDS],
+    ),
+]
+
+# MISS 205: an st.async word takes the stored value's numerics node and taint (probes/stasync_num_shadow,
+# fixtures/c_num_stasync_f32).
+STASYNC_EQ = ("ptxv", "equiv", "stasync_words_take_the_stored_value")
+STASYNC_NUM = ("ptxv", "num_untracked", "stasync_words_take_the_stored_value_node")
+MUTANTS += [
+    # The local st.async (one step) writes no node again: c1_ref_stasyncw is L0 PROVEN against
+    # cand_copy, and num claims abs_err 0 at c_num_stasync_f32's rounded elements.
+    SrcMutant(
+        "stasync-num-local",
+        "crates/sim/src/exec.rs",
+        "                self.num_st(t, v, loc, &data, &origins, pc);\n                if self.round16.is_some() {\n                    self.round16_st(t, v, n, &[loc]);\n",
+        "                if self.round16.is_some() {\n                    self.round16_st(t, v, n, &[loc]);\n",
+        [],
+        [STASYNC_EQ, STASYNC_NUM],
+    ),
+    # A remote st.async lands without its value's node and taint again: c2_ref_rsaw and
+    # c2_ref_rsaz are L0 PROVEN.
+    SrcMutant(
+        "stasync-num-remote",
+        "crates/sim/src/exec.rs",
+        "                if let Some(snap) = l.snaps.get(k) {\n",
+        "                if let Some(snap) = l.snaps.get(k).filter(|_| false) {\n",
+        [],
+        [STASYNC_EQ],
+    ),
+]
+
+
+# S-INIT: the success predicate of a compare-and-swap loop.
+MUTANTS += [
+    # `ATOMS.CAST.SPIN P` over undefined old bytes writes P as defined again
+    # (fixtures/s_init_cas_spin: the loop's back branch no longer reads an undefined P).
+    SrcMutant(
+        "cas-spin-pred-defined",
+        "crates/sim/src/exec.rs",
+        '                    if old_undef && *op == AtomOp::CasSpin {\n                        self.stale = Some(None);\n                    }\n                    self.wp(t, *p, outcome.predicate);',
+        '                    self.wp(t, *p, outcome.predicate);',
+        [],
+        [("ptxv-sim", "fixtures", "cas_spin_success_predicate_of_undefined_bytes_is_undefined")],
+    ),
+]
+
+
+# MISS 204 (interim): an output match on a case whose output check is vacuous (no compared byte of
+# any output differs from the buffer's initial bytes) is no evidence: fb/kernel_db records it as
+# null.
+VACUOUS_PY = ("fb/kernel_db", "test_run_collect.py", "VacuousOutputCheck")
+MUTANTS += [
+    # run.py `apply_output_check`: the match stays true again.
+    SrcMutant(
+        "kdb-vacuous-match-kept",
+        "fb/kernel_db/run.py",
+        '            chk["output_matches_gpu"] = None\n',
+        "            pass\n",
+        [],
+        py=[VACUOUS_PY],
+    ),
+    # run.py `output_unwritten`: expect_offset ignored (a stored prefix compared from byte 0).
+    SrcMutant(
+        "kdb-vacuous-offset",
+        "fb/kernel_db/run.py",
+        '            off = int(b.get("expect_offset", 0) or 0)\n            if _differs(',
+        "            off = 0\n            if _differs(",
+        [],
+        py=[VACUOUS_PY],
+    ),
+    # run.py `_differs`: expect_ignore ranges compared like any other byte.
+    SrcMutant(
+        "kdb-vacuous-ignore",
+        "fb/kernel_db/run.py",
+        "                            if not any(s <= at < e for s, e in ranges):\n"
+        "                                return True\n"
+        "                done += len(a)\n"
+        "                step = min(step * 4, 1 << 24)\n",
+        "                            return True\n"
+        "                done += len(a)\n"
+        "                step = min(step * 4, 1 << 24)\n",
+        [],
+        py=[VACUOUS_PY],
+    ),
+    # run.py `output_unwritten`: the [[devices]] entries' outputs are not read.
+    SrcMutant(
+        "kdb-vacuous-devices",
+        "fb/kernel_db/run.py",
+        '    for scope in [m] + list(m.get("devices") or []):\n',
+        "    for scope in [m]:\n",
+        [],
+        py=[VACUOUS_PY],
+    ),
+    # run.py `output_unwritten`: an undef output counts as unwritten.
+    SrcMutant(
+        "kdb-vacuous-undef",
+        "fb/kernel_db/run.py",
+        "            else:\n                return n, o\n            off = int(",
+        "            else:\n                f = None\n            off = int(",
+        [],
+        py=[VACUOUS_PY],
+    ),
+    # run.py `store_local`: a cluster path is not re-rooted under this machine's store.
+    SrcMutant(
+        "kdb-vacuous-store-local",
+        "fb/kernel_db/run.py",
+        '    if d and not os.path.isdir(d) and "/ptxv-kdb/" in str(d):\n',
+        "    if False:\n",
+        [],
+        py=[VACUOUS_PY],
+    ),
+    # export_records.py `apply_output_checks`: check_ptx is exported as stored again.
+    SrcMutant(
+        "kdb-vacuous-export-ptx",
+        "fb/kernel_db/export_records.py",
+        "    if isinstance(cp, dict):\n        targets.append(",
+        "    if False:\n        targets.append(",
+        [],
+        py=[VACUOUS_PY],
+    ),
+]
+
+# MISS 190: the verdict cache key covers the CUDA tools ptxv runs (CUDA_HOME's ptxas, nvdisasm,
+# cuobjdump), so a verdict computed with one toolkit does not serve another (probes/
+# miss190_vcache_cuda_home).
+MUTANTS += [
+    # vcache.rs `key_with`: the toolkit is out of the key again.
+    SrcMutant(
+        "vcache-toolkit",
+        "crates/cli/src/vcache.rs",
+        "    eat_toolkit(&mut h, cuda);\n",
+        "",
+        [],
+        [("ptxv", "bin:ptxv", "vcache::tests::key_follows_the_toolkit")],
+    ),
+]
+
+# MISS 191: a check row names the launch order its verdict was computed under, with the reading
+# of an unknown order (probes/miss191_order_reading).
+MUTANTS += [
+    # main.rs `order_row`: an unknown order reads as concurrent in the row, whatever the setting.
+    SrcMutant(
+        "order-row-reading",
+        "crates/cli/src/main.rs",
+        '            Ok("ordered") => "ordered",\n',
+        '            Ok("ordered") => "concurrent",\n',
+        [],
+        [("ptxv", LO_CLI, "check_rows_record_the_reading_of_an_unknown_order")],
+    ),
+    # fb/kernel_db/run.py `parse_check`: the row's launch order is not stored with the check.
+    SrcMutant(
+        "kdb-order-reading",
+        "fb/kernel_db/run.py",
+        '        chk["launch_order"] = row["launch_order"]\n',
+        "        pass\n",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "LaunchOrderReading")],
+    ),
+]
+
+# MISS 189: an unknown order of several launches under the strict reading is also checked in the
+# list's order, for its deadlocks (probes/miss189_order_hang: good is deadlock, clean before).
+L189 = [
+    ("../probes/miss189_order_hang", "good", "ptx", []),
+    ("../probes/miss189_order_hang", "good", "sass", []),
+]
+L189_SIM = ("ptxv-sim", "fixtures", "miss189_order_hang_list_order_deadlock")
+L189_PASS = ("ptxv-sim", "fixtures", "miss189_list_order_pass_outcomes")
+L189_DUP = ("ptxv-sim", "fixtures", "miss189_list_order_deadlock_the_strict_reading_has_is_not_added")
+MUTANTS += [
+    # sim lib.rs `serialized_order_deadlocks`: no deadlock of the list's order joins the verdict.
+    SrcMutant(
+        "list-order-deadlocks",
+        "crates/sim/src/lib.rs",
+        '    for f in vo.findings.iter().filter(|f| f.kind == "deadlock") {\n',
+        '    for f in vo.findings.iter().filter(|f| f.kind == "deadlock" && false) {\n',
+        L189,
+        [L189_SIM, L189_PASS],
+    ),
+    # the list's order built under the strict reading again: the pass sees the overlap.
+    SrcMutant(
+        "list-order-reading",
+        "crates/sim/src/lib.rs",
+        "    let launch = build_launch_reading(case, k, true)?;\n",
+        "    let launch = build_launch_reading(case, k, false)?;\n",
+        L189,
+        [L189_SIM],
+    ),
+    # a deadlock under the list's order keeps E-WELLSYNC: the verdict stays "certified".
+    SrcMutant(
+        "list-order-wellsync",
+        "crates/sim/src/lib.rs",
+        '        v.assumptions.retain(|a| a != "E-WELLSYNC");\n',
+        "        v.assumptions.retain(|_| true);\n",
+        [],
+        [L189_PASS, ("ptxv", "compare", "compare_list_order_deadlock_blocks")],
+    ),
+    # a pass that does not finish leaves the verdict complete.
+    SrcMutant(
+        "list-order-incomplete",
+        "crates/sim/src/lib.rs",
+        "    } else if !vo.complete {\n        v.complete = false;\n",
+        "    } else if !vo.complete {\n",
+        [],
+        [L189_PASS],
+    ),
+    # a deadlock the strict reading reports too joins the verdict again, as `list-order:`
+    # (probes/miss189_dupsig).
+    SrcMutant(
+        "list-order-strict-dup",
+        "crates/sim/src/lib.rs",
+        "        if v.findings.iter().any(|x| x.sig == f.sig) {\n"
+        "            strict += 1;\n"
+        "            continue;\n"
+        "        }\n",
+        "",
+        [],
+        [L189_DUP],
+    ),
+    # main.rs `cmd_check`: the pass is not run.
+    SrcMutant(
+        "check-list-order",
+        "crates/cli/src/main.rs",
+        "            ptxv_sim::serialized_order_deadlocks(&mut verdict, case, &k, &mut |m| {\n"
+        '                check(&|| m.clone(), "list order: ")\n'
+        "            })?;\n",
+        "",
+        L189,
+    ),
+    # equiv.rs `prepare_with` (equiv's and errdist's precondition): the pass is not run.
+    SrcMutant(
+        "equiv-list-order",
+        "crates/cli/src/equiv.rs",
+        "        ptxv_sim::serialized_order_deadlocks(v, &case, &kern, &mut |m| run(m))\n",
+        "        let _ = (v, run);\n        Ok(())\n",
+        [],
+        [("ptxv", LO_CLI, "equiv_precondition_checks_the_list_order_for_deadlocks")],
+    ),
+    # compare.rs `side`: the pass is not run.
+    SrcMutant(
+        "compare-list-order",
+        "crates/cli/src/compare.rs",
+        "            ptxv_sim::serialized_order_deadlocks(&mut v, &case, &k, &mut |m| {\n"
+        "                verdict_of(&|| m.clone()).0\n"
+        "            })?;\n",
+        "            let _ = &mut v;\n",
+        [],
+        [("ptxv", "compare", "compare_list_order_deadlock_blocks")],
+    ),
+]
+
+
+# MISS 142: an f32 atomic add flushes subnormals in global memory only; the SASS generic f32 add
+# is not performed at a shared-window address, and QSPC answers for the shared window
+# (probes/atom_f32_space, probes/qspc_window, fixtures/c_equiv_atomic_space). Each mutant
+# flushes a shared-memory add, performs the generic add there, or misanswers a QSPC.
+ATOM_SPACE_PROBES = [("ptxv-sim", "fixtures", "probe_atom_f32_space_matches_hardware")]
+ATOM_SPACE_EQUIV = [("ptxv", "equiv", "shared_atomic_adds_do_not_flush")]
+QSPC_PROBE = [("ptxv-sim", "fixtures", "probe_qspc_window_matches_hardware")]
+MUTANTS += [
+    # Every f32 atomic add flushing again (the executor's value).
+    SrcMutant(
+        "atom-shared-flush",
+        "crates/sim/src/exec.rs",
+        '                        == ptxv_memory_write::atomic_exec::Operation::AddF32Ftz\n                        && matches!(loc, Loc::Shared { .. })\n',
+        '                        == ptxv_memory_write::atomic_exec::Operation::AddF32Ftz\n                        && false\n',
+        [],
+        ATOM_SPACE_PROBES
+        + [("ptxv-sim", "wellsync", "fadd_orders_in_shared_memory_keep_subnormals")]
+        + ATOM_SPACE_EQUIV,
+    ),
+    # The numerics node of a shared-memory add marked flushing: the PTX pairs are L0 again.
+    SrcMutant(
+        "atom-shared-numftz",
+        "crates/sim/src/exec.rs",
+        "                        n as u32,\n                        !matches!(loc, Loc::Shared { .. }),\n                    ));",
+        "                        n as u32,\n                        true,\n                    ));",
+        [],
+        ATOM_SPACE_EQUIV,
+    ),
+    # The SASS generic ATOM.E.ADD.F32.FTZ performed at a shared-window address (P true, the
+    # fallback skipped).
+    SrcMutant(
+        "atom-generic-shm-performed",
+        "crates/sim/src/exec.rs",
+        "                if self.k.front != Front::Ptx\n                    && *space == Space::Generic\n                    && *op != AtomOp::CasSpin",
+        "                if false\n                    && *space == Space::Generic\n                    && *op != AtomOp::CasSpin",
+        [],
+        ATOM_SPACE_EQUIV,
+    ),
+    # QSPC.E.D only for the CTA's own rank.
+    SrcMutant(
+        "qspc-cluster-own",
+        "crates/sim/src/exec.rs",
+        "                    *cluster || target == me",
+        "                    target == me",
+        [],
+        QSPC_PROBE,
+    ),
+    # QSPC.E.S for any rank of the cluster.
+    SrcMutant(
+        "qspc-cta-any",
+        "crates/sim/src/exec.rs",
+        "                    *cluster || target == me",
+        "                    true",
+        [],
+        QSPC_PROBE + ATOM_SPACE_PROBES,
+    ),
+    # C-FADD's fold over the orders flushing in shared memory too.
+    SrcMutant(
+        "cfadd-shared-flush",
+        "crates/sim/src/wellsync.rs",
+        "                    key.0 != 0,\n                );",
+        "                    true,\n                );",
+        [],
+        [("ptxv-sim", "wellsync", "fadd_orders_in_shared_memory_keep_subnormals")],
+    ),
+]
+
+
+# MISS 143: only flushing fp32 atomic adds carry the absolute flush term, and L2 compares the
+# absolute terms (fixtures/c_equiv_atomic_ftz reversed pairs). Each mutant reports a flushing
+# candidate L2 against a non-flushing reference again.
+L2_ABS_TESTS = [
+    ("ptxv-sim", "lib", "equiv::soundness_tests::l2_compares_the_flush_term"),
+    ("ptxv", "equiv", "l2_needs_the_flush_term"),
+]
+MUTANTS += [
+    # The flush term charged to every add of the chain, flushing or not.
+    SrcMutant(
+        "abs-ftz-all-adds",
+        "crates/sim/src/equiv.rs",
+        "                let nf = vals.iter().filter(|v| v.1).count();",
+        "                let nf = vals.len();",
+        [],
+        L2_ABS_TESTS,
+    ),
+    # L2 without the absolute terms.
+    SrcMutant(
+        "l2-abs-off",
+        "crates/sim/src/equiv.rs",
+        "        if cc.abs_extra > cr.abs_extra {",
+        "        if false && cc.abs_extra > cr.abs_extra {",
+        [],
+        L2_ABS_TESTS,
+    ),
+]
+
+
+# MISS 144: a narrow-format tensor-core step whose f32 result leaves the range is reported as
+# not modeled (GB300 gives +-Inf; probes/mma_bs/ovf). Each mutant lets such a run stay clean or
+# reports it only through the next step's accumulator.
+MMA_OVF_TESTS = [("ptxv-sim", "fixtures", "probe_mma_bs_overflow_is_unmodeled")]
+MUTANTS += [
+    # Round toward zero saturating to +-FLT_MAX again.
+    SrcMutant(
+        "mma-ovf-saturate",
+        "crates/sim/src/mma_lp.rs",
+        "    let val = if qe + tgt.mbits > tgt.emax {\n        f64::INFINITY\n    } else {",
+        "    let val = if qe + tgt.mbits > tgt.emax {\n        if rz {\n            (2.0 - 2f64.powi(-tgt.mbits)) * 2f64.powi(tgt.emax)\n        } else {\n            f64::INFINITY\n        }\n    } else {",
+        [],
+        MMA_OVF_TESTS,
+    ),
+    # The overflowing step itself not reported.
+    SrcMutant(
+        "mma-ovf-unreported",
+        "crates/sim/src/exec.rs",
+        "        if outside.is_none() && !f16_d && results.iter().any(|&w| f32::from_bits(w).is_infinite()) {",
+        "        if false && results.iter().any(|&w| f32::from_bits(w).is_infinite()) {",
+        [],
+        MMA_OVF_TESTS,
+    ),
+]
+
+
+# MISS 145: compare's per-output stats carry the largest absolute term and every headline form
+# prints it (the unit test and fixtures/c_equiv_atomic_ftz through `ptxv compare`). Each mutant
+# drops it from the stats or from the text again.
+HEADLINE_ABS_TESTS = [
+    ("ptxv", "bin:ptxv", "compare::tests::the_headline_carries_the_absolute_term"),
+    ("ptxv", "compare", "compare_headline_carries_the_absolute_term"),
+]
+MUTANTS += [
+    # The stats without the absolute term (report.json and every headline).
+    SrcMutant(
+        "stats-abs-off",
+        "crates/cli/src/compare.rs",
+        "        .filter(|o| o[\"bound_u\"].is_f64())\n        .filter_map(|o| o[\"abs_extra\"].as_f64())",
+        "        .filter(|o| o[\"bound_u\"].is_f64() && false)\n        .filter_map(|o| o[\"abs_extra\"].as_f64())",
+        [],
+        HEADLINE_ABS_TESTS,
+    ),
+    # The headline forms without " + A".
+    SrcMutant(
+        "headline-abs-off",
+        "crates/cli/src/compare.rs",
+        "        Some(a) if a > 0.0 => format!(\" + {}\", up_e(a, 1)),",
+        "        Some(a) if false && a > 0.0 => format!(\" + {}\", up_e(a, 1)),",
+        [],
+        HEADLINE_ABS_TESTS,
+    ),
+]
+
+MUTANTS += [
+    # explore.rs `keep_found`: a cut rerun that found every earlier finding itself says again
+    # "0 finding(s) ... are kept, unconfirmed by the plain model".
+    SrcMutant(
+        "keep-found-zero-kept-note",
+        "crates/sim/src/explore.rs",
+        "    w.notes.push(if kept == 0 {\n",
+        "    w.notes.push(if kept == usize::MAX {\n",
+        [],
+        [("ptxv-sim", "lib", "explore::bar_cut_tests::keep_found_says_whether_the_rerun_found_everything")],
+    ),
+]
+
+MUTANTS += [
+    # run.py `keep_errdist_revs`: a recheck leaves errdist results stored without a ptxv_rev
+    # unstamped again, so the new check's rev judges them.
+    SrcMutant(
+        "kdb-run-recheck-errdist-unstamped",
+        "fb/kernel_db/run.py",
+        "            n[\"ptxv_rev\"] = rev\n",
+        "            pass\n",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_recheck_keeps_the_errdist_builds")],
+    ),
+    # run.py `audited_check_rev`: the stamp is the replaced check's recorded rev again, not the
+    # rev ptxv_rev_audit.json puts in its place, which the export judged the results at.
+    SrcMutant(
+        "kdb-run-recheck-errdist-unaudited",
+        "fb/kernel_db/run.py",
+        "    export_records.apply_rev_fix(view, _rev_fixes(path, version))\n",
+        "    pass\n",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_recheck_stamps_the_audited_rev")],
+    ),
+    # run.py `audited_check_rev`: the audit rewrites the record's own check_ptx (kept beside the
+    # new check) instead of a copy.
+    SrcMutant(
+        "kdb-run-audit-rewrites-the-record",
+        "fb/kernel_db/run.py",
+        "            view[k] = dict(rec[k])  # apply_rev_fix rewrites the check it is given\n",
+        "            view[k] = rec[k]\n",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_recheck_stamps_the_audited_rev")],
+    ),
+    # run.py `run_check`: `run.py check` replaces the check without stamping them.
+    SrcMutant(
+        "kdb-run-check-errdist-unstamped",
+        "fb/kernel_db/run.py",
+        "    keep_errdist_revs(rec)\n    rec[\"check\"] = apply_output_check(chk, case)\n",
+        "    rec[\"check\"] = apply_output_check(chk, case)\n",
+        [],
+        py=[("fb/kernel_db", "test_run_collect.py", "test_recheck_keeps_the_errdist_builds")],
+    ),
+]
+
+MUTANTS += [
+    # soundness.py `race_parts`: a record with checks_extra but no check or check_ptx lists only
+    # the entries open at int7's tip again, not those open at its extras' own builds.
+    SrcMutant(
+        "kdb-snd-extras-only-tip-entries",
+        "fb/kernel_db/soundness.py",
+        "            at_check = at_check.union(*(t for _, t, _ in own))\n",
+        "            at_check, own = at_check.union(*(t for _, t, _ in own)), []\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_checks_extra_only_is_unknown")],
+    ),
+]
+
+MUTANTS += [
+    # wellsync.rs `check_certified_inner`: the certificate fallback explores inside a second
+    # smem::two_pass again (the weak pass twice, the S-SMEM-STRONG note twice).
+    SrcMutant(
+        "certify-fallback-two-pass-twice",
+        "crates/sim/src/wellsync.rs",
+        "        let mut v = crate::explore::explore(m0, max_states);\n        v.notes\n",
+        "        let mut v = crate::smem::two_pass(m0, |m| crate::explore::explore(m, max_states));\n"
+        "        v.notes\n",
+        [],
+        [("ptxv-sim", "fixtures", "certify_fallback_runs_each_smem_pass_once")],
+    ),
+]
+
+MUTANTS += [
+    # explore.rs `explore_one_models_with`: with the first-race option, the verdict no longer
+    # says that the race found with the model reductions is unconfirmed by the plain model.
+    SrcMutant(
+        "first-race-unconfirmed-note-dropped",
+        "crates/sim/src/explore.rs",
+        "    if m0.race_stop\n        && (peek_model || vip_model && vip_can_poll(&m0))\n",
+        "    if !m0.race_stop\n        && (peek_model || vip_model && vip_can_poll(&m0))\n",
+        [],
+        [("ptxv-sim", "fixtures", "group_first_race_option_says_its_race_is_unconfirmed")],
+    ),
+    # explore.rs `explore_one_models_with`: the note again whenever value-insensitive polls are
+    # on, also for a kernel with no load they can act on (its first search is the plain model's).
+    SrcMutant(
+        "first-race-note-without-reductions",
+        "crates/sim/src/explore.rs",
+        "        && (peek_model || vip_model && vip_can_poll(&m0))\n",
+        "        && (peek_model || vip_model)\n",
+        [],
+        [("ptxv-sim", "fixtures", "group_first_race_option_plain_model_race_is_not_unconfirmed")],
+    ),
+    # explore.rs `vip_can_poll`: every load counts as one value-insensitive polls can act on.
+    SrcMutant(
+        "vip-can-poll-any-load",
+        "crates/sim/src/explore.rs",
+        "    m.k.code.iter().any(|i| crate::spin::strong_poll(&i.op))\n",
+        "    m.k.code.iter().any(|i| matches!(i.op, ptxv_ir::Op::Ld { .. }))\n",
+        [],
+        [("ptxv-sim", "fixtures", "group_first_race_option_plain_model_race_is_not_unconfirmed")],
+    ),
+]
+
+
+# E-BAR-OVER's walks and SASS `@P BRA.U` (MISS 141).
+BRAU_WALK = ("ptxv-sim", "fixtures", "e_barover_walk_follows_both_edges_of_bra_u")
+MUTANTS += [
+    # The plain walk decides `@P BRA.U` by the thread's own guard again (fixtures/
+    # e_barover_brau BRAU clean).
+    SrcMutant(
+        "barwalk-plain-brau-own-guard",
+        "crates/sim/src/explore.rs",
+        "                // split, so the thread's own guard does not decide it: both edges (MISS 141).\n"
+        "                let decided = match &i.op {\n"
+        "                    Op::Bra {\n"
+        "                        cond: None,\n"
+        "                        any: false,\n"
+        "                        tid0_falls: false,\n"
+        "                        all: false,\n",
+        "                // split, so the thread's own guard does not decide it: both edges (MISS 141).\n"
+        "                let decided = match &i.op {\n"
+        "                    Op::Bra {\n"
+        "                        cond: None,\n"
+        "                        any: false,\n"
+        "                        tid0_falls: false,\n",
+        [("e_barover_brau", "BRAU", "sass", [])],
+        [BRAU_WALK],
+    ),
+    # The register-id walk does (fixtures/e_barover_brau_regid BRAU clean).
+    SrcMutant(
+        "barwalk-regs-brau-own-guard",
+        "crates/sim/src/explore.rs",
+        "                // (`@P BRA.U`: both edges, as in the plain walk.)\n"
+        "                let decided = match &i.op {\n"
+        "                    Op::Bra {\n"
+        "                        cond: None,\n"
+        "                        any: false,\n"
+        "                        tid0_falls: false,\n"
+        "                        all: false,\n",
+        "                // (`@P BRA.U`: both edges, as in the plain walk.)\n"
+        "                let decided = match &i.op {\n"
+        "                    Op::Bra {\n"
+        "                        cond: None,\n"
+        "                        any: false,\n"
+        "                        tid0_falls: false,\n",
+        [("e_barover_brau_regid", "BRAU", "sass", [])],
+        [BRAU_WALK],
+    ),
+]
+
+
+# SASS `BRA.U P[, UPT]` (a thread predicate as the operand; MISS 133).
+MUTANTS += [
+    # Per lane again (probes/bra_u operand forms: pp_u / upt_u differ from GB300 where P is
+    # mixed).
+    SrcMutant(
+        "bra-u-operand-per-lane",
+        "crates/sass/src/lib.rs",
+        'all: has("U") && !has("ANY") && c.reg.is_some_and(|r| r.file == File::P),',
+        "all: false,",
+        [],
+        [
+            ("ptxv-sim", "fixtures", "probe_bra_u_operand_forms_match_hardware"),
+            ("ptxv-sass", "lib", "tests::bra_u_operand_all_form_only_for_thread_predicates"),
+        ],
+    ),
+    # A uniform predicate operand (`BRA.U [!]UPn`, `[!]UPT`) all-form too, as before the
+    # restriction to thread predicates.
+    SrcMutant(
+        "bra-u-operand-uniform-all",
+        "crates/sass/src/lib.rs",
+        'all: has("U") && !has("ANY") && c.reg.is_some_and(|r| r.file == File::P),',
+        'all: has("U") && !has("ANY"),',
+        [],
+        [("ptxv-sass", "lib", "tests::bra_u_operand_all_form_only_for_thread_predicates")],
+    ),
+]
+
+
+# E-CPASYNC: a cp.async's global load (MISS 117).
+MUTANTS += [
+    # Checked at issue only, as the issuer (fixtures/e_cpasync_src_war BAR / OWN clean).
+    SrcMutant(
+        "cpasync-src-issue-only",
+        "crates/sim/src/exec.rs",
+        "self.recheck_read(actor, &vc, c.pc, src, c.data.len());",
+        "let _ = src;",
+        [
+            ("e_cpasync_src_war", "BAR", "ptx", []),
+            ("e_cpasync_src_war", "OWN", "sass", []),
+        ],
+        [("ptxv-sim", "fixtures", "cpasync_source_load_may_happen_until_the_wait")],
+    ),
+]
+
+
+# E-CPASYNC-MBAR: what the arrive-on of cp.async.mbarrier.arrive releases (MISS 118).
+MUTANTS += [
+    # The issuer's whole clock again (fixtures/e_cpasync_arrive_release WHOLE / GLOBAL clean).
+    SrcMutant(
+        "cparrive-whole-clock",
+        "crates/sim/src/exec.rs",
+        '                self.mbar_note_async_own_with(cta, mbar, op.issuer, op.actor, &op.vc, prior);\n',
+        '                let _ = prior;\n                self.mbar_note_async(cta, mbar, op.issuer, op.actor, &op.vc);\n',
+        [
+            ("e_cpasync_arrive_release", "WHOLE", "ptx", []),
+            ("e_cpasync_arrive_release", "GLOBAL", "sass", []),
+        ],
+        [("ptxv-sim", "fixtures", "cpasync_arrive_on_releases_only_the_copies")],
+    ),
+    # The arrive-on releases its own copies only again, not the thread's prior copies that had
+    # landed at its issue (fixtures/e_cpasync_arrive_prior good races on the PTX front).
+    SrcMutant(
+        "cparrive-no-prior",
+        "crates/sim/src/exec.rs",
+        "        vc_join(&mut own, also);\n",
+        "        let _ = also;\n",
+        [("e_cpasync_arrive_prior", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "cpasync_arrive_on_releases_prior_copies")],
+    ),
+    # The arrive-on at its copies' epoch again: a later arrive-on's release of those copies
+    # covers this arrive-on too (fixtures/e_cpasync_arrive_order NOWAIT certifies clean).
+    SrcMutant(
+        "cparrive-prior-covers-arrive",
+        "crates/sim/src/exec.rs",
+        "                vc_raise(&mut vc, actor, 2);\n",
+        "                vc_raise(&mut vc, actor, 1);\n",
+        [("e_cpasync_arrive_order", "NOWAIT", "ptx", ["--certify"])],
+        [("ptxv-sim", "fixtures", "cpasync_arrive_on_is_not_ordered_after_an_earlier_arrive_on")],
+    ),
+    # An arrive takes only the copies landed at its issue again, not those of its thread's
+    # earlier arrive operations still in flight (fixtures/e_cpasync_arrive_inflight good races).
+    SrcMutant(
+        "cparrive-prior-landed-only",
+        "crates/sim/src/exec.rs",
+        "                    if o.issuer == t as u32 && matches!(o.kind, AsyncKind::CpArrive { .. }) {\n"
+        "                        vc_join(&mut prior, &vc_single(o.actor, 1));\n",
+        "                    if o.issuer == t as u32 && matches!(o.kind, AsyncKind::CpArrive { .. }) && false {\n"
+        "                        vc_join(&mut prior, &vc_single(o.actor, 1));\n",
+        [("e_cpasync_arrive_inflight", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "cpasync_arrive_on_releases_prior_copies_in_flight")],
+    ),
+    # The earlier arrive operations' copies still pending do not land before the later
+    # arrive-on: it releases their epoch before their writes exist (good: the reader of slot A
+    # can run before the copy lands).
+    SrcMutant(
+        "cparrive-no-early-landing",
+        "crates/sim/src/exec.rs",
+        "            let w = std::mem::take(w);\n"
+        "            if !w.is_empty() {\n"
+        "                self.cp_land(issuer as usize, actor, 1, w);\n"
+        "            }\n",
+        "            let _ = (w, actor);\n",
+        [("e_cpasync_arrive_inflight", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "cpasync_arrive_on_releases_prior_copies_in_flight")],
+    ),
+    # The prior copies read at the completion instead of the issue: copies retired after the
+    # arrive (by wait_group) are released too (fixtures/e_cpasync_arrive_inflight LATER clean).
+    SrcMutant(
+        "cparrive-prior-at-completion",
+        "crates/sim/src/exec.rs",
+        '                self.mbar_note_async_own_with(cta, mbar, op.issuer, op.actor, &op.vc, prior);\n',
+        '                let _ = prior;\n                let prior = self.threads[op.issuer as usize].cp_done.clone();\n                self.mbar_note_async_own_with(cta, mbar, op.issuer, op.actor, &op.vc, &prior);\n',
+        [
+            ("e_cpasync_arrive_inflight", "LATER", "ptx", []),
+            ("e_cpasync_arrive_inflight", "LATER", "sass", []),
+        ],
+        [("ptxv-sim", "fixtures", "cpasync_arrive_on_releases_prior_copies_in_flight")],
+    ),
+    # The over-arrival test on the memory clock again, not the order of events: DPOR hands
+    # fixtures/e_cpasync_arrive_order good (SASS) to the stateful explorer.
+    SrcMutant(
+        "mbar-late-memory-clock",
+        "crates/sim/src/exec.rs",
+        "            !vc_covers(vc, prev) && !vc_covers(&self.order_vc_of(actor, vc), prev)\n",
+        "            let _ = actor;\n            !vc_covers(vc, prev)\n",
+        [],
+        [("ptxv-sim", "fixtures", "mbar_late_updates_judged_by_the_order_of_events")],
+    ),
+]
+
+
+# S-MBAR-SCOPE: what a bulk copy's complete-tx releases (MISS 119).
+MUTANTS += [
+    # The issuer's whole clock again (fixtures/e_bulk_ctx_release RELAXED / GLOBAL clean).
+    SrcMutant(
+        "bulk-ctx-whole-clock",
+        "crates/sim/src/exec.rs",
+        '                        self.mbar_note_async_own(cta, mbar, op.issuer, op.actor, &op.vc);\n',
+        '                        self.mbar_note_async(cta, mbar, op.issuer, op.actor, &op.vc);\n',
+        [
+            ("e_bulk_ctx_release", "RELAXED", "ptx", []),
+            ("e_bulk_ctx_release", "GLOBAL", "sass", []),
+        ],
+        [("ptxv-sim", "fixtures", "bulk_complete_tx_releases_only_the_copy")],
+    ),
+]
+
+
+# E-PAIR: tcgen05.alloc.cta_group::2 as a rendezvous of a warp of each CTA (MISS 179).
+MUTANTS += [
+    # Each CTA allocates on its own again: the peer's alloc races with the leader's paired MMA
+    # (fixtures/r1c_2sm good on the PTX front), and ONESIDED runs to the end.
+    SrcMutant(
+        "pair-alloc-per-cta",
+        "crates/ptx/src/lib.rs",
+        "                        ncols: lw.val(op_n(1)?)?,\n                        pair,\n",
+        "                        ncols: lw.val(op_n(1)?)?,\n                        pair: pair && false,\n",
+        [("e_tmem_pair_alloc", "ONESIDED", "ptx", [])],
+        [
+            ("ptxv-sim", "fixtures", "tmem_pair_alloc_is_a_rendezvous"),
+            ("ptxv-sim", "fixtures", "r1c_2sm_good"),
+        ],
+    ),
+    # The first warp runs on without waiting for its peer (fixtures/e_tmem_pair_alloc ONESIDED
+    # does not deadlock; good reads an address not written yet).
+    SrcMutant(
+        "pair-alloc-first-runs-on",
+        "crates/sim/src/exec.rs",
+        "            return Ok(Flow::Stay);\n        };\n        if m != n {",
+        "            return Ok(Flow::Next);\n        };\n        if m != n {",
+        [("e_tmem_pair_alloc", "ONESIDED", "ptx", [])],
+        [("ptxv-sim", "fixtures", "tmem_pair_alloc_is_a_rendezvous")],
+    ),
+    # The marks as the second warp's own write: the first warp, which takes only the marks'
+    # epoch, is not ordered after them (fixtures/r1c_2sm good races when the peer comes second).
+    SrcMutant(
+        "pair-alloc-marks-own-thread",
+        "crates/sim/src/exec.rs",
+        "            self.tmem_reset(c, col, n, actor, &vc, pc);\n        }\n        self.tmem[peer as usize].pair",
+        "            self.tmem_reset(c, col, n, t as u32, &vc, pc);\n        }\n        self.tmem[peer as usize].pair",
+        [],
+        [("ptxv-sim", "fixtures", "r1c_2sm_good")],
+    ),
+]
+
+# wellsync.rs `run_logged` (MISS 235): the certificate's run stops at a step that stops threads
+# at an error, and the certificate does not hold. `nostop` takes the stop out (the run goes on
+# past the error: r4c_nowrap B36 SASS never ends, e_atom_half exact_size certifies its fault);
+# `dropcontinue` also drops the error's finding. The guards run the certificate on a thread of
+# their own and fail after 120 s.
+MISS235 = [
+    ("ptxv-sim", "wellsync", "cert_run_stops_at_a_thread_stopping_error"),
+    ("ptxv-sim", "wellsync", "cert_refuses_a_faulting_run_and_keeps_the_fault"),
+]
+MUTANTS += [
+    SrcMutant(
+        "cert-error-stop-nostop",
+        "crates/sim/src/wellsync.rs",
+        '        if let Some(f) = delivery\n            .fresh(&m)\n            .iter()\n            .find(|f| f.sig.starts_with("fault:"))\n        {\n            stopped_at_error = true;\n',
+        '        if let Some(f) = None::<&Finding> {\n            stopped_at_error = true;\n',
+        [],
+        MISS235,
+    ),
+    SrcMutant(
+        "cert-error-stop-dropcontinue",
+        "crates/sim/src/wellsync.rs",
+        '        if let Some(f) = delivery\n            .fresh(&m)\n            .iter()\n            .find(|f| f.sig.starts_with("fault:"))\n        {\n            stopped_at_error = true;\n',
+        '        m.findings.retain(|f| !f.sig.starts_with("fault:"));\n        if let Some(f) = None::<&Finding> {\n            stopped_at_error = true;\n',
+        [],
+        MISS235,
+    ),
+]
+
+
+# MISS 197, 202: a max keeps its kind (FMNMX, FMNMX.NAN, a compare and select's mask) in its L0
+# form, with whether FMNMX without .NAN dropped an infinity; maxima share a value form only where
+# both operands are non-NaN for every admissible input, relying on N-FINITE
+# (probes/equiv_claims: select_max, max_identity, fmnmx_nan). Each mutant restores one site of
+# the old FMNMX-only form or its unconditional sharing.
+MAX_KIND_CLI = [("ptxv", "equiv", "max_kinds_are_not_l0")]
+MAX_KIND_UNIT = [("ptxv-sim", "lib", "equiv::soundness_tests::max_kinds_are_part_of_the_l0_form")]
+MAX_IDENT_UNIT = [("ptxv-sim", "lib", "equiv::soundness_tests::a_dropped_identity_is_part_of_the_l0_form")]
+MAX_NAN_CLI = [("ptxv", "equiv", "maxima_of_maybe_nan_operands_share_no_value_form")]
+MUTANTS += [
+    # A compare and select taken as FMNMX again.
+    SrcMutant(
+        "max-select-as-fmnmx",
+        "crates/sim/src/num.rs",
+        "                        let n = ns.max_node(x, y, gt_y, MaxKind::Select(mask), pc);",
+        "                        let n = ns.max_node(x, y, gt_y, MaxKind::FMNMX, pc);",
+        [],
+        MAX_KIND_CLI,
+    ),
+    # max.NaN.f32 taken as max.f32 again.
+    SrcMutant(
+        "max-nan-flag-dropped",
+        "crates/sim/src/num.rs",
+        "            acc = ns.max_node(acc, n, min, MaxKind::Fmnmx { nan }, pc);\n            if sass {",
+        "            acc = ns.max_node(acc, n, min, MaxKind::Fmnmx { nan: false }, pc);\n            if sass {",
+        [],
+        MAX_KIND_CLI + MAX_NAN_CLI,
+    ),
+    # Every select of the same operands one L0 form, whatever it returns at ties and NaNs.
+    SrcMutant(
+        "max-select-mask-off",
+        "crates/sim/src/equiv.rs",
+        '                        h.put(("select-max", k, ha, hb));',
+        '                        h.put(("select-max", MaxKind::FMNMX, ha, hb));',
+        [],
+        MAX_KIND_UNIT + MAX_KIND_CLI,
+    ),
+    # A dropped -inf / +inf left out of FMNMX's L0 form again.
+    SrcMutant(
+        "max-identity-flag-off",
+        "crates/sim/src/equiv.rs",
+        '                        h.put(("max", *min, *nan, dropped && !*nan, hs));',
+        '                        h.put(("max", *min, *nan, false, hs));',
+        [],
+        MAX_IDENT_UNIT + MAX_KIND_CLI,
+    ),
+    # One value form for every kind, whether or not an operand may be NaN.
+    SrcMutant(
+        "max-value-share-any",
+        "crates/sim/src/equiv.rs",
+        "                if *fin {\n                    let mut relies = false;",
+        "                if true {\n                    let mut relies = false;",
+        [],
+        MAX_KIND_UNIT + MAX_NAN_CLI,
+    ),
+    # The shared value form without the N-FINITE reliance.
+    SrcMutant(
+        "max-value-reliance-off",
+        "crates/sim/src/equiv.rs",
+        "                    if relies {\n                        cx.finite_max = true;",
+        "                    if relies {\n                        cx.finite_max = false;",
+        [],
+        MAX_KIND_UNIT + MAX_KIND_CLI,
+    ),
+    # A dropped identity in the shared value form without the reliance.
+    SrcMutant(
+        "max-identity-reliance-off",
+        "crates/sim/src/equiv.rs",
+        "                            NodeKind::Leaf if ix(x).hw == ident => relies = true,",
+        "                            NodeKind::Leaf if ix(x).hw == ident => {}",
+        [],
+        MAX_IDENT_UNIT + MAX_KIND_CLI,
+    ),
+    # The errdist model version left at a number below 26 (17: a retired number).
+    SrcMutant(
+        "errdist-model-version-17",
+        "crates/cli/src/errdist.rs",
+        "pub(crate) const MODEL_VERSION: u32 = 26;",
+        "pub(crate) const MODEL_VERSION: u32 = 17;",
+        [],
+        [("ptxv", "bin:ptxv", "errdist::tests::models_of_earlier_versions_are_refused")],
+    ),
+    # errdist's maximum evaluated as FMNMX whatever its kind.
+    SrcMutant(
+        "errdist-max-eval-fmnmx",
+        "crates/sim/src/errdist/nonlin/ops.rs",
+        "                f32::from_bits(kind.eval(*min, val(*a).to_bits(), val(*b).to_bits()))",
+        "                f32::from_bits(MaxKind::FMNMX.eval(*min, val(*a).to_bits(), val(*b).to_bits()))",
+        [],
+        [("ptxv-sim", "lib", "errdist::nonlin::ops::tests::maxima_evaluate_as_their_kind")],
+    ),
+    # The softmax form's row maximum reads a select of maybe-NaN operands.
+    SrcMutant(
+        "softmax-max-any-kind",
+        "crates/sim/src/softmax.rs",
+        '            } if *kind == MaxKind::FMNMX || *fin => Some((*a, *b)),',
+        '            } if (*kind == MaxKind::FMNMX || *fin) || true => Some((*a, *b)),',
+        [],
+        [("ptxv-sim", "lib", "softmax::max_kind_tests::row_maxima_read_other_kinds_only_where_finite")],
+    ),
+    # The softmax form's row maximum reads a comparison-selection segment of maybe-NaN operands.
+    SrcMutant(
+        "softmax-seg-max-any",
+        "crates/sim/src/softmax.rs",
+        "                ns.non_nan_with(&mut self.fin_memo, a) && ns.non_nan_with(&mut self.fin_memo, b)\n",
+        "                (ns.non_nan_with(&mut self.fin_memo, a) && ns.non_nan_with(&mut self.fin_memo, b)) || true\n",
+        [],
+        [("ptxv-sim", "lib", "softmax::comparison_maximum_projection_tests::real_projection_rejects_polynomial_operands_with_non_finite_constants")],
+    ),
+]
+
+# MISS 201: an f32 product or fma rounded to a subnormal errs by up to 2^-150 absolute; a later
+# product scales that term by its other factor, so there is no polynomial bound and neither L2
+# nor L3 (probes/equiv_claims/product_underflow). Each mutant restores one site of the old
+# relative-only model, or drops the grid test that keeps exact subnormal results term-free.
+PROD_SUB_UNIT = [("ptxv-sim", "lib", "equiv::soundness_tests::a_subnormal_product_rounding_carries_an_absolute_term")]
+PROD_SUB_CLI = [("ptxv", "equiv", "products_rounded_to_subnormals_have_no_bound")]
+PROD_MMA_UNIT = [("ptxv-sim", "lib", "equiv::tf32_tests::an_absolute_term_in_an_mma_operand_has_no_bound")]
+MUTANTS += [
+    # No term for a product rounded to a subnormal (the grids never sum below -1000).
+    SrcMutant(
+        "product-sub-term-off",
+        "crates/sim/src/equiv.rs",
+        "                let sub = if eps != 0.0 && self.grid(*a) + self.grid(*b) < -149 {",
+        "                let sub = if eps != 0.0 && self.grid(*a) + self.grid(*b) < -1000 {",
+        [],
+        PROD_SUB_UNIT + PROD_SUB_CLI,
+    ),
+    # A term for every inexact product, also where a subnormal result is exact (x * 1 - y).
+    SrcMutant(
+        "product-sub-grid-off",
+        "crates/sim/src/equiv.rs",
+        "                let sub = if eps != 0.0 && self.grid(*a) + self.grid(*b) < -149 {",
+        "                let sub = if eps != 0.0 && self.grid(*a) + self.grid(*b) < 1 << 30 {",
+        [],
+        PROD_SUB_UNIT,
+    ),
+    # L2 and L3 held where an absolute term enters a product.
+    SrcMutant(
+        "abs-in-product-levels-off",
+        "crates/sim/src/equiv.rs",
+        "        if !lv[4] && (cr.round_in_product || cc.round_in_product) {\n            note!(2, ABS_IN_PRODUCT.into());",
+        "        if false {\n            note!(2, ABS_IN_PRODUCT.into());",
+        [],
+        PROD_SUB_UNIT + PROD_SUB_CLI,
+    ),
+    # ... and failed also where the two outputs are equal (L0, L0~0).
+    SrcMutant(
+        "abs-in-product-at-l0",
+        "crates/sim/src/equiv.rs",
+        "        if !lv[4] && (cr.round_in_product || cc.round_in_product) {",
+        "        if true && (cr.round_in_product || cc.round_in_product) {",
+        [],
+        PROD_SUB_UNIT,
+    ),
+    # An MMA operand's absolute term counted only for 16-bit roundings.
+    SrcMutant(
+        "mma-operand-abs-round-only",
+        "crates/sim/src/equiv.rs",
+        "                                .any(|k| memo.get(k).is_some_and(|e| e.2.abs_extra > 0.0))",
+        "                                .any(|k| memo.get(k).is_some_and(|e| e.2.round_abs))",
+        [],
+        PROD_MMA_UNIT,
+    ),
+    # The same for a TF32 MMA chain's operands.
+    SrcMutant(
+        "tf32-operand-abs-round-only",
+        "crates/sim/src/equiv.rs",
+        "                    |k: u32, memo: &Memo| memo.get(&k).is_some_and(|e| e.2.abs_extra > 0.0);",
+        "                    |k: u32, memo: &Memo| memo.get(&k).is_some_and(|e| e.2.round_abs);",
+        [],
+        PROD_MMA_UNIT,
+    ),
+]
+
+# MISS 143, 145 residuals: the L3 line says "+ A" where L3 holds and the bound has an absolute
+# term; printed bounds round up and printed condition limits down (ptxv equiv, ptxv compare).
+# Each mutant restores the old label or the old rounding to nearest at one site.
+PRINT_UNIT = [("ptxv", "bin:ptxv", "compare::tests::printed_bounds_round_outward")]
+L3_CLI = [("ptxv", "equiv", "l3_line_carries_the_absolute_term")]
+MUTANTS += [
+    # The L3 line without "+ A".
+    SrcMutant(
+        "l3-line-abs-off",
+        "crates/cli/src/equiv.rs",
+        '            let l3a = l.level.starts_with("L3") && l.holds && abs_max > 0.0;',
+        '            let l3a = l.level.starts_with("L3") && l.holds && abs_max < 0.0;',
+        [],
+        L3_CLI,
+    ),
+    # Bounds printed rounded to nearest.
+    SrcMutant(
+        "printed-bound-nearest",
+        "crates/cli/src/compare.rs",
+        "    fixed(x, d, true)\n}",
+        '    format!("{x:.d$}")\n}',
+        [],
+        PRINT_UNIT + [("ptxv", "equiv", "tf32_gemms_are_bounded")],
+    ),
+    # Absolute terms (scientific form) printed rounded to nearest.
+    SrcMutant(
+        "printed-abs-nearest",
+        "crates/cli/src/compare.rs",
+        '    let all = format!("{i}{f}");\n',
+        '    let all = format!("{i}{f}");\n    if true {\n        return format!("{x:.d$e}");\n    }\n',
+        [],
+        PRINT_UNIT + L3_CLI + [("ptxv", "compare", "compare_headline_carries_the_absolute_term")],
+    ),
+    # Condition limits printed rounded to nearest.
+    SrcMutant(
+        "printed-limit-nearest",
+        "crates/cli/src/compare.rs",
+        "    fixed(x, d, false)\n}",
+        '    format!("{x:.d$}")\n}',
+        [],
+        PRINT_UNIT + [("ptxv", "equiv", "f16_outputs_are_bounded")],
+    ),
+]
+
+# MISS 226: E-RACE-DEAD leaves out mixed-size data races (exec.rs `race_log`, PTX ISA 9.5
+# section 8.7.2), decided where S-SCOPE decides overlap (the strict PTX level, the NIC's accesses
+# included). race-dead-mixed undoes the fix; race-dead-uniform-off keeps every pair out
+# (uniform-size races with a dead value become races again); race-dead-mixed-hw decides overlap
+# under `hw_order` too (the level-2 hardware model, which takes every pair as one location);
+# race-dead-mixed-nic leaves the NIC's accesses undecided (no byte); race-dead-unmodeled takes a
+# CQE overlap the model does not decide as one location.
+RACE_DEAD_MIXED = ("ptxv-sim", "reductions", "mixed_size_races_are_not_race_dead")
+RACE_DEAD_FIND = (
+    "                let ok = ok.filter(|_| {\n"
+    "                    self.overlap_at(other.actor, other.pc, actor, pc, galloc.map(|al| (al, a)))\n"
+    "                        == Overlap::Complete\n"
+    "                });\n"
+)
+MUTANTS += [
+    SrcMutant(
+        "race-dead-mixed",
+        "crates/sim/src/exec.rs",
+        RACE_DEAD_FIND,
+        "                let ok = ok.filter(|_| true);\n",
+        [("e_race_dead", "RDMIX", "ptx", []), ("e_nic_cta", "WORDDEAD", "ptx", [])],
+        [RACE_DEAD_MIXED],
+    ),
+    SrcMutant(
+        "race-dead-uniform-off",
+        "crates/sim/src/exec.rs",
+        RACE_DEAD_FIND,
+        "                let ok = ok.filter(|_| false);\n",
+        [("e_race_dead", "good", f, []) for f in ("ptx", "sass")],
+        [RACE_DEAD_MIXED],
+    ),
+    SrcMutant(
+        "race-dead-mixed-hw",
+        "crates/sim/src/exec.rs",
+        RACE_DEAD_FIND,
+        "                let ok = ok.filter(|_| {\n"
+        "                    overlap_with_nic(\n"
+        "                        &self.k,\n"
+        "                        self.threads.len() as u32,\n"
+        "                        true,\n"
+        "                        self.nic.as_deref(),\n"
+        "                        self.async_base(),\n"
+        "                        (other.actor, other.pc),\n"
+        "                        (actor, pc),\n"
+        "                        galloc.map(|al| (al, a)),\n"
+        "                    ) == Overlap::Complete\n"
+        "                });\n",
+        [],
+        [RACE_DEAD_MIXED],
+    ),
+    SrcMutant(
+        "race-dead-mixed-nic",
+        "crates/sim/src/exec.rs",
+        "                    self.overlap_at(other.actor, other.pc, actor, pc, galloc.map(|al| (al, a)))\n"
+        "                        == Overlap::Complete\n",
+        "                    self.overlap_at(other.actor, other.pc, actor, pc, None)\n"
+        "                        == Overlap::Complete\n",
+        [("e_nic_cta", "WORDDEAD", "ptx", [])],
+        [RACE_DEAD_MIXED],
+    ),
+    SrcMutant(
+        "race-dead-unmodeled",
+        "crates/sim/src/exec.rs",
+        RACE_DEAD_FIND,
+        "                let ok = ok.filter(|_| {\n"
+        "                    self.overlap_at(other.actor, other.pc, actor, pc, galloc.map(|al| (al, a)))\n"
+        "                        != Overlap::Partial\n"
+        "                });\n",
+        [("e_nic_cta", "CQEDEAD", "ptx", [])],
+        [RACE_DEAD_MIXED],
+    ),
+]
+
+# MISS 28 (E-CLOCK, clock.rs): clock-dependent control is explored both ways or reported. Each
+# mutant drops one part of the analysis; the fixture or test that part exists for must notice.
+MUTANTS += [
+    # No clock choices: a timeout branch is decided by the clock read as 0 (the miss itself).
+    SrcMutant(
+        "clock-choice-off",
+        "crates/sim/src/clock.rs",
+        "    choices(k, delay, &clock_taint(k))\n}",
+        "    let _ = (k, delay);\n    HashSet::new()\n}",
+        [("e_clock_timeout", "good", f, []) for f in ("ptx", "sass")],
+    ),
+    # 32-bit clock / timer reads are the constant 0 again, not clock registers (PTX, SASS).
+    SrcMutant(
+        "clock32-ptx",
+        "crates/ptx/src/lib.rs",
+        '"%clock" | "%globaltimer_lo" => return Ok(Val::SReg(SReg::ClockLo32)),',
+        '"%clock" | "%globaltimer_lo" => return Ok(Val::Imm(0)),',
+        [("e_clock_timeout32", "good", "ptx", [])],
+    ),
+    SrcMutant(
+        "clock32-sass",
+        "crates/sass/src/lib.rs",
+        '"CLOCKLO" | "GLOBALTIMERLO" => return Ok(Val::SReg(SReg::ClockLo32)),',
+        '"CLOCKLO" | "GLOBALTIMERLO" => return Ok(Val::Imm(0)),',
+        [("e_clock_timeout32", "good", "sass", [])],
+    ),
+    # A loop with a store in its body counts as a pure delay loop (its deadline passes at once).
+    SrcMutant(
+        "clock-delay-impure",
+        "crates/sim/src/clock.rs",
+        "        if !body.iter().all(|i| crate::num::pure_op(&i.op)) {",
+        "        if false && !body.iter().all(|i| crate::num::pure_op(&i.op)) {",
+        [("clock_pace_store", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "clock_paced_loops")],
+    ),
+    # A loop whose registers are live after it counts as a pure delay loop.
+    SrcMutant(
+        "clock-delay-live",
+        "crates/sim/src/clock.rs",
+        "        if crate::spin::live_after(&k.code, b + 1, &written).is_some() {",
+        "        if false && crate::spin::live_after(&k.code, b + 1, &written).is_some() {",
+        [("clock_pace_live", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "clock_paced_loops")],
+    ),
+    # Clock-derived bytes in memory are not marked: a branch on a loaded timestamp is decided
+    # by the clock read as 0.
+    SrcMutant(
+        "clock-mem-off",
+        "crates/sim/src/exec.rs",
+        "        if !self.clock_store_pcs.is_empty() {",
+        "        if false && !self.clock_store_pcs.is_empty() {",
+        [("e_clock_mem", "good", f, []) for f in ("ptx", "sass")],
+    ),
+    # A clock-dependent output (a stored select on the clock) is claimed complete.
+    SrcMutant(
+        "clock-out-complete",
+        "crates/sim/src/clock.rs",
+        "    v.complete = false;\n",
+        "",
+        [("e_clock_data", "good", "ptx", [])],
+        [("ptxv-sim", "fixtures", "e_clock_data_output_incomplete")],
+    ),
+    # The certificate takes one side of a clock choice.
+    SrcMutant(
+        "clock-cert-choice",
+        "crates/sim/src/wellsync.rs",
+        "    if !m0.clock_choice_pcs.is_empty() || !m0.mem_branch_pcs.is_empty() {",
+        "    if false && (!m0.clock_choice_pcs.is_empty() || !m0.mem_branch_pcs.is_empty()) {",
+        [("e_clock_timeout", "good", "ptx", ["--certify"])],
+        [("ptxv-sim", "fixtures", "e_clock_timeout_branch_both_ways")],
+    ),
+    # The certificate claims a kernel that stores clock-derived values.
+    SrcMutant(
+        "clock-cert-store",
+        "crates/sim/src/wellsync.rs",
+        "    if !m0.clock_store_pcs.is_empty() {",
+        "    if false && !m0.clock_store_pcs.is_empty() {",
+        [],
+        [("ptxv-sim", "fixtures", "probe_clock32_matches_hardware")],
+    ),
+    # A clock-derived address (a control operand) is not reported (GB300 stores either word of
+    # fixtures/e_clock_addr: 116 / 200 runs out[1], 84 / 200 out[0]).
+    SrcMutant(
+        "clock-effect-off",
+        "crates/sim/src/clock.rs",
+        "pub fn clock_effects(k: &Kernel) -> HashSet<u32> {\n",
+        "pub fn clock_effects(k: &Kernel) -> HashSet<u32> {\n    if !k.code.is_empty() {\n        return HashSet::new();\n    }\n",
+        [("e_clock_addr", v, f, []) for v in ("good", "SELP") for f in ("ptx", "sass")],
+    ),
+    # A clock value spilled to a stack slot is not followed to its reload.
+    SrcMutant(
+        "clock-local-slot",
+        "crates/sim/src/clock.rs",
+        "                            local.insert((k.entry_of(pc), lo, hi));",
+        "                            let _ = (lo, hi);",
+        [],
+        [("ptxv-sim", "fixtures", "clock_taint_no_third_category")],
+    ),
+    # A clock-free write under a guard clears the register for every read, not only for reads
+    # under the same guard.
+    SrcMutant(
+        "clock-guard-kill",
+        "crates/sim/src/clock.rs",
+        "        self.t.contains(r) || self.k.get(r).is_some_and(|h| g.reg.is_none() || *h != g)",
+        "        let _ = g;\n        self.t.contains(r)",
+        [],
+        [("ptxv-sim", "fixtures", "clock_taint_guarded_kill")],
+    ),
+    # A clock guard does not make what its instruction writes clock-dependent data.
+    SrcMutant(
+        "clock-data-guard",
+        "crates/sim/src/clock.rs",
+        "                || data\n",
+        "                || false && data\n",
+        [],
+        [("ptxv-sim", "fixtures", "clock_taint_no_third_category")],
+    ),
+]
+
+
+# MISS 206 (defense in depth): a bound one of its output's analyzed elements exceeds is reported as
+# unknown.
+MUTANTS += [
+    # The bounds print whatever they are again: c_num_nonfinite_f32's CSV carries numbers.
+    SrcMutant(
+        "num-bound-unknown",
+        "crates/cli/src/main.rs",
+        "                recs.iter_mut().for_each(|r| r.bound_cor1a = f64::NAN);\n",
+        "",
+        [],
+        [("ptxv", "num_untracked", "bounds_an_output_violates_are_unknown")],
+    ),
+    # MISS 206: the MUFU bound takes ulp_f32 of the overflowed |hw| (1 + 2^-20) again (2^-149):
+    # c_num_mufu_top_f32's two top-magnitude elements exceed it, and the output's bounds are unknown.
+    SrcMutant(
+        "mufu-top-ulp",
+        "crates/sim/src/num.rs",
+        "    } else {\n        2f64.powi(105)\n    };\n",
+        "    } else {\n        ulp_f32(above)\n    };\n",
+        [],
+        [("ptxv", "num_untracked", "mufu_bound_at_the_top_magnitudes_covers_gb300")],
+    ),
+]
+
+
+# MISS 207: PTX .ftz approx results (slices) carry the MUFU bound (fixtures/c_num_mufu_ftz_f32).
+FTZ_BOUND = ("ptxv", "num_untracked", "ptx_ftz_approx_results_carry_the_sweep_bound")
+MUTANTS += [
+    # The slice is a plain term again (no own bound): the PTX front's bounds are 0, below GB300's
+    # errors, and every output's bounds are unknown.
+    SrcMutant(
+        "mufu-ftz-bound",
+        "crates/sim/src/num.rs",
+        "                NodeKind::Seg(_) if self.ftz_mufu.contains_key(&n) => {\n                    rnodes.push(n);\n",
+        "                NodeKind::Seg(_) if false && self.ftz_mufu.contains_key(&n) => {\n                    rnodes.push(n);\n",
+        [],
+        [FTZ_BOUND],
+    ),
+    # No flush term: sqrt.approx.ftz of a subnormal is bounded by 0.944 2^-149 against sqrt(x).
+    SrcMutant(
+        "mufu-ftz-flush",
+        "crates/sim/src/num.rs",
+        "            let own = mufu_local_bound(func, ptx, x as f32, f32::from_bits(nd.hw)) + flush_in;\n",
+        "            let own = mufu_local_bound(func, ptx, x as f32, f32::from_bits(nd.hw)) + 0.0 * flush_in;\n",
+        [],
+        [FTZ_BOUND],
+    ),
+]
+
+
+# MISS 208: an f16 / bf16 multimem.ld_reduce sum below GB300's 16-aligned bound is +0, and a sum of
+# zeros is +0 (probes/multimem_add16_rules/sweep, GB300).
+HALF_FLUSH = ("ptxv-sim", "multimem", "half_sums_follow_the_flush_sweeps")
+# MISS 225: the f32 sum's 16-aligned window and flush (probes/multimem_f32_window, the sweeps).
+F32_WINDOW_TESTS = [("ptxv-sim", "multimem", "f32_sums_follow_the_window_sweeps")]
+MUTANTS += [
+    # -0 when every member is -0 again.
+    SrcMutant(
+        "mm-zero-sign",
+        "crates/sim/src/multimem.rs",
+        "        return Ok(Lane::Done(0));\n    }\n    // 2^a16",
+        "        return Ok(Lane::Done((fin.iter().all(|(d, _)| d.neg) as u64) << (eb + mb)));\n    }\n    // 2^a16",
+        [],
+        [HALF_FLUSH] + F32_WINDOW_TESTS,
+    ),
+    # No flush of f16 / bf16 sums: B - B + R keeps R below the bound.
+    SrcMutant(
+        "mm-half-flush",
+        "crates/sim/src/multimem.rs",
+        "            (emax - HALF_WINDOW, a16 - 23)\n",
+        "            (emax - HALF_WINDOW, i32::MIN)\n",
+        [],
+        [HALF_FLUSH],
+    ),
+    # The bound and window at eB itself, not aligned to 16 binades.
+    SrcMutant(
+        "mm-align16",
+        "crates/sim/src/multimem.rs",
+        "    let a16 = 16 * (e_b / 16) - ((1i32 << (eb - 1)) - 1);\n",
+        "    let a16 = e_b - ((1i32 << (eb - 1)) - 1);\n",
+        [],
+        [HALF_FLUSH] + F32_WINDOW_TESTS,
+    ),
+    # The former f32 window: 63 bits below the largest member's last mantissa bit, no flush.
+    SrcMutant(
+        "mm-f32-window",
+        "crates/sim/src/multimem.rs",
+        "        McTy::F32 => (a16 - 80, a16 - 71),\n",
+        "        McTy::F32 => (\n            fin.iter().filter(|(d, _)| d.man != 0).map(|(d, _)| d.exp).max().unwrap() - 63,\n            i32::MIN,\n        ),\n",
+        [],
+        F32_WINDOW_TESTS,
+    ),
+    # The f32 window without its flush: B - B + R keeps the truncated R.
+    SrcMutant(
+        "mm-f32-flush",
+        "crates/sim/src/multimem.rs",
+        "        McTy::F32 => (a16 - 80, a16 - 71),\n",
+        "        McTy::F32 => (a16 - 80, i32::MIN),\n",
+        [],
+        F32_WINDOW_TESTS,
+    ),
+]
+
+
+# MISS 209: st.async and UBLKCP.S.S need a cluster launch, and a kernel's compiled-in cluster
+# makes one (probes/cluster_launch_ops, GB300).
+CLUSTER_OPS = ("ptxv-sim", "fixtures", "probe_cluster_launch_ops_match_hardware")
+MUTANTS += [
+    # No fault without cluster dimensions: st.async and UBLKCP.S.S run, as before.
+    SrcMutant(
+        "cluster-launch-fault",
+        "crates/sim/src/exec.rs",
+        "        if self.launch.g(cta as u32).explicit_cluster {\n            return Ok(());\n",
+        "        if true || self.launch.g(cta as u32).explicit_cluster {\n            return Ok(());\n",
+        [],
+        [CLUSTER_OPS],
+    ),
+    # A compiled-in cluster shape ignored (only the case's `cluster` counts): the cluster1
+    # variants fault at st.async and read %is_explicit_cluster 0.
+    SrcMutant(
+        "cluster-decl-ignored",
+        "crates/ir/src/lib.rs",
+        "            (Some(ClusterDecl::Dims(d)), None) => Ok(Some(d)),\n",
+        "            (Some(ClusterDecl::Dims(_)), None) => Ok(None),\n",
+        [],
+        [CLUSTER_OPS, ("ptxv-ir", "lib", "tests::cluster_decl_resolve")],
+    ),
+    # The SASS front reads no EIATTR_CTA_PER_CLUSTER: the SASS cluster1 variants fault.
+    SrcMutant(
+        "cluster-eiattr-ignored",
+        "crates/sass/src/lib.rs",
+        "                EIATTR_CTA_PER_CLUSTER if v.len() >= 12 => {\n",
+        "                EIATTR_CTA_PER_CLUSTER if false => {\n",
+        [],
+        [CLUSTER_OPS],
+    ),
+]
+
+
+# MISS 224: an RDMA write moves the source words' numerics nodes (fixtures/c_num_nic_write_f32,
+# probes/nic_num_shadow).
+MUTANTS += [
+    # The destination keeps the nodes of what it held: the copied input's exact value.
+    SrcMutant(
+        "nic-num-write",
+        "crates/sim/src/nic.rs",
+        "                    self.num_copy_snapshot(loc, &data, snapshot.as_ref(), pc);\n",
+        "",
+        [],
+        [("ptxv", "num_untracked", "nic_writes_move_numerics_nodes")],
+    ),
+]
+
+# MISS 257: a NIC atomic keeps the nodes of the words it leaves unchanged; words whose outcome may
+# differ in the exact computation are input data (fixtures/c_num_nic_atomic_f32,
+# probes/nic_atomic_keeps_word).
+MUTANTS += [
+    # Unchanged words lose their nodes, as at MISS 224's fix: the rounded values they still hold
+    # become exact constants (W1, W3's low word claimed exact).
+    SrcMutant(
+        "nic-atomic-keep",
+        "crates/sim/src/num.rs",
+        "            if input.is_some_and(|i| !i[k]) && word(a.new, k) == word(a.old, k) {\n",
+        "            if false && input.is_some_and(|i| !i[k]) && word(a.new, k) == word(a.old, k) {\n",
+        [],
+        [("ptxv", "num_untracked", "nic_atomics_keep_unchanged_words_and_taint_decided_ones")],
+    ),
+    # Words the atomic computes from a rounding lose their nodes without taint: exact constants
+    # (W2, W3's high word, and W0 claimed).
+    SrcMutant(
+        "nic-atomic-untracked",
+        "crates/sim/src/num.rs",
+        "            if input.is_some_and(|i| i[k]) {\n                for b in key.2..key.2 + 4 {\n",
+        "            if false {\n                for b in key.2..key.2 + 4 {\n",
+        [],
+        [("ptxv", "num_untracked", "nic_atomics_keep_unchanged_words_and_taint_decided_ones")],
+    ),
+    # A compare-and-swap on rounded words decides nothing: W0's unchanged words keep their nodes.
+    SrcMutant(
+        "nic-atomic-decided",
+        "crates/sim/src/num.rs",
+        "                let decided = a.compare_inexact || a.old_inexact[0] || a.old_inexact[1];\n",
+        "                let decided = a.compare_inexact;\n",
+        [],
+        [("ptxv", "num_untracked", "nic_atomics_keep_unchanged_words_and_taint_decided_ones")],
+    ),
+    # An unchanged word does not get its 16-bit provenance back: W5's bf16 elements lose their
+    # nodes (outh untracked).
+    SrcMutant(
+        "nic-atomic-half",
+        "crates/sim/src/num.rs",
+        "        if let Some(s) = snapshot.filter(|s| s.half.len() == 8) {\n",
+        "        if let Some(s) = snapshot.filter(|_| false) {\n",
+        [],
+        [("ptxv", "num_untracked", "nic_atomics_keep_unchanged_words_and_taint_decided_ones")],
+    ),
+    # A fetch-add's carry into the high word ignores the low word: W2's high word keeps its node.
+    SrcMutant(
+        "nic-atomic-carry",
+        "crates/sim/src/num.rs",
+        "                    a.operand_inexact || carry || high_changed && a.old_inexact[1],\n",
+        "                    a.operand_inexact || high_changed && a.old_inexact[1],\n",
+        [],
+        [("ptxv", "num_untracked", "nic_atomics_keep_unchanged_words_and_taint_decided_ones")],
+    ),
+]
+
+
+# MISS 29 (E-ELECT, PTX): every leader function is explored where the deciding gate fires
+# (explore.rs `per_leader_policy`, the leader search in `actions` and `elect_lanes::candidates`,
+# wellsync.rs `certify_runs`). Each mutant falls back to end-lane leaders where the gate fired.
+MUTANTS += [
+    # The explorer ignores the gate: the two end-lane policies for every kernel (the miss).
+    SrcMutant(
+        "elect-fn-off",
+        "crates/sim/src/explore.rs",
+        "    if let Some(at) = elect_sensitivity(&m0, false)\n        .map(|x| x.0)\n        .or(forced.then_some(u32::MAX))",
+        "    if let Some(at) = forced.then_some(u32::MAX)",
+        [("e_elect_mid", "good", "ptx", [])],
+    ),
+    # The certificate ignores the gate: one run per end-lane policy.
+    SrcMutant(
+        "elect-fn-cert-off",
+        "crates/sim/src/wellsync.rs",
+        "            || crate::explore::elect_sensitivity(&m0, false).is_some());",
+        "            || false);",
+        [("e_elect_mid", "good", "ptx", ["--certify"])],
+    ),
+    # The explorer's leader search, entered, offers the lowest active lane only.
+    SrcMutant(
+        "elect-fn-lowest",
+        "crates/sim/src/explore.rs",
+        "                        } else if self.elect_any {",
+        "                        } else if self.elect_any && false {",
+        [("e_elect_mid", "good", "ptx", [])],
+    ),
+    # The candidates of an active set are its two end lanes (both the explorer and the
+    # certificate draw them from `candidates`).
+    SrcMutant(
+        "elect-cand-ends",
+        "crates/sim/src/elect_lanes.rs",
+        "    let lanes = (0..32).filter(|&l| mask >> l & 1 == 1);",
+        "    let lanes = (0..32).filter(|&l| {\n        mask >> l & 1 == 1 && (l == mask.trailing_zeros() || l == 31 - mask.leading_zeros())\n    });",
+        [("e_elect_mid", "good", "ptx", []), ("e_elect_mid", "good", "ptx", ["--certify"])],
+    ),
+]
+
+# MISS 31 (E-WARP-ORDER, PTX): unordered strong pairs of a converged warp on different
+# instructions are nondeterministic (exec.rs `access_x`, `warp_nd`).
+MUTANTS += [
+    # No report: the converged warp's program-order outcome alone, clean (the miss).
+    SrcMutant(
+        "warp-order-off",
+        "crates/sim/src/exec.rs",
+        "let warp_nd: Vec<(u32, u32, &'static str, u64, bool)> = if self.k.front == Front::Ptx {",
+        "let warp_nd: Vec<(u32, u32, &'static str, u64, bool)> = if false && self.k.front == Front::Ptx {",
+        [("e_warp_order_div", "CONV", "ptx", []), ("s_atom_ext", "good", "ptx", [])],
+    ),
+    # Any two result-less reductions count as commuting (red.min with red.max of one word).
+    SrcMutant(
+        "warp-order-commute",
+        "crates/sim/src/exec.rs",
+        "            red(x).is_some() && red(x) == red(y)",
+        "            red(x).is_some() && red(y).is_some()",
+        [("s_atom_ext", "good", "ptx", [])],
+    ),
+    # Shared-memory pairs only (soundness review): a global-memory pair goes unreported.
+    SrcMutant(
+        "warp-order-shared-only",
+        "crates/sim/src/exec.rs",
+        "                    other.pc != pc\n                        && !commuting(other.pc, pc)",
+        "                    other.pc != pc\n                        && matches!(loc, Loc::Shared { .. })\n                        && !commuting(other.pc, pc)",
+        [("e_warp_order_kinds", "good", "ptx", [])],
+    ),
+    # No write-write pairs (soundness review).
+    SrcMutant(
+        "warp-order-no-ww",
+        "crates/sim/src/exec.rs",
+        "                .map(|(other, kind, a)| {\n                    let hw = ",
+        "                .filter(|(_, kind, _)| *kind != \"write-write\")\n                .map(|(other, kind, a)| {\n                    let hw = ",
+        [("e_warp_order_kinds", "WW", "ptx", [])],
+    ),
+]
+
+# MISS 73 (E-WARP-ORDER, PTX): the strong-pair report needs the two lanes in one lockstep group
+# (`Machine::mgrp`): a group survives a branch other lanes take, and a barrier release, a
+# bar.warp.sync release or a warp collective gathers its lanes into one (exec.rs `regroup`,
+# `note_gathered`).
+MUTANTS += [
+    # A group dissolves into single lanes whenever the warp moves: only gathered lanes pair.
+    SrcMutant(
+        "warp-order-group-split",
+        "crates/sim/src/exec.rs",
+        "                    self.mgrp.get(u).copied().unwrap_or(u32::MAX),",
+        "                    u as u32,",
+        [("e_warp_order_partial", "NOHALF", "ptx", []), ("e_warp_order_div", "CONV", "ptx", [])],
+    ),
+    # Barrier releases gather nothing: the strong pair after a divergence and a bar.sync is
+    # PTX clean again (the miss).
+    SrcMutant(
+        "warp-order-gather-bar",
+        "crates/sim/src/exec.rs",
+        "        if self.k.front == Front::Ptx {\n            self.gathered_by_release(arrived.iter()",
+        "        if false && self.k.front == Front::Ptx {\n            self.gathered_by_release(arrived.iter()",
+        [("e_warp_order_reconv", "good", "ptx", []), ("e_warp_order_reconv", "BARV", "ptx", [])],
+    ),
+    # A bar.warp.sync release gathers nothing (it ended a whole-warp divergence before MISS 73's
+    # fix too).
+    SrcMutant(
+        "warp-order-gather-warpsync",
+        "crates/sim/src/exec.rs",
+        "    fn note_convergence(&mut self, warp: u32, lanes: &[usize]) {\n        self.note_gathered(warp, lanes, false);",
+        "    fn note_convergence(&mut self, warp: u32, lanes: &[usize]) {\n        self.note_gathered(warp, &lanes[..0], false);",
+        [("e_warp_order_reconv", "WARPV", "ptx", [])],
+    ),
+    # Warp collectives gather nothing (shfl.sync, elect.sync).
+    SrcMutant(
+        "warp-order-gather-coll",
+        "crates/sim/src/exec.rs",
+        "            for lanes in &gather {\n                self.note_gathered(warp, lanes, false);",
+        "            for lanes in gather.iter().filter(|_| false) {\n                self.note_gathered(warp, lanes, false);",
+        [
+            ("e_warp_order_reconv", "SHFLV", "ptx", []),
+            ("e_warp_order_reconv", "ELECTV", "ptx", []),
+            ("e_warp_order_reconv", "SPAN", "ptx", []),
+        ],
+    ),
+    # The groups are not hashed: two PTX states that differ in them merge, and the path
+    # explored second loses its reports.
+    SrcMutant(
+        "warp-order-hash",
+        "crates/sim/src/machine.rs",
+        "        if self.k.front == Front::Ptx {\n            self.mgrp.hash(h);",
+        "        if false && self.k.front == Front::Ptx {\n            self.mgrp.hash(h);",
+        [],
+        [("ptxv-sim", "fixtures", "warp_order_model_divergence_is_hashed")],
+    ),
+]
+
+
+# MISS 74 (PTX), MISS 75, 168 (SASS stores): the lanes of one store / exchange / atomic on one word
+# take effect in any order (exec.rs `lane_orders`, explore.rs `actions_with` and
+# `mark_unexplored`, wellsync.rs `run_logged`).
+MUTANTS += [
+    # No lane orders: lane order only (the miss).
+    SrcMutant(
+        "lane-order-off",
+        "crates/sim/src/exec.rs",
+        "        if members.len() < 2 {\n            return None;\n        }\n        let inst = &self.k.code[pc as usize];\n        if inst.uniform {",
+        "        if true || members.len() < 2 {\n            return None;\n        }\n        let inst = &self.k.code[pc as usize];\n        if inst.uniform {",
+        [
+            ("e_lane_order", "good", "ptx", []),
+            ("e_lane_order_ticket", "THREE", "ptx", []),
+            ("e_sts_keep", "good", "sass", []),
+        ],
+    ),
+    # Stores: lane order only (the last lane's value remains).
+    SrcMutant(
+        "lane-order-last",
+        "crates/sim/src/exec.rs",
+        "                (*space, *bytes, addr, Kind::Last)\n",
+        "                (*space, *bytes, addr, Kind::Commute)\n",
+        [
+            ("e_lane_order", "good", "ptx", []),
+            ("e_lane_order", "PAIR", "ptx", []),
+            ("e_sts_keep", "OUT", "sass", []),
+        ],
+    ),
+    # Every atomic's result counts as dead: tickets commute.
+    SrcMutant(
+        "lane-order-live",
+        "crates/sim/src/exec.rs",
+        "                let dead =\n                    !publishes && p.is_none() && d.is_none_or(|_| self.atom_dead.contains(&pc));",
+        "                let dead = true || !publishes;",
+        [("e_lane_order_ticket", "THREE", "ptx", []), ("e_lane_order_ticket", "good", "ptx", [])],
+    ),
+    # Every atomic group takes lane order and its reverse only.
+    SrcMutant(
+        "lane-order-perm",
+        "crates/sim/src/exec.rs",
+        "                _ if lanes.len() <= LANE_PERM_ALL => permutations(&lanes),",
+        "                _ if false => permutations(&lanes),",
+        [],
+        [("ptxv-sim", "fixtures", "e_lane_order_tickets_take_any_order")],
+    ),
+    # Truncated lane orders leave the launch check complete.
+    SrcMutant(
+        "lane-order-mark",
+        "crates/sim/src/explore.rs",
+        "        v.complete = false;\n        if !v.notes.contains(&note) {",
+        "        if !v.notes.contains(&note) {",
+        [],
+        [("ptxv-sim", "fixtures", "e_lane_order_tickets_take_any_order")],
+    ),
+    # The certificate takes lane order (C-TICKET certified THREE clean).
+    SrcMutant(
+        "lane-order-cert",
+        "crates/sim/src/wellsync.rs",
+        "            if m.lane_orders(&members, pc).is_some() {",
+        "            if false && m.lane_orders(&members, pc).is_some() {",
+        [],
+        [("ptxv-sim", "fixtures", "e_lane_order_tickets_take_any_order")],
+    ),
+    # A vector float add's operand is its first element only (VEC2: lane order only).
+    SrcMutant(
+        "lane-order-vec-first",
+        "crates/sim/src/exec.rs",
+        "                } if matches!(bytes, 8 | 16) => {\n                    let mut x = Vec::with_capacity(bytes as usize);",
+        "                } if false => {\n                    let mut x = Vec::with_capacity(bytes as usize);",
+        [("e_lane_order_ticket", "VEC2", "ptx", [])],
+    ),
+    # Float adds exact in every order still take every order (VECX: lane order and its
+    # reverse with the note; probes/red_vec PTX: no longer completes in 2M states).
+    SrcMutant(
+        "lane-order-exact-off",
+        "crates/sim/src/exec.rs",
+        "                    adds_exact(*op, &init, &xs)\n",
+        "                    adds_exact(*op, &init, &xs) && false\n",
+        [],
+        [("ptxv-sim", "fixtures", "e_lane_order_tickets_take_any_order")],
+    ),
+    # Order-free whenever the values are finite (no exactness bound).
+    SrcMutant(
+        "lane-order-exact-loose",
+        "crates/sim/src/exec.rs",
+        "            if sum >= 1u128 << p {\n                return false;",
+        "            if sum >= 1u128 << 120 {\n                return false;",
+        [("e_lane_order_ticket", "FADD3", "ptx", [])],
+    ),
+    # Gap A: an address with several locations (multicast) keeps lane order, silently.
+    SrcMutant(
+        "lane-order-multi-off",
+        "crates/sim/src/exec.rs",
+        "            let &loc = locs.first()?;\n            if locs.len() > 1 || multi {",
+        "            let [loc] = locs[..] else {\n                return None;\n            };\n            if multi {",
+        [("e_mm_lane", "good", "ptx", []), ("e_mm_lane", "TRAP0", "ptx", [])],
+        [("ptxv-sim", "fixtures", "e_mm_lane_multicast_lanes_take_any_order")],
+    ),
+    # Gap B: dead-result integer atomics commute even when their lanes publish a clock.
+    SrcMutant(
+        "lane-order-sync-commute",
+        "crates/sim/src/exec.rs",
+        "                    !publishes && p.is_none() && d.is_none_or(|_| self.atom_dead.contains(&pc));",
+        "                    !(publishes && false) && p.is_none() && d.is_none_or(|_| self.atom_dead.contains(&pc));",
+        [("e_lo_sync", "good", "ptx", []), ("e_lo_sync", "FENCED", "ptx", [])],
+        [("ptxv-sim", "fixtures", "e_lo_sync_synchronizing_lanes_take_any_order")],
+    ),
+    # Gap B: a release fence before a relaxed atomic does not count (only release atomics).
+    SrcMutant(
+        "lane-order-fence",
+        "crates/sim/src/exec.rs",
+        "                            && (!vc_entries(&self.threads[t].membar_vc).is_empty()",
+        "                            && (false && !vc_entries(&self.threads[t].membar_vc).is_empty()",
+        [("e_lo_sync", "FENCED", "ptx", [])],
+        [("ptxv-sim", "fixtures", "e_lo_sync_synchronizing_lanes_take_any_order")],
+    ),
+]
+
+# The E-WARP-ORDER completeness defect (soundness audit): a reported strong pair's other order
+# is not explored, so the launch check's verdict is incomplete (explore.rs `mark_unexplored`).
+MUTANTS += [
+    # The verdict claims complete again.
+    SrcMutant(
+        "warp-order-complete",
+        "crates/sim/src/explore.rs",
+        "        .filter(|f| f.sig.starts_with(\"warp-order:\"))",
+        "        .filter(|f| false && f.sig.starts_with(\"warp-order:\"))",
+        [],
+        [("ptxv-sim", "fixtures", "e_warp_order_other_order_incomplete")],
+    ),
+]
+
+# MISS 75: strict SASS explores the lanes of one shared store on one word; under the GB300
+# profile (E-HW-STS-LOWEST) the lowest active lane of the store's last phase with an active lane
+# leaves its bytes (hwprofile.rs, exec.rs `hw_store_phase`).
+MUTANTS += [
+    # The strict SASS level keeps lane order for one store's lanes (lane 31's value: the miss
+    # at the strict level, good clean).
+    SrcMutant(
+        "sts-lane-order",
+        "crates/sim/src/exec.rs",
+        "                    Front::Sass => self.hw_store_phase(inst).is_none(),\n",
+        "                    Front::Sass => *space != Space::Shared && self.hw_store_phase(inst).is_none(),\n",
+        [("e_sts_keep", "good", "sass", []), ("e_sts_keep", "OUT", "sass", [])],
+        [("ptxv-sim", "fixtures", "e_sts_keep_strict_sass_takes_every_lane")],
+    ),
+    # The profile explores every store's lanes too (its measured order unused).
+    SrcMutant(
+        "sts-lowest-explored",
+        "crates/sim/src/exec.rs",
+        "                    Front::Sass => self.hw_store_phase(inst).is_none(),\n",
+        "                    Front::Sass => true,\n",
+        [],
+        [("ptxv-sim", "fixtures", "gb300_profile_keeps_the_lowest_lane_of_one_store")],
+    ),
+    # The width rule off: every width one phase (the lowest active lane remains, as measured
+    # for 4 bytes and less only; GB300 keeps lane 16 of one STS.64 by every lane, 24 of STS.128).
+    SrcMutant(
+        "sts-width-off",
+        "crates/sim/src/exec.rs",
+        "            } if self.launch.hw_sts_lowest => Some(32 / (*bytes as usize / 4).max(1)),",
+        "            } if self.launch.hw_sts_lowest => Some(32 + 0 * *bytes as usize),",
+        [],
+        [("ptxv-sim", "fixtures", "gb300_profile_keeps_the_last_phase_of_one_store")],
+    ),
+    # The profile keeps lane order (lane 31's value).
+    SrcMutant(
+        "sts-lowest-off",
+        "crates/sim/src/hwprofile.rs",
+        "            \"E-HW-STS-LOWEST\" => h.hw_sts_lowest = true,",
+        "            \"E-HW-STS-LOWEST\" => {}",
+        [],
+        [("ptxv-sim", "fixtures", "gb300_profile_keeps_the_lowest_lane_of_one_store")],
+    ),
+]
+
+# MISS 168: strict SASS explores the lanes of one global store on one word; under the GB300
+# profile (E-HW-STG-LOWEST) one 32-bit STG other than STG.E.MMIO.SYS leaves the lowest active
+# lane's bytes (exec.rs `hw_store_phase`, hwprofile.rs).
+MUTANTS += [
+    # The strict SASS level keeps lane order for global stores (lane 31's value: good clean).
+    SrcMutant(
+        "stg-lane-order",
+        "crates/sim/src/exec.rs",
+        "                    Front::Sass => self.hw_store_phase(inst).is_none(),\n",
+        "                    Front::Sass => *space != Space::Global && self.hw_store_phase(inst).is_none(),\n",
+        [("e_stg_keep", "good", "sass", []), ("e_stg_keep", "OUT", "sass", [])],
+        [("ptxv-sim", "fixtures", "e_stg_keep_strict_sass_takes_every_lane")],
+    ),
+    # The profile explores one 32-bit STG's lanes (no measured order).
+    SrcMutant(
+        "stg-lowest-off",
+        "crates/sim/src/hwprofile.rs",
+        "            \"E-HW-STG-LOWEST\" => h.hw_stg_lowest = true,",
+        "            \"E-HW-STG-LOWEST\" => {}",
+        [],
+        [("ptxv-sim", "fixtures", "e_stg_keep_strict_sass_takes_every_lane")],
+    ),
+    # The rule for a multicast STG too (one multicast shape measured: not encoded).
+    SrcMutant(
+        "stg-lowest-mcast",
+        "crates/sim/src/exec.rs",
+        "            } if self.launch.hw_stg_lowest\n                && self.launch.mcast.is_empty()\n",
+        "            } if self.launch.hw_stg_lowest\n                && true\n",
+        [],
+        [("ptxv-sim", "fixtures", "e_mm_lane_multicast_lanes_take_any_order")],
+    ),
+    # The rule for STG.E.MMIO.SYS too (GB300 keeps the highest active lane's bytes there:
+    # e_stg_keep MMIO_TRAP31 clean under the profile while GB300 traps in every launch;
+    # probes/stg_mmio_lane).
+    SrcMutant(
+        "stg-lowest-mmio",
+        "crates/sim/src/exec.rs",
+        "                && !inst.text.contains(\".MMIO\") =>\n",
+        "                && true =>\n",
+        [],
+        [("ptxv-sim", "fixtures", "e_stg_keep_strict_sass_takes_every_lane")],
+    ),
+    # The rule at every STG width (STG.64 by every lane: lane 0, GB300 keeps lane 16).
+    SrcMutant(
+        "stg-lowest-wide",
+        "crates/sim/src/exec.rs",
+        "                space: Space::Global,\n                bytes: 4,\n                ..\n",
+        "                space: Space::Global,\n                ..\n",
+        [],
+        [("ptxv-sim", "fixtures", "e_stg_keep_strict_sass_takes_every_lane")],
+    ),
+]
+
+# MISS 258: a MUFU node whose true function has no finite value at its operand's exact value (sqrt,
+# rsqrt, lg2 of a negative number; lg2, rsqrt, rcp of 0) leaves the element's exact value
+# undetermined: not analyzed, NaN error fields (fixtures/c_num_mufu_nan_f32).
+MUFU_NAN = ("ptxv", "num_untracked", "mufu_results_without_a_real_value_are_not_analyzed")
+# The same for a true value that is infinite or a pole (lg2, rsqrt, rcp of an exact 0;
+# fixtures/c_num_mufu_inf_f32).
+MUFU_INF = ("ptxv", "num_untracked", "mufu_results_without_a_finite_value_are_not_analyzed")
+MUTANTS += [
+    # The made-up exact value 0 is taken again: sqrt.approx.ftz of a negative subnormal is claimed
+    # exact, ex2(lg2(.)) of it has exact 1, and -2's NaN results carry infinite errors.
+    SrcMutant(
+        "mufu-nan-exact",
+        "crates/sim/src/num.rs",
+        "            if self.mufu_exact_undetermined(arg, (func, ptx), (neg, abs)) {\n",
+        "            if self.mufu_exact_undetermined(arg, (func, ptx), (neg, abs)) && false {\n",
+        [],
+        [MUFU_NAN, MUFU_INF],
+    ),
+    # Only a NaN true value counts again: lg2, rsqrt and rcp of an exact 0 get the exact value 0
+    # (max(lg2.approx.ftz(x), -1000) claimed exact where the error is 1000).
+    SrcMutant(
+        "mufu-inf-exact",
+        "crates/sim/src/num.rs",
+        "        xe.is_finite() && !mufu_true(func, ptx, xe).is_finite()\n",
+        "        xe.is_finite() && mufu_true(func, ptx, xe).is_nan()\n",
+        [],
+        [MUFU_INF],
+    ),
+    # out_rec stops walking MMA factors: a MUFU without a real value under one is claimed again
+    # (fixtures/c_num_mufu_nan_mma: abs_err 0 against the exact value made up for it).
+    SrcMutant(
+        "mma-factor-mufu",
+        "crates/sim/src/num.rs",
+        "                    if !factor_undetermined\n",
+        "                    if false\n",
+        [],
+        [("ptxv", "num_untracked", "mufu_under_an_mma_factor_without_a_real_value_is_not_analyzed")],
+    ),
+    # A non-finite element keeps the error and the exact value made up for it.
+    SrcMutant(
+        "nonfinite-nan-fields",
+        "crates/sim/src/num.rs",
+        "        let (exact_v, signed_err, abs_err, rel_err, err_ulps, thm1) = if nonfinite {\n",
+        "        let (exact_v, signed_err, abs_err, rel_err, err_ulps, thm1) = if false {\n",
+        [],
+        [MUFU_NAN],
+    ),
+]
+
+# MISS 259: a launch with the cluster dimension attribute is a cluster launch even at 1 x 1 x 1
+# (the capture libraries record it as `cluster_attr`, and a kernel's required cluster shape too,
+# MISS 281; python/ptxv/_casewriter.py `_launch_cluster`).
+MUTANTS += [
+    # The attribute is ignored again: a 1 x 1 x 1 launch with it gets no `cluster` line.
+    SrcMutant(
+        "casewriter-cluster-attr",
+        "python/ptxv/_casewriter.py",
+        '    return la.cluster != (1, 1, 1) or bool(la.record.get("cluster_attr"))\n',
+        '    return la.cluster != (1, 1, 1)\n',
+        [],
+        py=[("python/tests", "test_casewriter_cluster.py", "attribute")],
+    ),
+    # tools/capture.py ignores the attribute again: a 1 x 1 x 1 launchcap record with it gets no
+    # `cluster` line at the first launch or a [[launches]] entry, nor a cluster in the
+    # description.
+    SrcMutant(
+        "capture-cluster-attr",
+        "tools/capture.py",
+        '    return r["cluster"] != [1, 1, 1] or bool(r.get("cluster_attr"))\n',
+        '    return r["cluster"] != [1, 1, 1]\n',
+        [],
+        py=[("python/tests", "test_capture_cluster.py", "attribute")],
+    ),
+    # MISS 281: a kernel's required cluster shape other than the launch attribute's is no longer
+    # named in the case description.
+    SrcMutant(
+        "casewriter-required-cluster-note",
+        "python/ptxv/_casewriter.py",
+        '    if rec.get("required_cluster"):\n',
+        "    if False:\n",
+        [],
+        py=[("python/tests", "test_casewriter_cluster.py", "required_cluster")],
+    ),
+    SrcMutant(
+        "capture-required-cluster-note",
+        "tools/capture.py",
+        '    if r.get("required_cluster"):\n',
+        "    if False:\n",
+        [],
+        py=[("python/tests", "test_capture_cluster.py", "required_cluster")],
+    ),
+]
 
 def expect_for(case: Path, variant: str, front: str) -> list[str]:
     c = tomllib.loads((case / "case.toml").read_text())
@@ -5371,10 +10004,23 @@ def anchor_problem(text: str, file: str, find: str, spans: list | None = None) -
     return None
 
 
+def fb_only_skipped(tree: Path, mutants: list) -> list:
+    """The mutants among `mutants` that `tree` cannot hold: those of files under fb/ (internal
+    tooling, `SrcMutant.fb_only`) that it lacks, in a tree that also lacks the export manifest
+    fb/OSS_EXCLUDE.txt, which makes it an open-source export (the export drops fb/). In a tree
+    with the manifest, the internal one, a missing fb/ file is a broken anchor like any other."""
+    if (tree / "fb" / "OSS_EXCLUDE.txt").is_file():
+        return []
+    return [m for m in mutants if m.fb_only and not (tree / m.file).is_file()]
+
+
 def broken_anchors(tree: Path, mutants: list) -> list:
     """(mutant, why) for every mutant whose find text is not an anchor in its file under `tree`
     (anchor_problem: the rule run_mutant_in_tree applies before it builds). Each file is read
-    and scanned once per call."""
+    and scanned once per call. Also every fixture run whose case (a directory name under this
+    checkout's fixtures/, as a run reads it) or variant does not exist: a run reads its
+    expectation only after the mutant is built, and a missing one crashed the whole run (until
+    2026-11-12 three mutants named their case `fixtures/<case>`)."""
     bad = []
     files = {}
     for m in mutants:
@@ -5391,6 +10037,11 @@ def broken_anchors(tree: Path, mutants: list) -> list:
         why = anchor_problem(text, m.file, m.find, spans)
         if why:
             bad.append((m, why))
+        for case, variant, front, _ in m.runs:
+            try:
+                expect_for(ROOT / "fixtures" / case, variant, front)
+            except (OSError, KeyError, tomllib.TOMLDecodeError) as e:
+                bad.append((m, f"run {case} {variant} {front}: {type(e).__name__} {e}"))
     return bad
 
 
@@ -5424,6 +10075,17 @@ def main(argv=None):
         why = f"--only names no mutant that runs: {', '.join(bad)}" if bad else "no mutant is chosen"
         print(f"srcmut: {why}", file=sys.stderr)
         return 2
+    # An open-source export has no fb/: its mutants are skipped there, with a count (a run
+    # needs the files too). Every other mutant stays chosen; if none is left, that is an error.
+    skipped = fb_only_skipped(ROOT if a.root is None else a.root, chosen)
+    if skipped:
+        print(f"srcmut: fb-only mutants skipped: {len(skipped)} (files under fb/, which this tree "
+              "does not have)", file=sys.stderr)
+        gone = {m.name for m in skipped}
+        chosen = [m for m in chosen if m.name not in gone]
+        if not chosen:
+            print("srcmut: no mutant is chosen: every one is fb-only", file=sys.stderr)
+            return 2
     if a.check_anchors:
         broken = broken_anchors(ROOT if a.root is None else a.root, chosen)
         for m, why in broken:

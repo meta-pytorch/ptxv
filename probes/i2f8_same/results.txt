@@ -1,0 +1,35 @@
+# GB300 (one GPU, GPU 3), 2026-11-12, measured by the RVS2 review on a build of 6d676091:
+# PTXV_HW_EXPECT=variant ptxv hw --runs 1000 --scrub (the patched image checked by --image-fnv); grid 1x1x1, block 256
+hw SAME_COVER_S2 [scrubbed smem] 195/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinct
+hw SAME_NOWAIT_S2 [scrubbed smem] 258/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 10 distinc
+hw SAME_OWN_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_COVER_S4 [scrubbed smem] 536/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 8 distinct,
+hw SAME_NOWAIT_S4 [scrubbed smem] 170/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 5 distinct
+hw SAME_OWN_S4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_COVER_S6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_NOWAIT_S6 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_COVER_S8 [scrubbed smem] 35/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(965, 0), (
+hw SAME_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_OWN_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_COVER_S2 [scrubbed smem] 200/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 6 distinct,
+hw SAME_NOWAIT_S2 [scrubbed smem] 313/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinct
+hw SAME_OWN_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_COVER_S4 [scrubbed smem] 547/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 6 distinct,
+hw SAME_NOWAIT_S4 [scrubbed smem] 221/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinc
+hw SAME_OWN_S4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_COVER_S6 [scrubbed smem] 1/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): [(999, 0), (1
+hw SAME_NOWAIT_S6 [scrubbed smem] 131/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 7 distinct
+hw SAME_COVER_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw SAME_OWN_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw S16_COVER_S2 [scrubbed smem] 159/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 5 distinct, 
+hw S16_NOWAIT_S2 [scrubbed smem] 270/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 5 distinct,
+hw S16_OWN_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.4s) distinct outputs (count, words differing): [(1000, 0)]
+hw S16_COVER_S4 [scrubbed smem] 599/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 7 distinct, 
+hw S16_NOWAIT_S4 [scrubbed smem] 195/1000 runs differ from the correct output (1000 runs, 0.4s) distinct outputs (count, words differing): 6 distinct,
+hw S16_COVER_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw S16_NOWAIT_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.7s) distinct outputs (count, words differing): [(1000, 0)]
+hw S16_OWN_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+# (two passes of the SAME_* rows.) A narrow I2F with no write scoreboard is not covered by a later
+# I2F of the same full opcode: SAME_COVER_S2 / _S4 and S16_COVER_S2 / _S4 wrong in 159 to 599 of
+# 1000 runs, OWN 0 / 1000 in every layout. Static (this branch): every COVER / NOWAIT a violation.

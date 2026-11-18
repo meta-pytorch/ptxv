@@ -1,0 +1,52 @@
+name = "e_mbar_lane_inval"
+description = """
+RMK4 A6: e_mbar_store_order with the inval and the store in lanes of one warp. On SASS LANE / LANES / LANERE are clean: ptxas drops the warp sync of LANESYNC, the SASS is the same, and the lanes of one converged warp issue in order (E-LOCKSTEP, E-WARP-ORDER; the inval / init join the lanes since 2026-11-12); the PTX front reports them (lanes are threads)."""
+ptx = "kernel.ptx"
+entry = "e_mbar_lane_inval"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "LANE"
+summary = "t0 invals, lane 1 of the same warp stores, no syncwarp"
+edits = [{ marker = "@STT", find = "%r1, 32;", replace = "%r1, 1;" }]
+expect = ["violation"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "LANES"
+summary = "lane 1 invals, lane 0 stores"
+edits = [{ marker = "@IVT", find = "%r1, 0;", replace = "%r1, 1;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 0;" }]
+expect = ["violation"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "LANEPRE"
+summary = "no inval / bar.sync: lane 1 stores, unordered with t0 first init"
+edits = [{ marker = "@B1", replace = "<delete>" }, { marker = "@INV", replace = "<delete>" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 1;" }]
+expect = ["violation"]
+
+[[variants]]
+id = "LANESYNC"
+summary = "control: bar.warp.sync between the inval and lane 1 store"
+edits = [{ marker = "@MID", find = "NOINV:", replace = "NOINV: bar.warp.sync -1;" }, { marker = "@STT", find = "%r1, 32;", replace = "%r1, 1;" }]
+expect = ["clean"]
+
+[[variants]]
+id = "LANERE"
+summary = "lane 1 re-inits per thread (STS.64), unordered with lane 0 inval"
+edits = [{ marker = "@STT", find = "%r1, 32;", replace = "%r1, 1;" }, { marker = "@STORE", find = "st.shared.u64 [%r2], %rd5;", replace = "sub.u32 %r20, %r1, 1; shl.b32 %r21, %r20, 3; add.u32 %r22, %r2, %r21; mbarrier.init.shared::cta.b64 [%r22], 1;" }]
+expect = ["race"]
+expect_sass = ["clean"]
+

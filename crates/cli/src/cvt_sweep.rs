@@ -66,6 +66,8 @@ pub fn run(dir: &Path, gpu: Option<u32>, record: bool, reuse: bool) -> Result<()
             cubin.to_str().unwrap().into(),
             "--runs".into(),
             "1".into(),
+            "--image-fnv".into(),
+            crate::image_fnv(&cubin)?,
         ];
         for (i, b) in names.iter().enumerate() {
             let p = out.join(format!("{b}.bin"));

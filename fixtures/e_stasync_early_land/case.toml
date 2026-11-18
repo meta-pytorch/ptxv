@@ -1,0 +1,42 @@
+name = "e_stasync_early_land"
+description = """
+S-REMOTE-INFLIGHT: an in-flight st.async that lands before its issuer's draining release is
+still ordered before that release. Rank 0 thread 0 st.async-stores x into rank 1 (complete_tx
+on M1), then runs fence.acq_rel.cluster and a .release.cluster remote arrive on M2; rank 1
+waits on M2 and reads x, then waits on M1. The fence would have drained the store, so the read
+is ordered whether the store landed at the drain or before it, as its own step. FENLD puts a
+step break between the store and the fence; until MISS 184's follow-up a store that landed
+there was never joined into its issuer, so the stateful explorer without local reduction and
+DPOR found a race that the local reduction and the certificate did not (PTX). PTX: the S-MBAR-SCOPE
+contract (the async complete_tx is ordered for rank 1's own CTA only); SASS clean."""
+ptx = "kernel.ptx"
+entry = "e_stasync_early_land"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "FEN"
+summary = "st.async; fence.acq_rel.cluster; remote .release.cluster arrive on M2; the peer waits on M2 and reads x"
+expect = ["contract"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "FENLD"
+summary = "FEN with a volatile shared load between the st.async and the fence (ends the step): the store can land before the fence"
+marker = "@BRK"
+find = "// (step break)"
+replace = "ld.volatile.shared.u32 %r16, [%r8];"
+expect = ["contract"]
+expect_sass = ["clean"]

@@ -4,9 +4,11 @@ MISS 136 / MISS 146: consumed async ops, one behind another lane's in a remote p
 issues st.async A on m1; lane 1 issues st.async P (writes g, on m2), then st.async B on m1.
 Rank 1 waits on m1, then reads g. good: the warp-wide cluster release at the end drains A, P
 and B together; before MISS 136 DPOR missed the race itself there (PTX [contract], SASS
-[clean]), and both explorers now give the stateful verdict. NH: lane 1 alone drains P and B
-with a cluster fence while lane 0's A, ahead of B in m1's pipe, is pending: the non-head case
-(dpor::NONHEAD_BACKTRACKS). See kernel.ptx."""
+[clean]), and both explorers now give the stateful verdict. Until MISS 184 the certificate
+certified good the same way: P's write was covered by lane 1's later release. NH: lane 1
+alone drains P and B with a cluster fence while lane 0's A, ahead of B in m1's pipe, is
+pending: the non-head case (dpor::NONHEAD_BACKTRACKS) until MISS 184, since when the drain
+lands A first. See kernel.ptx."""
 ptx = "kernel.ptx"
 entry = "e_dpor_nonhead"
 grid = [2, 1, 1]
@@ -38,7 +40,21 @@ marker = "@NH"
 find = "// (lane 1 drain slot)"
 replace = "ld.volatile.shared.u32 %r16, [%r7]; fence.acq_rel.cluster;"
 # PTX: lane 1's step ending at the shared load leaves B pending behind A; its next step (the
-# fence) consumes B with A still pending: m1's pipe is backtracked although its head stays
-# (dpor::NONHEAD_BACKTRACKS). SASS: ptxas schedules the lanes so that no such state arises.
+# fence) consumed B with A still pending, and m1's pipe was backtracked although its head
+# stayed (dpor::NONHEAD_BACKTRACKS). Since MISS 184 the fence lands A (the pipe's head) before
+# B, so m1's pipe is backtracked as a consumed head.
+# SASS (MISS 184): race. ptxas puts lane 1's fence right after its two stores (`STAS.128;
+# STAS; MEMBAR.ALL.CTA; MEMBAR.ALL.GPU; ERRBAR; CGAERRBAR`). P (on m2) and B (on m1) are in
+# different pipes, which S-REMOTE-INFLIGHT leaves unordered, so while lane 1 waits at the
+# CGAERRBAR, A and B can land, complete m1's phase, and rank 1 can read g before P lands.
+# This was [clean] only because P wrote under lane 1's clock, which B's release covered.
+# Evidence: reachable in the model by the ISA argument (st.async on different mbarriers are
+# unordered in PTX; CGAERRBAR only waits for all of them). GB300 probe (1024 clusters per
+# launch, 31 launches, 3 GPUs; rank 1 reads g after m1's phase): 0 stale reads of 31,744 for
+# this order and 0 for REV (B issued before P, a race under any model), while DLY (B,
+# nanosleep 2000, P) read stale in 30,088 (94.8%). The probe's window is far wider than the
+# landing skew of back-to-back STAS, so hardware neither confirms nor refutes the race. If
+# hardware delivers one thread's remote operations in order across mbarriers, this is
+# S-REMOTE-INFLIGHT's documented false alarm.
 expect = ["contract", "nondeterministic", "race", "violation"]
-expect_sass = ["clean"]
+expect_sass = ["nondeterministic", "race", "violation"]

@@ -315,8 +315,9 @@ fn round_exact(t: &[(f64, i32)], rz: bool, tgt: Tgt, via32: bool) -> f64 {
     round_int(acc, lo, rz, tgt, via32)
 }
 
-/// Round v * 2^e to the target (RZ or RN-even; subnormals; overflow to max (RZ) or Inf; a zero
-/// result is +0).
+/// Round v * 2^e to the target (RZ or RN-even; subnormals; overflow to a signed Inf in both
+/// modes, as GB300's block-scaled steps give, where an IEEE RZ would saturate; a zero result is
+/// +0). The tensor-core path reports an Inf result outside the model (MISS 144).
 fn round_int(v: i128, e: i32, rz: bool, tgt: Tgt, via32: bool) -> f64 {
     if tgt.mbits == F16.mbits && via32 {
         let x = round_int(v, e, rz, F32, false);
@@ -347,12 +348,9 @@ fn round_int(v: i128, e: i32, rz: bool, tgt: Tgt, via32: bool) -> f64 {
         m >>= 1;
         qe += 1;
     }
+    // ASSUME(N-MMA-BS): GB300, probes/mma_bs/ovf: every overflowing step gives +-Inf.
     let val = if qe + tgt.mbits > tgt.emax {
-        if rz {
-            (2.0 - 2f64.powi(-tgt.mbits)) * 2f64.powi(tgt.emax)
-        } else {
-            f64::INFINITY
-        }
+        f64::INFINITY
     } else {
         m as f64 * 2f64.powi(qe)
     };

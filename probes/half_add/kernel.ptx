@@ -1,0 +1,107 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// probes/half_add: f16 / bf16 adds and half atomic adds against GB300 (N-F16X2, N-BF16X2).
+// Thread g (16 CTAs x 256) loads (a, b) = inh[g] (f16x2 words) and (c, e) = inb[g] (bf16x2
+// words; gen.py) and stores out[j][g]:
+//   j = 0: add.rn.f16x2 a, b                                   (HADD2)
+//   j = 1: {lo: add.rn.f16 a.lo, b.hi; hi: add.rn.f16 a.hi, b.hi} (HADD2 with selectors)
+//   j = 2: {lo: add.rn.f16 a.hi, b.lo; hi: add.rn.f16 a.lo, b.lo}
+//   j = 3: add.rn.bf16x2 c, e                                  (HADD2.BF16_V2)
+//   j = 4: {lo: add.rn.bf16 c.lo, e.hi; hi: add.rn.bf16 c.hi, e.hi}
+//   j = 5: {lo: add.rn.bf16 c.hi, e.lo; hi: add.rn.bf16 c.lo, e.lo}
+//   j = 6: old value of atom.global.add.noftz.f16x2 [m0 + 4g], b      (ATOMG.E.ADD.F16x2.RN)
+//   j = 7: old value of atom.add.noftz.f16x2 [m1 + 4g], b (generic)   (ATOM.E.ADD.F16x2.RN)
+//   j = 8: {lo: old of atom.add.noftz.f16 [m3 + 4g], b.lo; hi: old of atom.add.noftz.f16
+//          [m3 + 4g + 2], b.hi} (generic; ptxas: LD.E word, HADD2 + PRMT, ATOM.E.CAS loop)
+//   j = 9: old value of atom.global.add.noftz.bf16x2 [m4 + 4g], e     (ATOMG.E.ADD.BF16x2.RN)
+//   j = 10: old value of atom.add.noftz.bf16x2 [m5 + 4g], e (generic) (ATOM.E.ADD.BF16x2.RN)
+//   j = 11: as j = 8 with bf16 on m7 (HADD2.BF16_V2 + PRMT, ATOM.E.CAS loop)
+// m = 8 x 4096 words: m0..m3 initially a, m4..m7 initially c; m2: red.global.add.noftz.f16x2
+// [m2 + 4g], b (REDG.E.ADD.F16x2.RN); m6: red.global.add.noftz.bf16x2 [m6 + 4g], e.
+// ptxas 13.0 emits add.rn.f16x2 / .bf16x2 as HFMA2 a, 1, 1, b; the selector forms (j = 1, 2,
+// 4, 5) are HADD2 / HADD2.BF16_V2 R, Ra, Rb.H0_H0 / .H1_H1. controls/ holds the positive
+// controls (GB300 only).
+.version 8.8
+.target sm_103a
+.address_size 64
+
+.visible .entry half_add(
+    .param .u64 pinh,
+    .param .u64 pinb,
+    .param .u64 pm,
+    .param .u64 pout
+)
+.maxntid 256, 1, 1
+{
+    .reg .b32   %r<64>;
+    .reg .b16   %h<48>;
+    .reg .f32   %f<16>;
+    .reg .b64   %rd<16>;
+
+    ld.param.u64    %rd1, [pinh];
+    ld.param.u64    %rd2, [pinb];
+    ld.param.u64    %rd3, [pm];
+    ld.param.u64    %rd4, [pout];
+    mov.u32         %r1, %tid.x;
+    mov.u32         %r2, %ctaid.x;
+    mad.lo.u32      %r3, %r2, 256, %r1;
+    mul.wide.u32    %rd5, %r3, 8;
+    add.s64         %rd6, %rd1, %rd5;
+    add.s64         %rd7, %rd2, %rd5;
+    ld.global.u32   %r4, [%rd6];
+    ld.global.u32   %r5, [%rd6+4];
+    ld.global.u32   %r6, [%rd7];
+    ld.global.u32   %r7, [%rd7+4];
+    mul.wide.u32    %rd8, %r3, 4;
+    add.s64         %rd9, %rd4, %rd8;
+    add.s64         %rd10, %rd3, %rd8;
+    mov.b32         {%h1, %h2}, %r4;
+    mov.b32         {%h3, %h4}, %r5;
+    mov.b32         {%h5, %h6}, %r6;
+    mov.b32         {%h7, %h8}, %r7;
+
+    add.rn.f16x2    %r10, %r4, %r5;
+    add.rn.f16      %h10, %h1, %h4;
+    add.rn.f16      %h11, %h2, %h4;
+    mov.b32         %r11, {%h10, %h11};
+    add.rn.f16      %h12, %h2, %h3;
+    add.rn.f16      %h13, %h1, %h3;
+    mov.b32         %r12, {%h12, %h13};
+    add.rn.bf16x2   %r13, %r6, %r7;
+    add.rn.bf16     %h14, %h5, %h8;
+    add.rn.bf16     %h15, %h6, %h8;
+    mov.b32         %r14, {%h14, %h15};
+    add.rn.bf16     %h16, %h6, %h7;
+    add.rn.bf16     %h17, %h5, %h7;
+    mov.b32         %r15, {%h16, %h17};
+
+    atom.global.add.noftz.f16x2 %r16, [%rd10], %r5;
+    atom.add.noftz.f16x2 %r17, [%rd10+16384], %r5;
+    red.global.add.noftz.f16x2 [%rd10+32768], %r5;
+    atom.add.noftz.f16 %h18, [%rd10+49152], %h3;
+    atom.add.noftz.f16 %h19, [%rd10+49154], %h4;
+    mov.b32         %r18, {%h18, %h19};
+    atom.global.add.noftz.bf16x2 %r19, [%rd10+65536], %r7;
+    atom.add.noftz.bf16x2 %r20, [%rd10+81920], %r7;
+    red.global.add.noftz.bf16x2 [%rd10+98304], %r7;
+    atom.add.noftz.bf16 %h20, [%rd10+114688], %h7;
+    atom.add.noftz.bf16 %h21, [%rd10+114690], %h8;
+    mov.b32         %r21, {%h20, %h21};
+
+    st.global.u32   [%rd9], %r10;
+    st.global.u32   [%rd9+16384], %r11;
+    st.global.u32   [%rd9+32768], %r12;
+    st.global.u32   [%rd9+49152], %r13;
+    st.global.u32   [%rd9+65536], %r14;
+    st.global.u32   [%rd9+81920], %r15;
+    st.global.u32   [%rd9+98304], %r16;
+    st.global.u32   [%rd9+114688], %r17;
+    st.global.u32   [%rd9+131072], %r18;
+    st.global.u32   [%rd9+147456], %r19;
+    st.global.u32   [%rd9+163840], %r20;
+    st.global.u32   [%rd9+180224], %r21;
+    ret;
+}

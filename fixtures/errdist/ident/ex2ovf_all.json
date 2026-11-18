@@ -1,0 +1,1 @@
+{"version": 1, "seed": 1, "name": "x: uniform [2^28, 2^29) only (t = x 2^100 overflows on every output, y = +Inf; 2 + B x is 534 to 1066)", "tensors": {"x": {"dist": {"kind": "uniform", "lo": 268435456.0, "hi": 536870912.0}}}, "default": {"dist": {"kind": "normal"}}}

@@ -1,0 +1,5 @@
+w0=31
+out=31 x32
+runs=500 of 500 (2026-11-12, GB300, ptxv hw --runs 500 --scrub)
+TRAP31: 20 of 20 launches trap (cuCtxSynchronize: unspecified launch failure)
+TRAP0: 0 of 20 launches trap

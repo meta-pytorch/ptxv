@@ -1,0 +1,35 @@
+name = "e_clock_callee"
+description = """
+E-CLOCK (MISS 70): e_clock_timeout's poll across a call. The clock is read in a non-inlined
+device function (`__noinline__ now_cycles()`: SASS `CALL.REL.NOINC`, `CS2R R2, SR_CLOCKLO`,
+`RET.REL.NODEC`) and the caller compares the returned value with its start time: a clock64
+timeout whose timeout path reads the data without the flag. On GB300 the producer sleeps
+200 us and the reader takes the timeout path (out[0] = 0 in 200 / 200 runs). The clock taint
+gave `RET` no successor and the call's fall-through the caller's state before the call, so
+the returned value was clock-free in the caller, the timeout branch one path and the verdict
+clean with one output (7, 7, 1, 0). A `RET` returns to every call's return site now: the
+timeout branch is a clock branch, explored both ways: the race. ptxas made the timeout test
+the loop's back edge, so the not-timed-out side repeats the poll: after MAX_CLOCK_ITERS such
+iterations the loop is a clock-paced finding (unmodeled), as for any clock back edge whose
+iterations are not proven equivalent. Binary only (the PTX front refuses
+`call`): k.cu built with `nvcc -cubin -arch=sm_103a`."""
+cubin = "kernel.cubin"
+entry = "clock_call"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "timeout path reads without the flag"
+expect = ["race", "unmodeled"]

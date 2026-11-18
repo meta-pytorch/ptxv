@@ -73,3 +73,5 @@ byte_offset = 0
 id = "good"
 summary = "as captured"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]

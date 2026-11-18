@@ -1,0 +1,52 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry c_atom_dec_cas16(.param .u64 pw, .param .u64 pb, .param .u64 pw2, .param .u64 pout)
+{
+    .reg .pred %p<4>;
+    .reg .b16 %rs<8>;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [pw];
+    ld.param.u64 %rd2, [pb];
+    ld.param.u64 %rd3, [pw2];
+    ld.param.u64 %rd4, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd5, %r0, 4;
+    add.s64 %rd6, %rd1, %rd5;
+    add.s64 %rd7, %rd2, %rd5;
+    add.s64 %rd8, %rd3, %rd5;
+    mul.wide.u32 %rd9, %r0, 16;
+    add.s64 %rd10, %rd4, %rd9;
+    // atom.dec: old == 0 or old > bound stores the bound, else old - 1.
+    ld.global.u32 %r1, [%rd7];
+    atom.global.dec.u32 %r2, [%rd6], %r1;
+    ld.global.u32 %r3, [%rd6];
+    // atom.cas.b16 on half (t & 1) of w2[t]: swaps when t & 2 (the compare is the half's
+    // value), fails otherwise (the half's value + 1).
+    and.b32 %r4, %r0, 1;
+    mul.wide.u32 %rd11, %r4, 2;
+    add.s64 %rd12, %rd8, %rd11;
+    ld.global.u16 %rs1, [%rd12];
+    and.b32 %r5, %r0, 2;
+    setp.ne.u32 %p1, %r5, 0;
+    add.u16 %rs2, %rs1, 1;
+    selp.b16 %rs3, %rs1, %rs2, %p1;
+    cvt.u16.u32 %rs4, %r0;
+    xor.b16 %rs5, %rs4, 0xabcd;
+    atom.global.cas.b16 %rs6, [%rd12], %rs3, %rs5;
+    ld.global.u32 %r6, [%rd8];
+    cvt.u32.u16 %r7, %rs6;
+    st.global.v4.u32 [%rd10], {%r2, %r3, %r7, %r6};
+    ret;
+}

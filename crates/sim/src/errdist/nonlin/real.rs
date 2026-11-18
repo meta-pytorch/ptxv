@@ -19,6 +19,7 @@ use super::super::chain::Op;
 use super::super::chain::Prog;
 use super::ident::Func;
 use super::ops::NlOp;
+use crate::num::MaxKind;
 
 /// A double-double value hi + lo.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -101,6 +102,16 @@ pub fn eval(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<(Dd, f64)> {
 pub struct Table {
     pub v: Vec<(Dd, f64)>,
     pub outside: Vec<bool>,
+    /// Per op whether it is an instruction slice without an identified real function or reads
+    /// one (as `outside` propagates: a maximum's either child, a selection's predicate or chosen
+    /// child): no exact value. Its value is NaN, which alone would let a maximum pass on the
+    /// other child and give an exact value that is not the slice's (MISS 88).
+    pub unident: Vec<bool>,
+    /// Per op whether it is an identified slice whose alternatives disagree with its form at
+    /// its arguments (`ident::RealFn::agrees`), or reads one (as `unident`, which it implies):
+    /// forms that fit the slice's probes equally well take other values here, so its exact
+    /// value is not established (MISS 147).
+    pub ambig: Vec<bool>,
 }
 
 /// `eval` with the unknown ops marked (`Table`).
@@ -108,20 +119,24 @@ pub struct Table {
 pub fn eval_table(p: &Prog, w: &[crate::mma_lp::Operand]) -> Table {
     let mut r: Vec<(Dd, f64)> = Vec::with_capacity(p.ops.len());
     let mut outside: Vec<bool> = Vec::with_capacity(p.ops.len());
+    let mut unident: Vec<bool> = Vec::with_capacity(p.ops.len());
+    let mut ambig: Vec<bool> = Vec::with_capacity(p.ops.len());
     let nan = (Dd::new(f64::NAN), f64::NAN);
     let mut scratch = Vec::new();
     for (i, op) in p.ops.iter().enumerate() {
         // Unknown operands make the op unknown (a selection: its predicate's arguments and
         // the child it passes on).
-        let mut u = match op {
+        let reads = |m: &[bool]| match op {
             Op::Nl(nl @ NlOp::Sel { args, .. }) => {
-                args.iter().any(|&j| outside[j as usize])
-                    || pick(nl, &r).is_some_and(|c| outside[c as usize])
+                args.iter().any(|&j| m[j as usize]) || pick(nl, &r).is_some_and(|c| m[c as usize])
             }
             _ => super::super::chain::op_args(op)
                 .iter()
-                .any(|&j| outside[j as usize]),
+                .any(|&j| m[j as usize]),
         };
+        let mut u = reads(&outside);
+        let mut un = reads(&unident) || matches!(op, Op::Nl(NlOp::Seg { real: None, .. }));
+        let mut am = reads(&ambig);
         let x = match op {
             Op::Leaf { .. } => (Dd::new(w[i].v), w[i].v.abs()),
             Op::Const(c) => (Dd::new(*c), c.abs()),
@@ -228,6 +243,8 @@ pub fn eval_table(p: &Prog, w: &[crate::mma_lp::Operand]) -> Table {
                             )
                         } else {
                             let v = f.eval(&a);
+                            // MISS 147: forms the probes do not tell apart take other values.
+                            am |= !f.agrees(&a, v);
                             let s = match f.mul {
                                 Some(j) if f.pow > 0 => {
                                     r[args[j] as usize].1 * f.func.f(f.z(&a)).abs()
@@ -241,10 +258,18 @@ pub fn eval_table(p: &Prog, w: &[crate::mma_lp::Operand]) -> Table {
                 },
             },
         };
-        r.push(if u { nan } else { x });
+        un |= am;
+        r.push(if u || un { nan } else { x });
         outside.push(u);
+        unident.push(un);
+        ambig.push(am);
     }
-    Table { v: r, outside }
+    Table {
+        v: r,
+        outside,
+        unident,
+        ambig,
+    }
 }
 
 /// The child an exact `Sel` / `Max` passes on, given `eval`'s table of its children `t`
@@ -269,17 +294,36 @@ pub fn pick(op: &NlOp, t: &[(Dd, f64)]) -> Option<u32> {
                 *b
             })
         }
-        NlOp::Max { a, b, min } => {
+        NlOp::Max { a, b, min, kind } => {
             let (x, y) = (t[*a as usize].0, t[*b as usize].0);
-            // NaN-propagation order kept explicit (max.f32 returns the non-NaN operand).
-            Some(if x.hi.is_nan() {
-                *b
-            } else if y.hi.is_nan() {
-                *a
-            } else if x.gt(y) != *min {
-                *a
-            } else {
-                *b
+            let un = x.hi.is_nan() || y.hi.is_nan();
+            Some(match kind {
+                // NaN-propagation order kept explicit (max.f32 returns the non-NaN operand;
+                // max.NaN.f32 the canonical NaN, counted as b).
+                MaxKind::Fmnmx { nan } => {
+                    if x.hi.is_nan() || (*nan && y.hi.is_nan()) {
+                        *b
+                    } else if y.hi.is_nan() {
+                        *a
+                    } else if x.gt(y) != *min {
+                        *a
+                    } else {
+                        *b
+                    }
+                }
+                // A select by the exact comparison's outcome (MISS 197).
+                MaxKind::Select(m) => {
+                    let o = if un {
+                        3
+                    } else if x.gt(y) {
+                        0
+                    } else if y.gt(x) {
+                        1
+                    } else {
+                        2
+                    };
+                    if m >> o & 1 == 1 { *b } else { *a }
+                }
             })
         }
         NlOp::Seg { .. } | NlOp::Mufu { .. } => None,

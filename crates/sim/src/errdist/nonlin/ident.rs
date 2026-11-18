@@ -167,6 +167,13 @@ pub struct RealFn {
     /// mask; `SProg::rounding_steps`): their bits are decisions too (MISS 99 follow-up).
     #[serde(default)]
     pub steps: Vec<(u32, u32)>,
+    /// Forms of another shape (`shape`: function, multiplier, arguments read) with exact
+    /// constants that fit the probes about as well as this one, within EXACT_VETO of its
+    /// deviation plus a rounding (MISS 147): the probes do not tell them apart, so where they
+    /// disagree beyond that margin the slice's exact value is not established (`agrees`,
+    /// `real::eval_table`).
+    #[serde(default)]
+    pub alts: Vec<RealFn>,
 }
 
 /// The patterns of a slice's data-dependent decisions (`SProg::decisions`: the predicates it
@@ -240,6 +247,7 @@ impl RealFn {
             probes: 0,
             outcomes: None,
             steps: vec![],
+            alts: vec![],
         }
     }
     /// The inner argument z = c0 + sum coef_i a_i.
@@ -290,6 +298,23 @@ impl RealFn {
             return a[0] / a[1];
         }
         self.outer.0 + self.outer.1 * self.factor(a) * self.func.f(self.z(a))
+    }
+    /// Whether every alternative (`alts`, MISS 147) agrees with this form's value `v` at the
+    /// arguments `a`: the same value, or within EXACT_VETO times the two forms' deviations on
+    /// the probes plus a rounding (relative, with `max_err`'s floor). On the probes they agree
+    /// within the sum of the deviations; beyond them a curve that is linear on the probed
+    /// range (exp2, tanh) leaves the line it matched there. NaN from both (an argument whose
+    /// exact value is not determined) agrees: the output is left out by that cause.
+    pub fn agrees(&self, a: &[f64], v: f64) -> bool {
+        self.alts.iter().all(|alt| {
+            let w = alt.eval(a);
+            if w == v || (w.is_nan() && v.is_nan()) {
+                return true;
+            }
+            let floor = form_floor(self).max(form_floor(alt));
+            let d = (w - v).abs() / v.abs().max(w.abs()).max(floor).max(1e-300);
+            d <= EXACT_VETO * (self.fit_err + alt.fit_err) + 2f64.powi(-23)
+        })
     }
     /// Partial derivatives with respect to each argument.
     pub fn grad(&self, a: &[f64]) -> Vec<f64> {
@@ -403,7 +428,7 @@ pub fn func_key(p: &SProg) -> String {
     s + &format!("{:?}", p.out)
 }
 
-/// The f32 constants a slice reads (immediates and constant-bank values).
+/// The f32 constants a slice reads (immediates and constant-bank values), finite and nonzero.
 fn slice_consts(p: &SProg) -> Vec<f64> {
     let mut out = Vec::new();
     for o in &p.ops {
@@ -428,13 +453,15 @@ fn slice_consts(p: &SProg) -> Vec<f64> {
             }
         }
     }
-    out.retain(|x| x.is_finite() && *x != 0.0 && x.abs() > 1e-30 && x.abs() < 1e30);
+    out.retain(|x| x.is_finite() && *x != 0.0);
     out
 }
 
 /// Snap candidates (positive), with a priority: 0 for exact named constants
 /// ({1, log2 e, ln 2, sqrt 2, ...} x 2^k, decimal epsilons), 1 for the slice's own f32
-/// constants and their products with log2 e and ln 2.
+/// constants and their products with log2 e and ln 2, 2 for products of two of them (the
+/// real arithmetic multiplies them: y = (x 2^100) C + 2 is 2 + (2^100 C) x). Since MISS 138
+/// a form with fitted constants is no exact reference, and such a slope did not snap.
 fn snap_candidates(consts: &[f64]) -> Vec<(f64, u8)> {
     let l2e = std::f64::consts::LOG2_E;
     let ln2 = std::f64::consts::LN_2;
@@ -464,8 +491,23 @@ fn snap_candidates(consts: &[f64]) -> Vec<(f64, u8)> {
     }
     for &c in consts {
         let c = c.abs();
+        if c <= 1e-30 || c >= 1e30 {
+            continue;
+        }
         for v in [c, c * l2e, c * ln2, c / l2e] {
             out.push((v, 1));
+        }
+    }
+    let mut cs: Vec<f64> = consts.iter().map(|c| c.abs()).collect();
+    cs.sort_by(f64::total_cmp);
+    cs.dedup();
+    cs.truncate(32);
+    for (i, &a) in cs.iter().enumerate() {
+        for &b in &cs[i..] {
+            let v = a * b;
+            if v > 1e-30 && v < 1e30 {
+                out.push((v, 2));
+            }
         }
     }
     out
@@ -548,14 +590,19 @@ fn floor_of(f: &Func) -> f64 {
     }
 }
 
-/// Largest relative deviation of the probes' outputs from the form.
-fn max_err(r: &RealFn, probes: &[(Vec<f64>, f64)]) -> f64 {
-    // A named form's floor is a quarter of its outer scale: 1 + tanh(z) built on MUFU.TANH
-    // (2^-11 absolute) has large relative errors where it cancels.
-    let floor = match r.func {
+/// The floor of a form's relative deviation (`max_err`, `RealFn::agrees`). A named form's is a
+/// quarter of its outer scale: 1 + tanh(z) built on MUFU.TANH (2^-11 absolute) has large
+/// relative errors where it cancels.
+fn form_floor(r: &RealFn) -> f64 {
+    match r.func {
         Func::Named(_) => floor_of(&r.func).max(r.outer.1.abs() * 0.25),
         _ => floor_of(&r.func),
-    };
+    }
+}
+
+/// Largest relative deviation of the probes' outputs from the form.
+fn max_err(r: &RealFn, probes: &[(Vec<f64>, f64)]) -> f64 {
+    let floor = form_floor(r);
     let mut w = 0.0f64;
     for (a, g) in probes {
         let p = r.eval(a);
@@ -741,6 +788,7 @@ fn fit_form_cols(
             probes: probes.len(),
             outcomes: None,
             steps: vec![],
+            alts: vec![],
         };
         r.fit_err = max_err(&r, probes);
         if r.fit_err.is_nan() || r.fit_err > ACCEPT {
@@ -872,6 +920,79 @@ fn fit_poly(probes: &[(Vec<f64>, f64)], cands: &[(f64, u8)], k: usize) -> Vec<Re
     out
 }
 
+/// Whether a form reads argument `k` (`arg_dependence`).
+fn reads_arg(r: &RealFn, k: usize) -> bool {
+    match r.func {
+        Func::Div => k < 2,
+        Func::Poly => r.parg == k && r.coef.iter().any(|c| *c != 0.0),
+        _ => r.mul == Some(k) || r.coef.get(k).is_some_and(|c| *c != 0.0),
+    }
+}
+
+/// The arguments the slice's output depends on over the probes (MISS 138): argument k is one
+/// when giving a probe another probe's value of it changes the slice's output bits. A form
+/// that leaves such an argument out drops a term of the slice however small the term is
+/// against the output: the acceptance bound (2^-11 relative) is thousands of output ulps, and
+/// `y = RM(floor(x / 1024) + u)` (a FADD.RM floor, u near 2^23) was fitted as y = u, the floor
+/// 1-11 ulps on the probes and up to 2000 on inputs beyond them.
+fn arg_dependence(p: &SProg, probes: &[(Vec<f64>, f64)]) -> Vec<bool> {
+    let m = probes.len();
+    let mut dep = vec![false; p.args.len()];
+    if m < 2 {
+        return dep;
+    }
+    let same =
+        |x: u32, y: u32| x == y || (f32::from_bits(x).is_nan() && f32::from_bits(y).is_nan());
+    for (k, d) in dep.iter_mut().enumerate() {
+        // Each of the first probes against one from the other half.
+        for i in 0..m.min(512) {
+            let (a, b) = (&probes[i].0, &probes[(i + m / 2 + 1) % m].0);
+            let v = (b[k] as f32).to_bits();
+            if (a[k] as f32).to_bits() == v {
+                continue;
+            }
+            let mut x: Vec<u32> = a.iter().map(|&y| (y as f32).to_bits()).collect();
+            let Ok(y0) = p.eval(&x) else { continue };
+            x[k] = v;
+            let Ok(y1) = p.eval(&x) else { continue };
+            if !same(y0, y1) {
+                *d = true;
+                break;
+            }
+        }
+    }
+    dep
+}
+
+/// Whether every instruction of the slice is an FP add, multiply or fused multiply-add (FADD, FMUL,
+/// FFMA, FFMA2; a guard picks between such values): every rounding the identity, its real function
+/// is then a polynomial in its arguments on each decision pattern (MISS 147), and a curved form
+/// (exp2, tanh, a reciprocal, a root, a quotient, a named function) can match it only where the
+/// curve is linear on the probes, as tanh(2^-64 x) matched an exact scaling y = RN(x 2^-64).
+fn polynomial(p: &SProg) -> bool {
+    p.ops.iter().all(|o| match &o.kind {
+        SKind::Inst { op, .. } => matches!(
+            op,
+            ptxv_ir::Op::Ffma { .. } | ptxv_ir::Op::Fadd { .. } | ptxv_ir::Op::Ffma2 { .. }
+        ),
+        SKind::Guard { .. } => true,
+        SKind::DivRn { .. } => false,
+    })
+}
+
+/// Keep a fitted form if it reads every argument the slice depends on (`arg_dependence`);
+/// else remember the best such form for the refusal's text.
+fn admit(r: RealFn, dep: &[bool], found: &mut Vec<RealFn>, dropped: &mut Option<RealFn>) {
+    if (0..dep.len()).all(|k| !dep[k] || reads_arg(&r, k)) {
+        found.push(r);
+    } else if dropped
+        .as_ref()
+        .is_none_or(|d| (!r.snapped, r.fit_err) < (!d.snapped, d.fit_err))
+    {
+        *dropped = Some(r);
+    }
+}
+
 /// Identify one slice from its probes (argument tuples and outputs, f64).
 pub fn identify(p: &SProg, probes: &[(Vec<f64>, f64)]) -> Result<RealFn, String> {
     if crate::seg::real_maximum(p).is_some() {
@@ -904,7 +1025,22 @@ pub fn identify(p: &SProg, probes: &[(Vec<f64>, f64)]) -> Result<RealFn, String>
         return Err(format!("{} finite probes", probes.len()));
     }
     let cands = snap_candidates(&slice_consts(p));
-    if n == 2 {
+    // MISS 147: a slice of FP adds, multiplies and FMAs takes polynomial forms only.
+    let poly = polynomial(p);
+    let funcs: Vec<Func> = if poly {
+        vec![Func::Ident]
+    } else {
+        vec![
+            Func::Exp2,
+            Func::Rcp,
+            Func::Rsqrt,
+            Func::Sqrt,
+            Func::Tanh,
+            Func::Ident,
+        ]
+    };
+    let pows: &[i32] = if poly { &[1] } else { &[1, -1] };
+    if n == 2 && !poly {
         let mut r = RealFn::plain(Func::Div, 2);
         r.probes = probes.len();
         r.fit_err = max_err(&r, &probes);
@@ -912,23 +1048,40 @@ pub fn identify(p: &SProg, probes: &[(Vec<f64>, f64)]) -> Result<RealFn, String>
             return Ok(r);
         }
     }
-    let mut found: Vec<RealFn> = Vec::new();
-    for f in [
-        Func::Exp2,
-        Func::Rcp,
-        Func::Rsqrt,
-        Func::Sqrt,
-        Func::Tanh,
-        Func::Ident,
-    ] {
+    // MISS 138: a form must read every argument the slice depends on.
+    let dep = arg_dependence(p, &probes);
+    let (mut found, mut dropped): (Vec<RealFn>, Option<RealFn>) = (Vec::new(), None);
+    for f in &funcs {
         if let Some(r) = fit_form(p, &probes, f.clone(), None, 1, n, &cands) {
-            found.push(r);
+            admit(r, &dep, &mut found, &mut dropped);
         }
         if n >= 2 {
             for j in 0..n {
-                for pow in [1, -1] {
+                for &pow in pows {
                     if let Some(r) = fit_form(p, &probes, f.clone(), Some(j), pow, n, &cands) {
-                        found.push(r);
+                        admit(r, &dep, &mut found, &mut dropped);
+                    }
+                }
+            }
+        }
+    }
+    // Over the arguments the slice depends on: where some are functionally dependent on the
+    // others (a sum and its terms), the fit over all of them is singular, and one argument at
+    // a time (below) leaves the others out.
+    let dcols: Vec<usize> = (0..n).filter(|&k| dep[k]).collect();
+    if n >= 2 && !dcols.is_empty() && dcols.len() < n && !found.iter().any(|r| r.snapped) {
+        for f in &funcs {
+            if let Some(r) = fit_form_cols(p, &probes, f.clone(), None, 1, n, &cands, dcols.clone())
+            {
+                admit(r, &dep, &mut found, &mut dropped);
+            }
+            for &j in &dcols {
+                let cols: Vec<usize> = dcols.iter().copied().filter(|&k| k != j).collect();
+                for &pow in pows {
+                    if let Some(r) =
+                        fit_form_cols(p, &probes, f.clone(), Some(j), pow, n, &cands, cols.clone())
+                    {
+                        admit(r, &dep, &mut found, &mut dropped);
                     }
                 }
             }
@@ -936,44 +1089,146 @@ pub fn identify(p: &SProg, probes: &[(Vec<f64>, f64)]) -> Result<RealFn, String>
     }
     // One argument at a time (dependent arguments).
     if n >= 2 && !found.iter().any(|r| r.snapped) {
-        for f in [
-            Func::Exp2,
-            Func::Rcp,
-            Func::Rsqrt,
-            Func::Sqrt,
-            Func::Tanh,
-            Func::Ident,
-        ] {
+        for f in &funcs {
             for k in 0..n {
                 if let Some(r) = fit_form_cols(p, &probes, f.clone(), None, 1, n, &cands, vec![k]) {
-                    found.push(r);
+                    admit(r, &dep, &mut found, &mut dropped);
                 }
             }
         }
     }
     if !found.iter().any(|r| r.snapped) {
         for k in 0..n {
-            found.extend(fit_named(&probes, &cands, k));
-            found.extend(fit_poly(&probes, &cands, k));
+            let named = if poly {
+                Vec::new()
+            } else {
+                fit_named(&probes, &cands, k)
+            };
+            for r in named.into_iter().chain(fit_poly(&probes, &cands, k)) {
+                admit(r, &dep, &mut found, &mut dropped);
+            }
         }
     }
-    // Prefer snapped forms, then the smallest deviation, then the simplest.
+    choose(found, dropped.as_ref(), &dep, probes.len())
+}
+
+/// The identified form among the fitted ones (`found`, each reading every argument the slice
+/// depends on, `dep`): the closest with exact (snapped) constants, unless one with fitted
+/// constants fits EXACT_VETO times better (MISS 138). Until MISS 138 any snapped form ranked
+/// above every fitted one, so `y = u` (2.76e-6 relative) won over `u + c x` (about 2.5e-7) and
+/// dropped a floor of x; and a fitted form stood where no snapped one fit, though a fit is not
+/// an exact reference. `dropped`: the closest form that leaves out a dependent argument, for
+/// the refusal's text.
+fn choose(
+    mut found: Vec<RealFn>,
+    dropped: Option<&RealFn>,
+    dep: &[bool],
+    probes: usize,
+) -> Result<RealFn, String> {
+    let n = dep.len();
+    // The smallest deviation, then the simplest.
     found.sort_by(|a, b| {
         let w = |r: &RealFn| {
             (
-                !r.snapped as u8,
                 r.fit_err.max(2f64.powi(-26)),
                 r.mul.is_some() as u8 + matches!(r.func, Func::Named(_)) as u8,
             )
         };
         let (x, y) = (w(a), w(b));
-        x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)).then(x.2.cmp(&y.2))
+        x.0.total_cmp(&y.0).then(x.1.cmp(&y.1))
     });
-    found
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("no form fits the slice ({n} args, {} probes)", probes.len()))
+    let show = |r: &RealFn| format!("{} [max rel dev {:.2e}]", r.show(), r.fit_err);
+    let left_out = |r: &RealFn| -> String {
+        (0..n)
+            .filter(|&k| dep[k] && !reads_arg(r, k))
+            .map(|k| format!("a{k}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let best = found.iter().find(|r| r.snapped);
+    let fitted = found.iter().find(|r| !r.snapped);
+    let also = dropped.map_or(String::new(), |d| {
+        format!(
+            "; {} leaves out {}, on which the slice depends",
+            show(d),
+            left_out(d)
+        )
+    });
+    match (best, fitted) {
+        (Some(b), Some(f)) if EXACT_VETO * f.fit_err + 2f64.powi(-23) < b.fit_err => Err(format!(
+            "{} (constants fitted) fits the slice better than any form with exact constants, {}: that form drops a term of the slice, and a fit is not an exact reference{also} (MISS 138)",
+            show(f),
+            show(b)
+        )),
+        (Some(b), _) => {
+            let mut b = b.clone();
+            b.alts = alternatives(&found, &b, n);
+            Ok(b)
+        }
+        (None, Some(f)) => Err(format!(
+            "no form with exact constants fits the slice ({n} args, {probes} probes); the closest, {} with fitted constants, is not an exact reference{also} (MISS 138)",
+            show(f)
+        )),
+        (None, None) => Err(match dropped {
+            Some(d) => format!(
+                "every form that fits leaves out an argument the slice depends on ({}: another probe's value changes its output), e.g. {} (MISS 138)",
+                left_out(d),
+                show(d)
+            ),
+            None => format!("no form fits the slice ({n} args, {probes} probes)"),
+        }),
+    }
 }
+
+/// A form's shape apart from its constants (MISS 147): function, multiplier and power, the
+/// polynomial's argument, the arguments read (of `n`).
+fn shape(r: &RealFn, n: usize) -> (String, Option<usize>, i32, usize, Vec<bool>) {
+    (
+        r.func.name(),
+        r.mul,
+        r.pow,
+        if r.func == Func::Poly { r.parg } else { 0 },
+        (0..n).map(|k| reads_arg(r, k)).collect(),
+    )
+}
+
+/// The alternatives of the identified form `b` among the fitted forms `found` (sorted, best
+/// first; each reads every argument the slice depends on): the best form with exact constants
+/// of each other shape that fits the probes within EXACT_VETO of `b`'s deviation plus a
+/// rounding, at most MAX_ALTS (MISS 147). Until MISS 147 the first of equally good forms stood
+/// alone, in the candidates' order: tanh(2^-64 x) for y = RN(x 2^-64), which beyond the probes
+/// reported P(differ) 1 for 0. Only forms that could be the exact reference count: one with
+/// fitted constants cannot (MISS 138), and least squares gives such a form a coefficient of
+/// rounding size on an argument the output does not move with (-1.6e-11 a0 beside 8.84e-2 a1
+/// in a kernel_db attention backward), which left out every output where that argument is
+/// large.
+fn alternatives(found: &[RealFn], b: &RealFn, n: usize) -> Vec<RealFn> {
+    let tol = EXACT_VETO * b.fit_err + 2f64.powi(-23);
+    let mut seen = vec![shape(b, n)];
+    let mut out = Vec::new();
+    for r in found.iter().filter(|r| r.snapped && r.fit_err <= tol) {
+        let s = shape(r, n);
+        if seen.contains(&s) {
+            continue;
+        }
+        seen.push(s);
+        let mut a = r.clone();
+        a.alts.clear();
+        out.push(a);
+        if out.len() == MAX_ALTS {
+            break;
+        }
+    }
+    out
+}
+
+/// At most this many alternatives per identified form (`alternatives`).
+const MAX_ALTS: usize = 4;
+
+/// A form with exact constants is not the exact reference when one with fitted constants fits
+/// the slice this many times better (beyond 2^-23 relative, a rounding's worth): the margin
+/// `snap_form` allows a snap.
+const EXACT_VETO: f64 = 4.0;
 
 /// One slice function's identification.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1096,6 +1351,89 @@ pub fn identify_prog(
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn form(snapped: bool, fit_err: f64) -> RealFn {
+        let mut r = RealFn::plain(Func::Ident, 1);
+        r.coef[0] = if snapped { 1.0 } else { 1.000122 };
+        r.snapped = snapped;
+        r.fit_err = fit_err;
+        r
+    }
+
+    /// MISS 138: a form with exact constants that a fitted one fits EXACT_VETO times better
+    /// (beyond a rounding's 2^-23) is no exact reference: it drops a term of the slice (rE_fs3:
+    /// y = u at 2.76e-6 against u + c x at about 2.5e-7). Within the margin it stands.
+    #[test]
+    fn a_much_better_fitted_form_vetoes_an_exact_one() {
+        let dep = [true];
+        let r = choose(
+            vec![form(true, 2.76e-6), form(false, 2.5e-7)],
+            None,
+            &dep,
+            100,
+        );
+        assert!(
+            r.as_ref().is_err_and(|e| e.contains("drops a term")),
+            "{r:?}"
+        );
+        // A rounding's worth: 4 x 1e-7 + 2^-23 is above 2.4e-7.
+        let r = choose(vec![form(true, 2.4e-7), form(false, 1e-7)], None, &dep, 100);
+        assert!(r.is_ok_and(|f| f.snapped));
+        let r = choose(vec![form(true, 1e-6), form(false, 3e-7)], None, &dep, 100);
+        assert!(r.is_ok_and(|f| f.snapped));
+    }
+
+    /// MISS 147: the best form of each other shape that fits within EXACT_VETO of the
+    /// identified one, plus a rounding, is its alternative, and where they disagree beyond that
+    /// margin the value is not established: tanh(2^-64 x) and 2^-64 x take the same values near
+    /// x ~ 1 and not at x = 2^64. A form of the same shape is no second alternative, nor is one
+    /// that fits more than EXACT_VETO times worse.
+    #[test]
+    fn forms_the_probes_cannot_tell_apart_are_alternatives() {
+        let c = 2f64.powi(-64);
+        let mut t = RealFn::plain(Func::Tanh, 1);
+        t.coef[0] = c;
+        let mut l = RealFn::plain(Func::Ident, 1);
+        l.coef[0] = c;
+        let mut same = l.clone();
+        same.fit_err = 1e-9;
+        let f = choose(vec![t.clone(), l, same], None, &[true], 100).unwrap();
+        assert_eq!((f.func.clone(), f.alts.len()), (Func::Tanh, 1));
+        assert!(f.agrees(&[1.0], f.eval(&[1.0])));
+        let x = 2f64.powi(64);
+        assert!(!f.agrees(&[x], f.eval(&[x])));
+        assert!(f.agrees(&[f64::NAN], f64::NAN));
+        t.fit_err = 1e-7;
+        let mut e = RealFn::plain(Func::Exp2, 1);
+        e.coef[0] = 1.0;
+        e.fit_err = 1e-5;
+        let f = choose(vec![t.clone(), e], None, &[true], 100).unwrap();
+        assert!(f.alts.is_empty());
+        // A form with fitted constants, as close, is no alternative: it cannot be the exact
+        // reference.
+        let mut fitted = RealFn::plain(Func::Ident, 1);
+        fitted.coef[0] = c * 1.000001;
+        fitted.snapped = false;
+        fitted.fit_err = 1e-7;
+        let f = choose(vec![t, fitted], None, &[true], 100).unwrap();
+        assert!(f.alts.is_empty(), "{:?}", f.alts);
+    }
+
+    /// MISS 138: a form with fitted constants alone is not an exact reference.
+    #[test]
+    fn a_fitted_form_alone_is_no_exact_reference() {
+        let r = choose(vec![form(false, 2e-7)], None, &[true], 100);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.contains("not an exact reference")),
+            "{r:?}"
+        );
+    }
 }
 
 #[cfg(test)]

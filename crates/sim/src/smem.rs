@@ -111,12 +111,19 @@ fn needs_strong(v: &Verdict, k: &Kernel) -> bool {
         .any(|f| f.kind == "race" && strong_race(&f.sig, acq))
 }
 
+thread_local! {
+    /// Weak passes `two_pass` / `two_pass_make` started on this thread: tests pin that a check
+    /// runs one (a `two_pass` around `explore`, which runs its own, ran it twice).
+    pub static WEAK_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// `run` on the weak kernel, then, if a race there may be an artifact of plain LDS/STS
 /// (`needs_strong`), on `m0`'s own (strong) kernel.
 pub fn two_pass(m0: Machine, run: impl Fn(Machine) -> Verdict) -> Verdict {
     let Some(w) = weak(&m0.k) else {
         return run(m0);
     };
+    WEAK_PASSES.with(|n| n.set(n.get() + 1));
     let w = Arc::new(w);
     let v = run(weak_machine(m0.clone(), &w, &m0.k));
     if !needs_strong(&v, &m0.k) {
@@ -133,6 +140,7 @@ pub fn two_pass_make(
     let Some(w) = weak(&make().k) else {
         return run(make);
     };
+    WEAK_PASSES.with(|n| n.set(n.get() + 1));
     let w = Arc::new(w);
     let k = make().k;
     let v = run(&|| weak_machine(make(), &w, &k));

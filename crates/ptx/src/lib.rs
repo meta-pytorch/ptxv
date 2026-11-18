@@ -3129,6 +3129,15 @@ pub fn parse_kernel_for(
             + src[lp..]
                 .find(')')
                 .ok_or_else(|| anyhow!("unterminated params"))?;
+        // A prototype (`.entry k(...);`, which nvcc emits ahead of a module-scope initializer
+        // that takes the kernel's address) has no body: the next `{` would be that
+        // initializer's. Skip it and look for the definition.
+        if let Some(semi) = src[rp..].find(';') {
+            if src[rp..].find('{').is_none_or(|b| semi < b) {
+                pos = rp + semi + 1;
+                continue;
+            }
+        }
         let lb = rp
             + src[rp..]
                 .find('{')
@@ -3633,30 +3642,36 @@ pub fn parse_kernel_for(
         }
     }
 
-    // `.reqntid x[, y[, z]]` / `.maxntid ...` between the parameter list and the body.
-    let ntid = {
-        let head = &src[entry_at..body_start];
-        let head = head.rsplit_once(')').map_or(head, |x| x.1);
-        let dir = |d: &str| -> Option<[u32; 3]> {
-            let i = head.find(d)? + d.len();
-            let rest = &head[i..];
-            let end = rest.find(['.', '{', '\n']).unwrap_or(rest.len());
-            let v: Vec<u32> = rest[..end]
-                .split(',')
-                .filter_map(|x| x.trim().parse().ok())
-                .collect();
-            (!v.is_empty() && v.len() <= 3).then(|| {
-                [
-                    v[0],
-                    v.get(1).copied().unwrap_or(1),
-                    v.get(2).copied().unwrap_or(1),
-                ]
-            })
-        };
-        dir(".reqntid")
-            .map(|dims| Ntid { req: true, dims })
-            .or_else(|| dir(".maxntid").map(|dims| Ntid { req: false, dims }))
+    // Performance-tuning directives between the parameter list and the body.
+    let head = &src[entry_at..body_start];
+    let head = head.rsplit_once(')').map_or(head, |x| x.1);
+    let dir = |d: &str| -> Option<[u32; 3]> {
+        let i = head.find(d)? + d.len();
+        let rest = &head[i..];
+        let end = rest.find(['.', '{', '\n']).unwrap_or(rest.len());
+        let v: Vec<u32> = rest[..end]
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        (!v.is_empty() && v.len() <= 3).then(|| {
+            [
+                v[0],
+                v.get(1).copied().unwrap_or(1),
+                v.get(2).copied().unwrap_or(1),
+            ]
+        })
     };
+    // `.reqntid x[, y[, z]]` / `.maxntid ...`.
+    let ntid = dir(".reqntid")
+        .map(|dims| Ntid { req: true, dims })
+        .or_else(|| dir(".maxntid").map(|dims| Ntid { req: false, dims }));
+    // `.reqnctapercluster x[, y[, z]]` / `.explicitcluster`: a cluster launch (MISS 209).
+    let cluster = dir(".reqnctapercluster")
+        .map(ClusterDecl::Dims)
+        .or_else(|| {
+            head.contains(".explicitcluster")
+                .then_some(ClusterDecl::Explicit)
+        });
     Ok(Kernel {
         name,
         front: Front::Ptx,
@@ -3676,6 +3691,7 @@ pub fn parse_kernel_for(
         bulk_commit_sb: vec![],
         parts: vec![],
         ntid,
+        cluster,
         global_relocs: (0..globals.len() as u32)
             .map(|i| GlobalReloc {
                 bank: GLOBAL_RELOC_BANK,
@@ -6643,8 +6659,9 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                 &mods[mods.len().min(1)..],
                 &ok,
             )?;
-            // ASSUME(E-PAIR): cta_group::2 alloc / dealloc / relinquish act on each CTA's own
-            // TMEM (both CTAs of the pair issue them, the same allocation in each).
+            // ASSUME(E-PAIR): cta_group::2 dealloc / relinquish act on each CTA's own TMEM (both
+            // CTAs of the pair issue them); the cta_group::2 alloc is one collective allocation of
+            // the same columns in both CTAs by a warp of each (MISS 179).
             let pair = has("cta_group::2");
             let cg1 = || -> Result<()> { Ok(()) };
             match sub {
@@ -6653,6 +6670,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                     Op::TmemAlloc {
                         dst: lw.addr(op_n(0)?)?,
                         ncols: lw.val(op_n(1)?)?,
+                        pair,
                     }
                 }
                 "relinquish_alloc_permit" => {
@@ -7534,10 +7552,16 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
         // bf16 adds (SASS `ATOMG` / `REDG .E.ADD.BF16x2.RN`; the scalar form is a CAS loop with
         // `HADD2.BF16_V2`). `.v2.bf16` packs its two halves through the scratch register.
         // probes/bf16x2, both front-ends. ASSUME(N-BF16X2)
+        // `.f16x2` / `.f16` alike with f16 lanes (SASS `ATOMG` / `REDG .E.ADD.F16x2.RN`, the
+        // scalar form a CAS loop with `HADD2`; probes/half_add). ASSUME(N-F16X2)
+        // Without a state space (cuda_fp16.h's `atomicAdd(__half2*)`): a generic address
+        // (SASS `ATOM.E.ADD.F16x2.RN` / `.BF16x2.RN`, probes/half_add). `.shared` is refused.
         "atom" | "red" if has("noftz") => {
-            let bf = match ht {
-                "bf16x2" => true,
-                "bf16" => false,
+            let (bf, f16) = match ht {
+                "bf16x2" => (true, false),
+                "bf16" => (false, false),
+                "f16x2" => (true, true),
+                "f16" => (false, true),
                 _ => bail!(lw.err(format!("{base}.noftz.{ht} not modeled"))),
             };
             if let Some(m) = mods.iter().find(|m| {
@@ -7547,6 +7571,8 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         | "noftz"
                         | "bf16"
                         | "bf16x2"
+                        | "f16"
+                        | "f16x2"
                         | "v2"
                         | "relaxed"
                         | "acquire"
@@ -7561,9 +7587,14 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             }) {
                 bail!(lw.err(format!("{base}: modifier .{m} not modeled")));
             }
-            if !has("add") || !has("global") || (has("v2") && bf) {
+            if !has("add") || (has("v2") && (bf || f16 || !has("global"))) {
                 bail!(lw.err(format!("{base}.noftz form not modeled")));
             }
+            let space = if has("global") {
+                Space::Global
+            } else {
+                Space::Generic
+            };
             let pair = bf || has("v2");
             let sync = mem_sync(mods, true)
                 .map_err(|e| lw.err(e.to_string()))?
@@ -7615,12 +7646,13 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             };
             Op::Atom {
                 p: None,
-                op: if pair {
-                    AtomOp::AddBf16x2
-                } else {
-                    AtomOp::AddBf16
+                op: match (pair, f16) {
+                    (true, false) => AtomOp::AddBf16x2,
+                    (false, false) => AtomOp::AddBf16,
+                    (true, true) => AtomOp::AddF16x2,
+                    (false, true) => AtomOp::AddF16,
                 },
-                space: Space::Global,
+                space,
                 bytes: if pair { 4 } else { 2 },
                 addr: lw.addr(a)?,
                 v,
@@ -7715,6 +7747,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         | "max"
                         | "inc"
                         | "dec"
+                        | "b16"
                         | "b32"
                         | "b64"
                         | "u32"
@@ -7796,10 +7829,14 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
             } else {
                 bail!(lw.err("this atom/red operation is not modeled yet"));
             };
+            // `atom.cas.b16` (the only 16-bit form of these operations): a 2-byte
+            // compare-and-swap of an aligned half (ptxas: a loop of 32-bit ATOMG.E.CAS;
+            // fixtures/c_atom_dec_cas16 = GB300). ASSUME(L-ROSETTA)
+            let cas16 = bits == 16 && op == AtomOp::Cas;
             if (tname.starts_with('f') && !matches!(op, AtomOp::FAddFtz | AtomOp::FAdd64))
-                || (bits != 32 && bits != 64)
+                || (bits != 32 && bits != 64 && !cas16)
             {
-                bail!(lw.err("only 32/64-bit integer atom/red are modeled"));
+                bail!(lw.err("only 32/64-bit integer atom/red and atom.cas.b16 are modeled"));
             }
             let sync = mem_sync(mods, true)
                 .map_err(|e| lw.err(e.to_string()))?
@@ -8704,6 +8741,47 @@ mod tests {
                 .any(|i| matches!(i.op, Op::TmaLoad { dims: 2, .. }))
         );
         assert_eq!(k.smem_bytes, 0x400 + 8192 + 8);
+    }
+
+    /// An entry prototype ahead of a module-scope initializer that takes the kernel's address
+    /// (nvcc: `__device__` data initialized with `&kernel`) is not the kernel: its definition
+    /// follows the initializer (until 2026-11-12 the prototype was parsed with the
+    /// initializer's braces as its body: an empty kernel).
+    #[test]
+    fn entry_prototype_before_definition() {
+        let src = ".version 9.0\n.target sm_103a\n.address_size 64\n\
+                   .visible .entry k(\n.param .u64 k_param_0\n);\n\
+                   .global .align 8 .u64 self_ref[1] = {k};\n\
+                   .visible .entry k(\n.param .u64 k_param_0\n)\n{\n\
+                   .reg .b64 %rd<2>;\nld.param.u64 %rd1, [k_param_0];\nret;\n}\n";
+        let k = parse_kernel(src, Some("k")).unwrap();
+        assert_eq!(k.params.len(), 1);
+        assert!(k.code.iter().any(|i| i.text.contains("ld.param.u64")));
+    }
+
+    /// MISS 209: `.reqnctapercluster` / `.explicitcluster` declare a cluster launch; a comment
+    /// after the directive is no part of it (probes/cluster_launch_ops writes one).
+    #[test]
+    fn cluster_directives() {
+        let k = |dirs: &str| {
+            let src = format!(
+                ".version 9.0\n.target sm_103a\n.address_size 64\n.visible .entry k()\n\
+                 {dirs}\n{{\nret;\n}}\n"
+            );
+            parse_kernel(&src, None).unwrap()
+        };
+        assert_eq!(k("").cluster, None);
+        assert_eq!(
+            k(".reqnctapercluster 2, 1, 1 // shape").cluster,
+            Some(ClusterDecl::Dims([2, 1, 1]))
+        );
+        assert_eq!(
+            k(".reqnctapercluster 1\n.reqntid 32").cluster,
+            Some(ClusterDecl::Dims([1, 1, 1]))
+        );
+        assert_eq!(k(".explicitcluster").cluster, Some(ClusterDecl::Explicit));
+        assert_eq!(k(".maxclusterrank 4").cluster, None);
+        assert_eq!(k(".reqntid 32, 1, 1").ntid.unwrap().dims, [32, 1, 1]);
     }
 
     fn one(line: &str) -> Result<Op> {

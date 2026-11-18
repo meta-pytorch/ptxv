@@ -155,13 +155,19 @@ fn errstate_feeds_the_next_kernel() {
     let t = &e["tensors"]["out"];
     assert!(t["pairs"].as_array().unwrap().len() > 1000);
     assert!(t["corr"]["error_same_row"].is_number(), "{}", t["corr"]);
-    // The next kernel reads rmsnorm's output with its error.
+    // The next kernel reads rmsnorm's output with its error. 800 Tier 3 inputs: since MISS 139
+    // Tier 3's interval takes the input-level bound at any count, and the default growth stops
+    // at 404 inputs (its 10 s fine stage) with a half-width of 2.8% of P(differ), above the
+    // 2.5% a linearized headline needs (MISS 91); at 800 inputs it is 1.4%.
     let s2 = spec(
         "down",
         serde_json::json!({"dist": {"kind": "normal"},
                            "error": {"kind": "pairs", "file": es.to_str().unwrap()}}),
     );
-    let j2 = run("down", "fixtures/r4_softmax_triton", &s2, &[]);
+    let j2 = run("down", "fixtures/r4_softmax_triton", &s2, &["--mc", "800"]);
+    // At the default count Tier 2 agrees but Tier 3 does not resolve it: the headline is Tier 3
+    // and Tier 2 names MISS 91's resolution, its half-width above 2.5% of P.
+    let jd = run("down-default", "fixtures/r4_softmax_triton", &s2, &[]);
     let _ = std::fs::remove_file(&s2);
     let _ = std::fs::remove_file(&es);
     let r = spread_ratio(&j2);
@@ -170,4 +176,20 @@ fn errstate_feeds_the_next_kernel() {
         "tier 2 / tier 3 mean abs error {r}"
     );
     assert_eq!(best_tier(&j2), 2);
+    assert_eq!(best_tier(&jd), 3);
+    let t2 = est(&jd, 2);
+    let line = t2["applicability"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|l| l.as_str())
+        .find(|l| l.contains("(linearized estimate, MISS 91)"))
+        .unwrap_or_else(|| panic!("{}", t2["applicability"]));
+    let hw: f64 = line
+        .split("half-width ")
+        .nth(1)
+        .and_then(|t| t.split('%').next())
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("{line}"));
+    assert!(hw > 2.5 && line.ends_with("FAILS"), "{line}");
 }

@@ -1,0 +1,36 @@
+name = "e_clock_hang_wrap"
+description = """
+E-CLOCK (MISS 78, review): hang guard with a wrap-unsafe 32-bit deadline (%clock + 2^31, compare
+now > deadline). The slice proof's starts have low 32 bits 0, so the deadline never wraps there and
+the guard is exempt; on hardware about half the start values wrap the deadline and the first
+poll traps. SAFE (now - start > 2^31) is a real 2^31 bound.
+Now (2026-11-11, review of MISS 78): the starts span the low 32 bits, the wrapping deadline
+is not proven, the guard goes both ways: the trap."""
+ptx = "kernel.ptx"
+entry = "e_clock_hang_wrap"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "wrap-unsafe 32-bit deadline: traps on hardware for starts >= 2^31"
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "SAFE"
+summary = "wrap-safe difference against 2^31"
+marker = "@CMP"
+find = "setp.gt.u32 %p4, %r12, %r11;"
+replace = "sub.u32 %r13, %r12, %r10; setp.gt.u32 %p4, %r13, 0x80000000;"
+expect = ["clean"]

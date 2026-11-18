@@ -117,6 +117,32 @@ fn adv(case: &str, variants: &[&str]) {
     }
 }
 
+/// E-CLOCK (MISS 70): fixtures/e_clock_callee reads the clock in a `__noinline__` callee
+/// (`CALL.REL`, `RET.REL.NODEC`) and compares the returned value in the caller's poll: the
+/// timeout path, which GB300 takes (200 / 200 runs), reads the data without the flag. A `RET`
+/// returns to the call sites in the clock taint, so the timeout test is a clock branch and the
+/// race is found. Before, the returned value was clock-free and the verdict clean.
+#[test]
+fn e_clock_callee_return_followed() {
+    adv("e_clock_callee", &["good"]);
+    // The review of MISS 76 / 78: a trap guard whose two clock reads are one CS2R in a
+    // callee (no hang guard: both sides), and a callee reading the clock for the odd lanes
+    // only (the choice of the warp's lanes is unmodeled).
+    adv("e_clock_hang_callee", &["good"]);
+    adv("e_clock_lanes_call", &["good"]);
+    let k = ptxv_sass::load_cubin(
+        &root().join("fixtures/e_clock_callee/kernel.cubin"),
+        "clock_call",
+    )
+    .unwrap();
+    assert!(
+        k.code
+            .iter()
+            .any(|i| matches!(i.op, ptxv_ir::Op::Ret { .. }))
+    );
+    assert!(!ptxv_sim::clock::clock_branches(&k, &ptxv_sim::clock::delay_loops(&k)).is_empty());
+}
+
 /// E-CONST-BRA (fixtures/e_const_bra, e_const_bra2). Premise: a branch the control-flow graph
 /// folds goes the folded way in every execution. Conclusion: dropping the other edge from the
 /// reductions' reachability loses no behaviour. Enforced: `exec.rs` reports a folded branch
@@ -385,8 +411,11 @@ fn e_elect_lane_is_lowest() {
 /// PEER stores through `shared::cta` with the peer's rank byte: a fault on both fronts (GB300:
 /// illegal instruction, `ptxv hw` 2026-11-09). CLUSTER stores to the same address through
 /// `shared::cluster`: a store into a CTA that may have exited (S-CLUSTER-LIFE) and an unwritten
-/// own word (S-INIT): violation. Mutant dsmem-rank: the rank byte of a `shared::cta` address
-/// ignored (PEER then stores into the CTA's own word and is clean).
+/// own word (S-INIT): violation; landing before the peer exits, it races with the peer's read
+/// of that word: race, on both fronts (the PTX front missed it while the local reduction
+/// expanded the peer's exit alone, MISS 153; mutant exit-ample-smem). Mutant dsmem-rank: the
+/// rank byte of a `shared::cta` address ignored (PEER then stores into the CTA's own word and
+/// is clean).
 #[test]
 fn e_dsmem_foreign_rank_faults() {
     adv("e_dsmem_rank", &["good", "PEER", "CLUSTER"]);

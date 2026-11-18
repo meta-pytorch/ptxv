@@ -1,0 +1,15 @@
+# GB300 (one GPU), 2026-11-12, rev ffac8900 + these variants: PTXV_HW_EXPECT=variant ptxv hw --runs 1000 --scrub
+# (the image checked by --image-fnv); grid 1, block 128
+hw Q_S2   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw Q_S4   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw Q_S8   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw CTL_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw CTL_S4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw CTL_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw REF_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw CTL_S1 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+# CTL (a LOP3 writing R20 in the LDTM's slot, no wait) is correct even at stall 1: the STTM has
+# read R20 by the next issue slot. The control does not discriminate, so neither Q nor good
+# (the LDTM loads into R20..R35 the values they already hold) is evidence for the STTM-before-
+# LDTM order. Runs without PTXV_HW_EXPECT=variant compare CTL with good's bytes and differ in
+# 1920 words for that reason only.

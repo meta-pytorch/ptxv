@@ -1,0 +1,43 @@
+name = "rE_fs3a"
+description = """The third review's probe (MISS 138): entry rE_fs3 of ../fs3.ptx (see its header), captured x = 2560 (t = 2.5): the probes, x times exp(N(0, 1/4)) with random signs, cross several steps of floor(t); captured u = 1.25 * 2^23."""
+ptx = "../fs3.ptx"
+entry = "rE_fs3"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "x.bin"
+
+[[buffers]]
+name = "u"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "u.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "u"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

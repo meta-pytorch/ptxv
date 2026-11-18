@@ -1,0 +1,56 @@
+name = "equiv_claims_select_max_selgtu_n"
+description = "setp.gtu + selp: a >u b ? a : b (set n: infinities and NaNs among the inputs); expected/: GB300's output (ptxas 13.0)"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/a_n.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/b_n.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/c_n.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

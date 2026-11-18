@@ -59,3 +59,5 @@ hex = "0000000000000000"
 id = "good"
 summary = "as captured"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]

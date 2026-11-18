@@ -1,0 +1,37 @@
+name = "c_equiv_atomic_space_ref_gen"
+description = """
+MISS 142 (fixtures/c_equiv_atomic_space/gen.py): word i = +0, then one f32 atomic add of x[i]
+in shared memory (cvta.shared, red.add.f32), the word copied out. expected/ is GB300's output (ptxas 13.0
+-arch=sm_103a)."""
+ptx = "kernel.ptx"
+entry = "ref_gen"
+grid = [1, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [256]
+init = "file"
+file = "../data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [256]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

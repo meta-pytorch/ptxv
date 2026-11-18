@@ -1,0 +1,20 @@
+name = "probe_coalesce_lanes_L2_D1_R0"
+description = "coalesced st.async case L2_D1_R0; PTX-model expectation: race"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+[[params]]
+kind = "ptr"
+buffer = "out"
+[[variants]]
+id = "good"
+expect = ["nondeterministic", "race", "violation"]
+expect_sass = ["nondeterministic", "race", "violation"]

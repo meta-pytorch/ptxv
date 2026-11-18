@@ -1,0 +1,101 @@
+name = "e_bsync_plain"
+description = """
+E-BSYNC (MISS 81): probes/mbar_init_diverge at one warp (grid 1, block 32, 2 rounds). The
+elected lane spins on nanosleep for 20,000 cycles, inits an mbarrier slot, stores the round's
+data word and arrives; every lane then waits on the slot (parity 0) and reads the word. Each
+slot first holds a planted stale word a parity-0 wait accepts at once. ptxas 13.0 joins the
+elected path with a non-reconvergent `BSSY B0` / `BSYNC B0` (good): GB300 lets the waiting
+lanes pass it while the elected lane sleeps, and they pass the wait on the stale word and read
+the data word before it is written (probe late_sleep_reconv: 10,000 of 10,000 runs wrong,
+264 x 128 threads, 256 rounds). The SASS front took that BSYNC as a reconvergence point and
+was clean. Controls (GB300 0 wrong): RECONV (no delay, `bar.warp.sync` at the join: ptxas's
+BSSY.RECONVERGENT / BSYNC.RECONVERGENT, 10,000 runs) and WARPSYNC (the nanosleep spin,
+`bar.warp.sync` at the join: WARPSYNC.ALL, 10,000 runs). LATE_RECONV: a clock spin without
+nanosleep, no warp sync in the PTX (race there); ptxas reconverges with BSYNC.RECONVERGENT, which
+the SASS front keeps as a reconvergence point (probe late_reconv: 0 wrong in 10,000 runs).
+NOBSYNC: ptxas's BSSY / BSYNC NOPed (probe late_sleep: 10,000 of 10,000 runs wrong).
+SLEEP_RECONV (gap G1): good with ptxas's BSSY B0 / BSYNC B0 set to the .RECONVERGENT form;
+GB300 lets the waiting lanes pass it while the elected lane sleeps as well (probe
+late_sleep_reconvform: 10,000 of 10,000 runs wrong). The lifter's region walk meets the
+NANOSLEEP and takes the BSYNC as the plain form (SASS clean before)."""
+ptx = "kernel.ptx"
+entry = "mbar_init_diverge"
+ptxas_toolkit = "13.0"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "bytes"
+hex = "0000000000000080"
+
+[[params]]
+kind = "u32"
+value = 2
+
+[[variants]]
+id = "good"
+summary = "nanosleep spin on the elected path; ptxas's non-reconvergent BSSY B0 / BSYNC B0 kept"
+hw_note = "GB300 10,000/10,000 runs wrong (probes/mbar_init_diverge late_sleep_reconv)"
+expect = ["race", "violation"]
+
+[[variants]]
+id = "RECONV"
+summary = "control: no delay, bar.warp.sync at the join (BSSY.RECONVERGENT / BSYNC.RECONVERGENT)"
+hw_note = "GB300 10,000 runs: 0 wrong (probe reconv)"
+expect = ["clean"]
+marker = "@SLEEP"
+replace = "<delete>"
+
+[[variants.edits]]
+marker = "@DELAY"
+find = "%r24, 20000;"
+replace = "%r24, 0;"
+
+[[variants.edits]]
+marker = "@SYNC"
+find = "// @SYNC"
+replace = "bar.warp.sync -1;"
+
+[[variants]]
+id = "WARPSYNC"
+summary = "control: the nanosleep spin, bar.warp.sync at the join (WARPSYNC.ALL)"
+hw_note = "GB300 10,000 runs: 0 wrong (probe late_sleep_warpsync)"
+expect = ["clean"]
+marker = "@SYNC"
+find = "// @SYNC"
+replace = "bar.warp.sync -1;"
+
+[[variants]]
+id = "LATE_RECONV"
+summary = "a clock spin without nanosleep, no warp sync: ptxas's BSSY.RECONVERGENT / BSYNC.RECONVERGENT"
+hw_note = "GB300 10,000 runs: 0 wrong (probe late_reconv)"
+expect = ["race", "violation"]
+expect_sass = ["clean"]
+marker = "@SLEEP"
+replace = "<delete>"
+
+[[variants]]
+id = "NOBSYNC"
+summary = "good with ptxas's BSSY at 0x460 and BSYNC at 0x5b0 NOPed"
+hw_note = "GB300 10,000/10,000 runs wrong (probe late_sleep)"
+expect = ["race", "violation"]
+patch = [{ at = "@0x460", nop = true }, { at = "@0x5b0", nop = true }]
+
+[[variants]]
+id = "SLEEP_RECONV"
+summary = "good with ptxas's BSSY at 0x460 and BSYNC at 0x5b0 set to the .RECONVERGENT form (bits 72-73 = 2)"
+hw_note = "GB300 10,000/10,000 runs wrong (probe late_sleep_reconvform)"
+expect = ["race", "violation"]
+patch = [{ at = "@0x460", bits = [[72, 2, 2]], expect = "BSSY.RECONVERGENT B0, `(.L_x_5)" }, { at = "@0x5b0", bits = [[72, 2, 2]], expect = "BSYNC.RECONVERGENT B0" }]

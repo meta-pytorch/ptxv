@@ -23,6 +23,12 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Third-party kernel binaries are not distributed (fixtures/VENDOR_FIXTURES.toml): true, with a
+/// message on stderr, when a file of a vendor fixture the test needs is missing (it then skips).
+fn vendor_missing(needs: &[&str]) -> bool {
+    ptxv_case::skip_missing_vendor_files(&root().join("fixtures"), needs)
+}
+
 /// A PTX fixture's variant through one front-end.
 fn machine(case: &Case, variant: &str, front: &str) -> Machine {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -163,6 +169,9 @@ fn counted_loop_with_volatile_load_is_not_a_poll() {
 /// still gets 2-byte elements.
 #[test]
 fn tensormap_param_geometry_comes_from_the_descriptor() {
+    if vendor_missing(&["c_mm_bf16_nnt"]) {
+        return;
+    }
     let mut case = Case::load(root().join("fixtures/c_mm_bf16_nnt")).unwrap();
     let k = ptxv_sass::load_cubin(
         &root().join("fixtures/c_mm_bf16_nnt/k0.cubin"),
@@ -298,11 +307,102 @@ fn dead_racy_loads_are_race_dead_and_used_ones_stay_races() {
     }
 }
 
+/// E-RACE-DEAD and mixed-size data races (MISS 226; probes/race_dead_mixed, e_race_dead
+/// RDMIX). PTX ISA 9.5 section 8.7.2: the memory model's axioms do not apply to a program with a
+/// mixed-size data race, so a race whose operations overlap partially stays `race` on the PTX
+/// front although its loaded value is dead: a strong (good) or weak (PLAIN) u8 read of a u32
+/// write, masked to 0, and RDMIX's byte loads; the certificate does not hold. Uniform-size races
+/// with a dead value stay `race-dead` and clean, explored and certified (UNIFORM, UNIFORM_PLAIN).
+/// The NIC's accesses too (MISS 194): e_nic_cta WORDDEAD, a 4-byte read of an RDMA write's
+/// 8-byte chunk masked to 0, races; so does CQEDEAD, a masked .cta read of CQE bytes 60-63,
+/// whose overlap with the CQE write is not modeled (only a pair known to be one location is
+/// dropped). ptxas drops both masked loads on SASS: no race there.
+/// The SASS front does not decide overlap: RDMIX's byte loads are `race-dead` there, also under
+/// the GB300-profile re-run, and ptxas 13.0 drops the probe's masked loads (it stores 0), so
+/// those variants have no race at all. Neither does the level-2 hardware model (`hw_order`).
+/// Until 2026-11-12 good, PLAIN and RDMIX were race-dead and clean on the PTX front.
+#[test]
+fn mixed_size_races_are_not_race_dead() {
+    let probe = Case::load(root().join("probes/race_dead_mixed")).unwrap();
+    let fx = Case::load(root().join("fixtures/e_race_dead")).unwrap();
+    let nic = Case::load(root().join("fixtures/e_nic_cta")).unwrap();
+    // (case, variant, front, race-dead finding expected)
+    let rows = [
+        (&probe, "good", "ptx", false),
+        (&probe, "good", "sass", false),
+        (&probe, "PLAIN", "ptx", false),
+        (&probe, "PLAIN", "sass", false),
+        (&probe, "UNIFORM", "ptx", true),
+        (&probe, "UNIFORM", "sass", false),
+        (&probe, "UNIFORM_PLAIN", "ptx", true),
+        (&probe, "UNIFORM_PLAIN", "sass", false),
+        (&fx, "RDMIX", "ptx", false),
+        (&fx, "RDMIX", "sass", true),
+        (&nic, "WORDDEAD", "ptx", false),
+        (&nic, "WORDDEAD", "sass", false),
+        (&nic, "CQEDEAD", "ptx", false),
+        (&nic, "CQEDEAD", "sass", false),
+    ];
+    for (case, v, front, dead) in rows {
+        let m = machine(case, v, front);
+        let ev = explore(m.clone(), 200_000);
+        assert!(ev.complete, "{v}/{front}");
+        let want = case.variant(v).unwrap().expect_for(front);
+        assert_eq!(ev.classes(), want, "{v}/{front}: {:#?}", ev.findings);
+        assert_eq!(
+            ev.findings.iter().any(|f| f.kind == "race-dead"),
+            dead,
+            "{v}/{front}: {:#?}",
+            ev.findings
+        );
+        let o = certify(m);
+        if want == ["race"] {
+            assert!(o.verdict.is_none(), "{v}/{front}: certified");
+        } else if case.m.nic_qps.is_empty() {
+            // The certificate leaves NIC queue pairs to the exploration (docs/nic.md).
+            let cv = o
+                .verdict
+                .unwrap_or_else(|| panic!("{v}/{front}: not certified: {:#?}", o.reasons));
+            assert_eq!(cv.classes(), want, "{v}/{front}: certificate");
+            assert_eq!(cv.findings.iter().any(|f| f.kind == "race-dead"), dead);
+        }
+    }
+    // Placement: only the strict model on the PTX front decides overlap. The GB300-profile
+    // re-run (the CLI's `sass_gb300`) runs the SASS front, which takes every pair as one
+    // location: RDMIX is race-dead and certified there, as before.
+    let p = ptxv_sim::hwprofile::GB300;
+    let m = ptxv_sim::hwprofile::machine(&machine(&fx, "RDMIX", "sass"), p);
+    let mut v = ptxv_sim::wellsync::check_certified(m.clone(), 100_000);
+    ptxv_sim::hwprofile::discharge(&mut v, &m, p);
+    let dead_only = |fs: &[ptxv_sim::machine::Finding]| {
+        fs.iter().any(|f| f.kind == "race-dead") && !fs.iter().any(|f| f.kind == "race")
+    };
+    assert!(
+        dead_only(&v.findings),
+        "RDMIX GB300 profile: {:#?}",
+        v.findings
+    );
+    assert_eq!(ptxv_sim::hwprofile::result(&v), "certified");
+    // The level-2 hardware model that labels the strict level's races (twolevel, E-HW-L1)
+    // orders by `hw_order` and does not decide overlap either: RDMIX's byte load stays
+    // race-dead there on the PTX front, so the strict PTX race is labelled, not dropped.
+    let st = Arc::new(ptxv_sim::l1::L1Stats::default());
+    let m2 = ptxv_sim::twolevel::hw_machine(&machine(&fx, "RDMIX", "ptx"), &st);
+    assert!(m2.launch.hw_order);
+    let v2 = explore(m2, 200_000);
+    assert!(v2.complete);
+    assert!(
+        dead_only(&v2.findings),
+        "RDMIX/ptx hardware model: {:#?}",
+        v2.findings
+    );
+}
+
 /// E-RACE-DEAD on a tensormap proxy fence (exec.rs `Op::TmapFence`): in e_race_dead_tmap warp
 /// 1 acquire-fences a tensor map that warp 0 publishes concurrently and never uses it (a CuTe
 /// grouped GEMM's epilogue warps 1..3). The fence's read races with the publication, but its
 /// snapshot reaches no TMA op: explored and certified, on both front-ends, the race is
-/// `race-dead` and the verdict is clean. TF1 (thread 32 TMA-loads with the map after its fence)
+/// `race-dead` and the verdict is clean (SASS: but for sb-unmeasured: contracts, MISS 170). TF1 (thread 32 TMA-loads with the map after its fence)
 /// keeps the race. TF2 (warp 1 fences after a relaxed wait for the publication, so its snapshot
 /// is current in every interleaving, and thread 32 then TMA-loads relying on it after an acquire)
 /// has the fence race as its only finding: it stays `race` only because the probe leaves the
@@ -312,19 +412,34 @@ fn unused_tensormap_fence_snapshots_are_race_dead() {
     let case = Case::load(root().join("fixtures/e_race_dead_tmap")).unwrap();
     for front in ["ptx", "sass"] {
         let m = machine(&case, "good", front);
-        let ev = explore(m.clone(), 200_000);
+        // At the gb300 level. On the SASS front the LDS address reads rest on another opcode's
+        // read scoreboard outside R10's measured window: sb-unmeasured: contracts at every level
+        // (MISS 170; before, sb-hwq: and discharged). Nothing else.
+        let ev = gb300(explore(m.clone(), 200_000));
         assert!(ev.complete);
-        assert_eq!(ev.classes(), ["clean"], "{front}: {:#?}", ev.findings);
+        let unmeasured = |f: &ptxv_sim::machine::Finding| {
+            f.kind == "contract" && f.sig.starts_with(ptxv_sass::scoreboard::HW_UNMEASURED_SIG)
+        };
+        let want: &[&str] = if front == "sass" { &["contract"] } else { &["clean"] };
+        assert_eq!(ev.classes(), want, "{front}: {:#?}", ev.findings);
+        assert!(
+            ev.findings
+                .iter()
+                .all(|f| f.kind != "contract" || unmeasured(f)),
+            "{front}: {:#?}",
+            ev.findings
+        );
         assert!(
             ev.findings.iter().any(|f| f.kind == "race-dead"),
             "{front}: {:#?}",
             ev.findings
         );
         let o = certify(m);
-        let cv = o
-            .verdict
-            .unwrap_or_else(|| panic!("{front}: good does not certify: {:#?}", o.reasons));
-        assert_eq!(cv.classes(), ["clean"]);
+        let cv = gb300(
+            o.verdict
+                .unwrap_or_else(|| panic!("{front}: good does not certify: {:#?}", o.reasons)),
+        );
+        assert_eq!(cv.classes(), want);
         assert!(cv.findings.iter().any(|f| f.kind == "race-dead"));
         let m = machine(&case, "TF1", front);
         let ev = explore(m.clone(), 200_000);
@@ -337,9 +452,10 @@ fn unused_tensormap_fence_snapshots_are_race_dead() {
         let o = certify(m);
         assert!(o.verdict.is_none(), "{front}: TF1 certified");
         let m = machine(&case, "TF2", front);
-        let ev = explore(m.clone(), 200_000);
+        let ev = gb300(explore(m.clone(), 200_000));
         assert!(ev.complete);
-        assert_eq!(ev.classes(), ["race"], "{front}: {:#?}", ev.findings);
+        let race: &[&str] = if front == "sass" { &["contract", "race"] } else { &["race"] };
+        assert_eq!(ev.classes(), race, "{front}: {:#?}", ev.findings);
         let o = certify(m);
         assert!(
             o.verdict.as_ref().is_none_or(|v| v.classes() != ["clean"]),
@@ -624,7 +740,8 @@ fn sweep_one(case: &Case, v: &str, front: &str, cap: usize) -> Option<(Vec<Strin
 
 /// The parts of `every_fixture_keeps_classes_under_cta_reductions`, each a test of its own, so
 /// that CI's shards and lanes run them apart: part k takes the jobs whose index in the sorted
-/// job list is k modulo REDUCTION_PARTS.
+/// job list is k modulo REDUCTION_PARTS. `reduction_part_tests!` below has one test per part,
+/// checked against REDUCTION_PARTS when the tests compile.
 const REDUCTION_PARTS: usize = 8;
 
 /// Every single-launch PTX fixture of 2 to 16 CTAs, every variant, both front-ends: where the
@@ -705,45 +822,48 @@ fn every_fixture_keeps_classes_under_cta_reductions(part: usize) {
     );
     assert!(fails.is_empty(), "part {part}: {fails:#?}");
 }
-#[test]
-#[ignore = "heavy: an eighth of the sweep's jobs; 75 s"]
-fn every_fixture_keeps_classes_under_cta_reductions_part0() {
-    every_fixture_keeps_classes_under_cta_reductions(0);
+
+/// The part tests: `name: part, ignore reason;` per part. The list must name every part
+/// 0..REDUCTION_PARTS once, in order, or the tests do not compile: a part without its test
+/// would leave its jobs unrun.
+macro_rules! reduction_part_tests {
+    ($($name:ident: $part:literal, $why:literal;)*) => {
+        $(
+            #[test]
+            #[ignore = $why]
+            fn $name() {
+                every_fixture_keeps_classes_under_cta_reductions($part);
+            }
+        )*
+        const _: () = {
+            let parts: &[usize] = &[$($part),*];
+            assert!(parts.len() == REDUCTION_PARTS, "one test per part of the sweep");
+            let mut k = 0;
+            while k < parts.len() {
+                assert!(parts[k] == k, "the part tests in order, 0..REDUCTION_PARTS");
+                k += 1;
+            }
+        };
+    };
 }
-#[test]
-#[ignore = "heavy: an eighth of the sweep's jobs; 270 s"]
-fn every_fixture_keeps_classes_under_cta_reductions_part1() {
-    every_fixture_keeps_classes_under_cta_reductions(1);
-}
-#[test]
-#[ignore = "heavy: an eighth of the sweep's jobs; 1140 s"]
-fn every_fixture_keeps_classes_under_cta_reductions_part2() {
-    every_fixture_keeps_classes_under_cta_reductions(2);
-}
-#[test]
-#[ignore = "heavy: an eighth of the sweep's jobs; 450 s"]
-fn every_fixture_keeps_classes_under_cta_reductions_part3() {
-    every_fixture_keeps_classes_under_cta_reductions(3);
-}
-#[test]
-#[ignore = "heavy: an eighth of the sweep's jobs; 100 s"]
-fn every_fixture_keeps_classes_under_cta_reductions_part4() {
-    every_fixture_keeps_classes_under_cta_reductions(4);
-}
-#[test]
-#[ignore = "heavy: an eighth of the sweep's jobs; 450 s"]
-fn every_fixture_keeps_classes_under_cta_reductions_part5() {
-    every_fixture_keeps_classes_under_cta_reductions(5);
-}
-#[test]
-#[ignore = "heavy: an eighth of the sweep's jobs; 590 s"]
-fn every_fixture_keeps_classes_under_cta_reductions_part6() {
-    every_fixture_keeps_classes_under_cta_reductions(6);
-}
-#[test]
-#[ignore = "heavy: an eighth of the sweep's jobs; 75 s"]
-fn every_fixture_keeps_classes_under_cta_reductions_part7() {
-    every_fixture_keeps_classes_under_cta_reductions(7);
+
+reduction_part_tests! {
+    every_fixture_keeps_classes_under_cta_reductions_part0: 0,
+        "heavy: an eighth of the sweep's jobs; 75 s";
+    every_fixture_keeps_classes_under_cta_reductions_part1: 1,
+        "heavy: an eighth of the sweep's jobs; 270 s";
+    every_fixture_keeps_classes_under_cta_reductions_part2: 2,
+        "heavy: an eighth of the sweep's jobs; 1140 s";
+    every_fixture_keeps_classes_under_cta_reductions_part3: 3,
+        "heavy: an eighth of the sweep's jobs; 450 s";
+    every_fixture_keeps_classes_under_cta_reductions_part4: 4,
+        "heavy: an eighth of the sweep's jobs; 100 s";
+    every_fixture_keeps_classes_under_cta_reductions_part5: 5,
+        "heavy: an eighth of the sweep's jobs; 450 s";
+    every_fixture_keeps_classes_under_cta_reductions_part6: 6,
+        "heavy: an eighth of the sweep's jobs; 590 s";
+    every_fixture_keeps_classes_under_cta_reductions_part7: 7,
+        "heavy: an eighth of the sweep's jobs; 75 s";
 }
 
 /// Cached analyses must not leak between kernels checked one after another on one thread
@@ -831,4 +951,13 @@ fn verdicts_do_not_depend_on_earlier_checks_in_the_thread() {
         }
         assert_eq!(s, fresh, "{n}/{v}/{f}: in sequence vs fresh thread");
     }
+}
+
+/// The verdict at the gb300 level: without the strict level's E-HW-SB-QUEUE contracts
+/// (sb-hwq:), which the gb300 profile discharges.
+fn gb300(mut v: ptxv_sim::explore::Verdict) -> ptxv_sim::explore::Verdict {
+    v.findings.retain(|f| {
+        !(f.kind == "contract" && f.sig.starts_with(ptxv_sass::scoreboard::HW_QUEUE_SIG))
+    });
+    v
 }

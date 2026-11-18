@@ -82,3 +82,5 @@ buffer = "out64"
 [[variants]]
 id = "good"
 expect = ["clean"]
+# SASS: strict E-HW-SB-QUEUE contract findings (sb-hwq:), discharged at gb300.
+expect_sass = ["contract"]

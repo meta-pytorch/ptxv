@@ -1,0 +1,3 @@
+{"name": "exp800-noexact", "alpha": 0.1,
+ "description": "x ~ N(800, 1): e^x past f64's range, no determined exact value",
+ "tensors": {"x": {"elems": {"loc_scale": {"loc": 800.0, "scale": 1.0}}}}}

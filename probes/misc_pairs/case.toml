@@ -1,0 +1,69 @@
+name = "probe_misc_pairs"
+description = """Probe (MISS 181, the review repro): MATCH.ANY.U64 reads a register pair (R6 lo, R7 hi = an LDG with SB3);
+HMMA.1688.F32.BF16 reads C = R12..R15 (R13 = an LDG with SB2).
+MATCH_HI: MATCH waits nothing (its dest is R11).
+MATCH_LO (control): the LDG writes R6 and the LOP3 R7 instead, MATCH waits nothing; the STG after it waits SB0 and SB3.
+MATCH_OWN: MATCH waits SB3. HMMA_HI: HMMA waits nothing, the STG.128 after it waits SB2.
+HMMA_OWN: HMMA waits SB2 (as ptxas), the STG waits SB2. GB300 counts in results.txt."""
+ptx = "kernel.ptx"
+entry = "misc"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "in"
+dtype = "f32"
+shape = [512]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1024]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]
+
+[[variants]]
+id = "MATCH_HI"
+expect = ["violation"]
+patch = [
+  { at = "@0x0090", wait = 0, expect = "MATCH.ANY.U64 R11, R6" },
+  { at = "@0x00a0", wait = 9, expect = "STG.E desc[UR4][R4.64], R11" },
+]
+
+[[variants]]
+id = "MATCH_LO"
+expect = ["violation"]
+patch = [
+  { at = "@0x0060", bits = [[16, 8, 6]], expect = "LDG.E R6, desc[UR4][R2.64]" },
+  { at = "@0x0070", bits = [[16, 8, 7]], expect = "LOP3.LUT R7, R17.reuse, 0x3, RZ, 0xc0, !PT" },
+  { at = "@0x0090", wait = 0, expect = "MATCH.ANY.U64 R11, R6" },
+  { at = "@0x00a0", wait = 9, expect = "STG.E desc[UR4][R4.64], R11" },
+]
+
+[[variants]]
+id = "HMMA_HI"
+expect = ["violation"]
+patch = [
+  { at = "@0x0130", wait = 0, expect = "HMMA.1688.F32.BF16 R12, R18, R0, R12" },
+  { at = "@0x0150", wait = 4, expect = "STG.E.128 desc[UR4][R6.64+0x800], R12" },
+]
+
+[[variants]]
+id = "HMMA_OWN"
+expect = ["clean"]
+patch = [
+  { at = "@0x0150", wait = 4, expect = "STG.E.128 desc[UR4][R6.64+0x800], R12" },
+]

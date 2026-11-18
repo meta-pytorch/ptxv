@@ -1,0 +1,83 @@
+name = "e_mbar_reinit_drain"
+description = """
+S-REMOTE-INFLIGHT / S-CLUSTER-LIFE across an mbarrier re-initialization (MISS 203). Each CTA of
+a 2-CTA cluster waits for its peer's st.async on mbarrier `a`, invalidates and re-initializes
+`a`, then receives an st.async S1 on the new `a` that nothing waits for (and one on `b` that it
+waits for). S1 can land after its target CTA exited: every variant without the S1 wait is a
+violation. Before 2026-11-12 the wait on the old `a` (phase 0) counted for S1 (phase 0 of the
+new `a`): good and NOFENCE certified clean on both fronts, while exhaustive exploration found
+the violation. BAR3 / BAR3NF send S1 to a fresh mbarrier instead (controls, always caught);
+NOINV re-initializes `a` without an inval, STS through a per-thread address (SASS: SYNCS.CCTL.IV
+and an STS.64 of the state word); WAIT1 waits for S1 on the new `a` (clean)."""
+ptx = "kernel.ptx"
+entry = "e_mbar_reinit_drain"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [1, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "re-init a; S1 into the peer's new a (not waited for), S2 into b (waited for); final fence"
+expect = ["violation"]
+
+[[variants]]
+id = "NOFENCE"
+summary = "good without the final fence (S1 stays undrained)"
+marker = "@FENCE"
+replace = "<delete>"
+expect = ["violation"]
+
+[[variants]]
+id = "BAR3"
+summary = "control: S1 into the peer's fresh mbarrier c instead of the re-initialized a"
+marker = "@S1"
+find = "[%r8];"
+replace = "[%r10];"
+expect = ["violation"]
+
+[[variants]]
+id = "BAR3NF"
+summary = "control: BAR3 without the final fence"
+edits = [
+    { marker = "@S1", find = "[%r8];", replace = "[%r10];" },
+    { marker = "@FENCE", replace = "<delete>" },
+]
+expect = ["violation"]
+
+[[variants]]
+id = "NOINV"
+summary = "good without the mbarrier.inval: mbarrier.init over the live a"
+marker = "@INV"
+replace = "<delete>"
+expect = ["violation"]
+
+[[variants]]
+id = "STS"
+summary = "good with a per-thread init address (SASS: SYNCS.CCTL.IV, then an STS.64 init word)"
+marker = "@INIT"
+find = "mbarrier.init.shared::cta.b64 [%r2], 1;"
+replace = "mov.u32 %r25, %tid.x; shl.b32 %r25, %r25, 3; add.u32 %r26, %r2, %r25; mbarrier.init.shared::cta.b64 [%r26], 1;"
+expect = ["violation"]
+
+[[variants]]
+id = "WAIT1"
+summary = "precision control: each CTA waits for S1 on the new a (phase 0)"
+edits = [
+    { marker = "@ARM1", find = "mov.u32 %r21, 0;", replace = "mbarrier.arrive.expect_tx.relaxed.cluster.shared::cta.b64 _, [%r2], 16;" },
+    { marker = "@W1", find = "mov.u32 %r22, 0;", replace = """
+W1:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p3, [%r2], 0;
+    @!%p3 bra W1;""" },
+]
+expect = ["clean"]

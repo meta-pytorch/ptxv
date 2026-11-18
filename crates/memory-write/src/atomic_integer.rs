@@ -173,6 +173,12 @@ pub fn eval(input: IntegerInput) -> Result<IntegerResult, AtomicError> {
             compare as u64,
             replacement32(input.op, old, value, compare) as u64,
         )
+    } else if input.bytes == 2 && is_cas(input.op) {
+        // `atom.cas.b16`: the operands' low halves (MISS 160).
+        let old = input.old as u16 as u64;
+        let compare = input.compare as u16 as u64;
+        let value = input.value as u16 as u64;
+        (old, compare, if old == compare { value } else { old })
     } else if input.bytes == 8 {
         let replacement = match replacement64(input.op, input.old, input.value, input.compare) {
             Ok(replacement) => replacement,

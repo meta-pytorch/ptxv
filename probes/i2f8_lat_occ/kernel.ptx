@@ -1,0 +1,68 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPCLASS): the result latency of an I2F.S8 with no write scoreboard, read by an FMUL
+// (which reads its operands at issue), with K = 0..8 independent I2F.S16 issued between the two.
+// gen.py rewrites the compiled window (the I2F.S8, its followers, NOP padding, the FMUL) per
+// variant; every variant computes the same output as the compiled kernel.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry i2f8l(.param .u64 out_p, .param .u32 seed, .param .f32 scale)
+{
+    .reg .b32 %r<40>;
+    .reg .b16 %h<12>;
+    .reg .f32 %f<24>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r2, [seed];
+    ld.param.f32 %f20, [scale];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r30, %ctaid.x;
+    mov.u32 %r32, %ntid.x;
+    mad.lo.u32 %r31, %r30, %r32, %r1;
+    mul.lo.u32 %r3, %r31, %r2;
+    shr.u32 %r10, %r3, 3;
+    cvt.u16.u32 %h0, %r10;
+    shr.u32 %r11, %r3, 4;
+    cvt.u16.u32 %h1, %r11;
+    shr.u32 %r12, %r3, 5;
+    cvt.u16.u32 %h2, %r12;
+    shr.u32 %r13, %r3, 6;
+    cvt.u16.u32 %h3, %r13;
+    shr.u32 %r14, %r3, 7;
+    cvt.u16.u32 %h4, %r14;
+    shr.u32 %r15, %r3, 8;
+    cvt.u16.u32 %h5, %r15;
+    shr.u32 %r16, %r3, 9;
+    cvt.u16.u32 %h6, %r16;
+    shr.u32 %r17, %r3, 10;
+    cvt.u16.u32 %h7, %r17;
+    shr.u32 %r18, %r3, 11;
+    cvt.u16.u32 %h8, %r18;
+    cvt.rn.f32.s8 %f0, %h0;        // I2F.S8
+    cvt.rn.f32.s16 %f1, %h1;       // I2F.S16 followers
+    cvt.rn.f32.s16 %f2, %h2;
+    cvt.rn.f32.s16 %f3, %h3;
+    cvt.rn.f32.s16 %f4, %h4;
+    cvt.rn.f32.s16 %f5, %h5;
+    cvt.rn.f32.s16 %f6, %h6;
+    cvt.rn.f32.s16 %f7, %h7;
+    cvt.rn.f32.s16 %f8, %h8;
+    mul.rn.f32 %f9, %f0, %f20;     // FMUL: the I2F.S8's reader
+    mul.wide.u32 %rd2, %r31, 64;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.f32 [%rd3], %f9;
+    st.global.f32 [%rd3+4], %f1;
+    st.global.f32 [%rd3+8], %f2;
+    st.global.f32 [%rd3+12], %f3;
+    st.global.f32 [%rd3+16], %f4;
+    st.global.f32 [%rd3+20], %f5;
+    st.global.f32 [%rd3+24], %f6;
+    st.global.f32 [%rd3+28], %f7;
+    st.global.f32 [%rd3+32], %f8;
+    ret;
+}

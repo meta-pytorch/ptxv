@@ -1,0 +1,19 @@
+# run.sh, 2026-11-12, on agentDP 76d52bbe (MISS 221 fixed, MISS 222 not): exit 1
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+rc=1
+
+# On 72da73cd (the issue key) and later: exit 0
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+rc=0
+
+# On agentDP after merging int7 05eb1a04 (2cd6794f): exit 0, every line ok

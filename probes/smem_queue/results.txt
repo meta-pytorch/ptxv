@@ -1,0 +1,158 @@
+# GB300 (one GPU, GPU 3), 2026-11-12, rev 6d676091 + this probe (agentSND-probes2): PTXV_HW_EXPECT=variant
+# ptxv hw --runs 1000 --scrub (the patched image checked by --image-fnv); grid 1x1x1, block 256 (8 warps).
+# Summary (wrong runs of 1000; C = COVER / CTL, N = NOWAIT, O = OWN; G = stall cycles FIRST -> SECOND):
+#   LDSMs by LDSf  (LDSM.16.M88.4 8-way, later LDS):          G2/G4/G8 C 0, N 1000; OWN 0
+#   LDSMs by LDSMf (later LDSM.16.M88.4):                      G2/G4/G8 C 0, N 1000; OWN 0
+#   LDSMs by MT88f (later LDSM.16.MT88.4):                     G2/G4/G8 C 0, N 1000; OWN 0
+#   LDSMs by SHFL  (later SHFL.BFLY):                          G2/G4/G8 C 0, N 1000; OWN 0
+#   LDSs by LDSMf  (LDS 32-way, later LDSM.16.M88.4):          G2/G4/G8 C 0, N 1000; OWN 0
+#   LDSs by MT88f  (later LDSM.16.MT88.4):                     G2/G4/G8 C 0, N 1000; OWN 0
+#   CTL: LDSMs / LDSs by MUFU.EX2 (another unit):              G2/G4/G8 1000 (control discriminates)
+#   LAT (one op, reader D stall cycles later, no wait): MUFU wrong at D 4, 8, 0 from D 12; every
+#   shared-memory op (slow and fast, LDS / LDSM / MT88 / SHFL) wrong in every run up to D 96 (LDSs
+#   to 128): the 8 warps' bank-conflicted ops queue in the unit, so a fast op's latency here is not
+#   shorter than the slow op's; the one-warp layout (probes/smem_queue_w1) separates them.
+# Earlier passes of this probe had a window bug (fixed-latency results read too soon by the
+# stores) and are not counted.
+# Raw rows:
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_LDSf_G2_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_LDSf_G2_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSMs_LDSf_G4_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_LDSf_G4_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSMs_LDSf_G8_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_LDSf_G8_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSMs_LDSf_G2_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_LDSMf_G2_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_LDSMf_G2_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(
+hw LDSMs_LDSMf_G4_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_LDSMf_G4_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(
+hw LDSMs_LDSMf_G8_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_LDSMf_G8_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(
+hw LDSMs_LDSMf_G2_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_MT88f_G2_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_MT88f_G2_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(
+hw LDSMs_MT88f_G4_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_MT88f_G4_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(
+hw LDSMs_MT88f_G8_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_MT88f_G8_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(
+hw LDSMs_MT88f_G2_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_SHFL_G2_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_SHFL_G2_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSMs_SHFL_G4_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_SHFL_G4_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSMs_SHFL_G8_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_SHFL_G8_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSMs_SHFL_G2_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_LDSMf_G2_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_LDSMf_G2_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSs_LDSMf_G4_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_LDSMf_G4_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSs_LDSMf_G8_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_LDSMf_G8_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSs_LDSMf_G2_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_MT88f_G2_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_MT88f_G2_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSs_MT88f_G4_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_MT88f_G4_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSs_MT88f_G8_COVER [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_MT88f_G8_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1
+hw LDSs_MT88f_G2_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSMs_MUFU_G2_CTL [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 17 dis
+hw LDSMs_MUFU_G2_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 
+hw LDSMs_MUFU_G4_CTL [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 dis
+hw LDSMs_MUFU_G4_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 14 
+hw LDSMs_MUFU_G8_CTL [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 12 dis
+hw LDSMs_MUFU_G8_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 14 
+hw LDSMs_MUFU_G2_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LDSs_MUFU_G2_CTL [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw LDSs_MUFU_G2_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(10
+hw LDSs_MUFU_G4_CTL [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw LDSs_MUFU_G4_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(10
+hw LDSs_MUFU_G8_CTL [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000,
+hw LDSs_MUFU_G8_NOWAIT [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(10
+hw LDSs_MUFU_G2_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_LDSMs_D8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 19 distinct
+hw LAT_LDSMs_D16 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 19 distinc
+hw LAT_LDSMs_D24 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 18 distinc
+hw LAT_LDSMs_D32 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 18 distinc
+hw LAT_LDSMs_D48 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 distinc
+hw LAT_LDSMs_D64 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 15 distinc
+hw LAT_LDSMs_D4_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_LDSs_D8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)
+hw LAT_LDSs_D16 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D24 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D32 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D48 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D64 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D4_OWN [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_LDSf_D4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)
+hw LAT_LDSf_D8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 256)
+hw LAT_LDSf_D12 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSf_D16 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSf_D24 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSf_D32 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSMf_D4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinct
+hw LAT_LDSMf_D8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinct
+hw LAT_LDSMf_D12 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinc
+hw LAT_LDSMf_D16 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinct
+hw LAT_LDSMf_D24 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinc
+hw LAT_LDSMf_D32 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 21 distinc
+hw LAT_MT88f_D4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 102
+hw LAT_MT88f_D8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 102
+hw LAT_MT88f_D12 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_MT88f_D16 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_MT88f_D24 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_MT88f_D32 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_SHFL_D4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)
+hw LAT_SHFL_D8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)
+hw LAT_SHFL_D12 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_SHFL_D16 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_SHFL_D24 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.6s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_SHFL_D32 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_MUFU_D4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)
+hw LAT_MUFU_D8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256)
+hw LAT_MUFU_D12 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_MUFU_D16 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_MUFU_D24 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_MUFU_D32 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_LDSMs_D48 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 16 distinc
+hw LAT_LDSMs_D64 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 18 distinc
+hw LAT_LDSMs_D80 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 19 distinc
+hw LAT_LDSMs_D96 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 11 distinc
+hw LAT_LDSs_D48 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D64 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D80 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D96 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSs_D112 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 25
+hw LAT_LDSs_D128 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 25
+hw LAT_LDSf_D40 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSf_D48 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSf_D56 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSf_D64 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSf_D80 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSf_D96 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_LDSMf_D40 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 22 distinc
+hw LAT_LDSMf_D48 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinc
+hw LAT_LDSMf_D56 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 19 distinc
+hw LAT_LDSMf_D64 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 19 distinc
+hw LAT_LDSMf_D80 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 21 distinc
+hw LAT_LDSMf_D96 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 10 distinc
+hw LAT_MT88f_D40 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_MT88f_D48 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_MT88f_D56 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_MT88f_D64 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_MT88f_D80 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_MT88f_D96 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 10
+hw LAT_SHFL_D40 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_SHFL_D48 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_SHFL_D56 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_SHFL_D64 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_SHFL_D80 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_SHFL_D96 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 256
+hw LAT_MUFU_D40 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_MUFU_D48 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_MUFU_D56 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_MUFU_D64 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_MUFU_D80 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw LAT_MUFU_D96 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]

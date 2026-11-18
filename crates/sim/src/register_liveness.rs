@@ -228,6 +228,7 @@ pub(crate) fn plain_mode(machine: &Machine) -> bool {
         && machine.clock_step == 0
         && machine.clock_choice_pcs.is_empty()
         && machine.clock_effect_pcs.is_empty()
+        && machine.clock_lane_pcs.is_empty()
         && machine.clock_store_pcs.is_empty()
         && machine.delay_pcs.is_empty()
         && machine.clock_loop_pcs.is_empty()

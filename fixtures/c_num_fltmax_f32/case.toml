@@ -1,0 +1,41 @@
+name = "c_num_fltmax_f32"
+description = """
+N-NUM-TRACK reporting (MISS 161, the error in ulps at the largest finite f32; the independent
+review's probe): out[t] = add.rz(x[t], x[32 + t]). Even t: x[t] = FLT_MAX, x[32 + t] =
+(t + 1) 2^99, so out[t] = FLT_MAX (round toward zero) while the exact sum exceeds it by
+(t + 1) 2^99, (t + 1) / 32 of the top binade's ulp 2^104. Odd t: x in [1, 2). expected/ is
+GB300's output (`ptxv hw`, PTXV_HW_DUMP)."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "c_num_fltmax_f32"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [32]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

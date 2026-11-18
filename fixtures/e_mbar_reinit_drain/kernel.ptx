@@ -1,0 +1,86 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// S-REMOTE-INFLIGHT / S-CLUSTER-LIFE across an mbarrier re-initialization. A 2-CTA cluster,
+// one thread per CTA, symmetric (each CTA is the other's peer).
+//   Round 1: st.async S0 into the peer's buffer, completing on the peer's mbarrier `a`; each
+//            CTA waits on its own `a` for the peer's S0.
+//   Each CTA then invalidates and re-initializes `a` (phase numbering restarts at 0), arms
+//   `b` for 16 bytes, and synchronizes the cluster.
+//   Round 2: st.async S1 into the peer's re-initialized `a` and S2 into the peer's `b`; each
+//            CTA waits on its own `b` for S2. Nothing waits on the new `a`.
+//   WAIT1 (@ARM1, @W1) also arms the new `a` and waits on its phase 0 for S1 (clean).
+//   NOINV re-initializes `a` without invalidating it first; STS re-initializes it through a
+//   per-thread address, which ptxas lowers to SYNCS.CCTL.IV + STS.64 of the state word.
+// S1 and S2 complete on different mbarriers, so S1 may land after its target CTA exited.
+// The wait in round 1 observed phase 0 of the old `a`; S1 counts toward phase 0 of the new
+// `a`. A model that keeps the old object's waits across the re-initialization treats S1 as
+// waited for, and the single run of --certify then reports clean.
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_reinit_drain(.param .u64 out_p)
+.maxntid 1, 1, 1
+.reqnctapercluster 2, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<4>;
+    .reg .pred %p<4>;
+    .shared .align 8 .b8 a[8];
+    .shared .align 8 .b8 b[8];
+    .shared .align 8 .b8 c[8];
+    .shared .align 16 .b8 buf[64];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %cluster_ctarank;
+    mov.u32 %r2, a;
+    mov.u32 %r3, b;
+    mov.u32 %r4, c;
+    mov.u32 %r5, buf;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.init.shared::cta.b64 [%r3], 1;
+    mbarrier.init.shared::cta.b64 [%r4], 1;
+    fence.mbarrier_init.release.cluster;
+    add.u32 %r12, %r1, 1;
+    mov.u32 %r13, %r12;
+    mov.u32 %r14, %r12;
+    mov.u32 %r15, %r12;
+    barrier.cluster.arrive.aligned;
+    barrier.cluster.wait.aligned;
+    xor.b32 %r6, %r1, 1;
+    mapa.shared::cluster.u32 %r7, %r5, %r6;           // the peer's buf
+    mapa.shared::cluster.u32 %r8, %r2, %r6;           // the peer's a
+    mapa.shared::cluster.u32 %r9, %r3, %r6;           // the peer's b
+    mapa.shared::cluster.u32 %r10, %r4, %r6;          // the peer's c
+    // Round 1.
+    mbarrier.arrive.expect_tx.relaxed.cluster.shared::cta.b64 _, [%r2], 16;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.v4.b32 [%r7], {%r12, %r13, %r14, %r15}, [%r8];
+W0:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p1, [%r2], 0;    // @W0
+    @!%p1 bra W0;                                                               // @W0
+    mbarrier.inval.shared::cta.b64 [%r2];                                       // @INV
+    mbarrier.init.shared::cta.b64 [%r2], 1;                                     // @INIT
+    mov.u32 %r21, 0;                                                            // @ARM1
+    mbarrier.arrive.expect_tx.relaxed.cluster.shared::cta.b64 _, [%r3], 16;
+    fence.mbarrier_init.release.cluster;
+    barrier.cluster.arrive.aligned;
+    barrier.cluster.wait.aligned;
+    // Round 2.
+    add.u32 %r16, %r7, 16;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.v4.b32 [%r16], {%r12, %r13, %r14, %r15}, [%r8];   // @S1
+    add.u32 %r17, %r7, 32;
+    st.async.shared::cluster.mbarrier::complete_tx::bytes.v4.b32 [%r17], {%r12, %r13, %r14, %r15}, [%r9];
+    mov.u32 %r22, 0;                                                            // @W1
+W2:
+    mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p2, [%r3], 0;
+    @!%p2 bra W2;
+    fence.acq_rel.gpu;                                                          // @FENCE
+    ld.shared.u32 %r20, [buf+32];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r20;
+    ret;
+}

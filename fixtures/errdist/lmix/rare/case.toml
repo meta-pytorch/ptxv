@@ -1,0 +1,43 @@
+name = "lmix_rare"
+description = """MISS 139 / MISS 66 (the fifth review's rE_lmix): ../kernel.ptx (see its header), 4096 bf16 outputs per input, left out together on rare inputs (x0 = 1100) and in pairs on most (xg[g] = 1100)."""
+ptx = "../kernel.ptx"
+entry = "rE_lmix"
+grid = [4, 1, 1]
+block = [1024, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x0"
+dtype = "f32"
+shape = [1]
+init = "normal"
+seed = 7
+
+[[buffers]]
+name = "xg"
+dtype = "f32"
+shape = [4096]
+init = "normal"
+seed = 8
+
+[[buffers]]
+name = "y"
+dtype = "bf16"
+shape = [4096]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x0"
+
+[[params]]
+kind = "ptr"
+buffer = "xg"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

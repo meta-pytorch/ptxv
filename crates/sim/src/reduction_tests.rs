@@ -676,11 +676,18 @@ fn released_clock(releases: &[MbRel]) -> VC {
 
 fn async_arrival(machine: &Machine, mut kind: AsyncKind) -> AsyncOp {
     let issuer = &machine.threads[0];
-    if let AsyncKind::Remote { rels, land, n, .. } = &mut kind {
-        *rels = machine.mbar_rels(0, Scope::Cluster, true, *n > 0);
-        *land = vc_single(0, vc_get(&issuer.vc, 0));
+    // int7's remote operations carry one part per lane (`RemoteLane`): its releases and its
+    // own clock, which counts as landed.
+    if let AsyncKind::Remote { lanes, .. } = &mut kind {
+        for lane in lanes.iter_mut() {
+            lane.rels = machine.mbar_rels(0, Scope::Cluster, true, lane.n > 0);
+            lane.vc = issuer.vc.clone();
+            lane.vis = issuer.vis.clone();
+            lane.sh = issuer.vc_sh.clone();
+        }
     }
     AsyncOp {
+        seq: 0,
         fifo: None,
         actor: 0,
         vc: issuer.vc.clone(),
@@ -689,6 +696,22 @@ fn async_arrival(machine: &Machine, mut kind: AsyncKind) -> AsyncOp {
         kind,
         vis: issuer.vis.clone(),
         sh: issuer.vc_sh.clone(),
+    }
+}
+
+/// One lane's part (thread 0) of a remote arrival / transaction update.
+fn remote_lane(tx: i64, n: u32) -> crate::machine::RemoteLane {
+    crate::machine::RemoteLane {
+        thread: 0,
+        actor: 0,
+        tx,
+        n,
+        words: vec![],
+        rels: vec![],
+        vc: VC::new(),
+        vis: VC::new(),
+        sh: vec![],
+        snaps: vec![],
     }
 }
 
@@ -721,20 +744,17 @@ fn each_singleton_arrival_producer_records_a_phase_membership_read() {
                     mbar,
                     writes: vec![],
                     tx: false,
+                    prior: VC::new(),
                 },
             ),
             _ => complete_arrival(
                 &mut machine,
                 AsyncKind::Remote {
-                    cta,
-                    mbar,
-                    tx: 0,
-                    n: 1,
-                    store: vec![],
-                    fresh: false,
-                    rels: vec![],
-                    land: VC::new(),
-                },
+            cta,
+            mbar,
+            fresh: false,
+            lanes: vec![remote_lane(0, 1)],
+        },
             ),
         }
         assert_eq!(
@@ -785,12 +805,8 @@ fn remote_batch_records_every_generation_it_arrives_in() {
         AsyncKind::Remote {
             cta,
             mbar,
-            tx: 0,
-            n: 3,
-            store: vec![],
             fresh: false,
-            rels: vec![],
-            land: VC::new(),
+            lanes: vec![remote_lane(0, 3)],
         },
     );
     assert_eq!(machine.mbars[&(cta, mbar)].phase, 3);
@@ -840,20 +856,17 @@ fn all_arrival_producers_publish_to_the_old_parity_before_phase_wrap() {
                     mbar,
                     writes: vec![],
                     tx: false,
+                    prior: VC::new(),
                 },
             ),
             _ => complete_arrival(
                 &mut machine,
                 AsyncKind::Remote {
-                    cta,
-                    mbar,
-                    tx: 0,
-                    n: 1,
-                    store: vec![],
-                    fresh: false,
-                    rels: vec![],
-                    land: VC::new(),
-                },
+            cta,
+            mbar,
+            fresh: false,
+            lanes: vec![remote_lane(0, 1)],
+        },
             ),
         }
         let after = &machine.mbars[&(cta, mbar)];
@@ -925,21 +938,18 @@ fn transaction_only_completions_publish_once_the_last_debt_is_paid() {
         for payment in 1..=2 {
             let kind = if remote {
                 AsyncKind::Remote {
-                    cta,
-                    mbar,
-                    tx: -1,
-                    n: 0,
-                    store: vec![],
-                    fresh: false,
-                    rels: vec![],
-                    land: VC::new(),
-                }
+            cta,
+            mbar,
+            fresh: false,
+            lanes: vec![remote_lane(-1, 0)],
+        }
             } else {
                 AsyncKind::CpArrive {
                     cta,
                     mbar,
                     writes: vec![],
                     tx: true,
+                    prior: VC::new(),
                 }
             };
             complete_arrival(&mut machine, kind);
@@ -977,12 +987,8 @@ fn remote_overarrival_keeps_the_transaction_update_without_publishing() {
         AsyncKind::Remote {
             cta,
             mbar,
-            tx: -3,
-            n: 1,
-            store: vec![],
             fresh: false,
-            rels: vec![],
-            land: VC::new(),
+            lanes: vec![remote_lane(-3, 1)],
         },
     );
     let after = &machine.mbars[&(cta, mbar)];
@@ -1066,10 +1072,16 @@ fn transaction_phase_membership_preserves_the_reachable_deadlock() {
 fn every_byte_completion_publishes_and_records_phase_membership() {
     for producer in 0..3 {
         let mut machine = if producer == 2 {
-            before_barrier_operation(
+            let mut machine = before_barrier_operation(
                 2,
                 "st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 [response], 0, [bar];",
-            )
+            );
+            // st.async runs only in a cluster launch (int7 MISS 209, probes/cluster_launch_ops):
+            // a 1 x 1 x 1 cluster, as a launch with a cluster shape gives.
+            for grid in &mut Arc::make_mut(&mut machine.launch).grids {
+                grid.explicit_cluster = true;
+            }
+            machine
         } else {
             before_plain_arrival(2)
         };
@@ -2049,12 +2061,8 @@ fn grouped_audit_remote_phase_crossing_records_every_generation_as_write() {
         AsyncKind::Remote {
             cta,
             mbar,
-            tx: 0,
-            n: 3,
-            store: vec![],
             fresh: false,
-            rels: vec![],
-            land: VC::new(),
+            lanes: vec![remote_lane(0, 3)],
         },
     );
     machine.pending.push(operation);

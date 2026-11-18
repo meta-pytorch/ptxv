@@ -41,6 +41,19 @@
 //!   non-finite exact values the f64 expansions do not determine are not analyzed.
 //! - c_num_nan2_f32 (N-NUM-NONFINITE): the independent review's overflow probe; every element
 //!   analyzed, the even lanes' errors infinite.
+//! - c_num_stasync_f32 (MISS 205): a value stored by st.async over an input word's bits takes
+//!   the stored value's node, not the word's earlier one.
+//! - c_num_mufu_top_f32 (MISS 206): MUFU bounds at the 16 largest finite magnitudes.
+//! - c_num_mufu_ftz_f32 (MISS 207): PTX .ftz approx results carry the MUFU bound.
+//! - c_num_nic_write_f32 (MISS 224): an RDMA write moves the source words' nodes.
+//! - c_num_nic_atomic_f32 (MISS 257): a NIC atomic keeps the nodes of the words it leaves
+//!   unchanged, and words whose outcome a rounding or input data decides are input data.
+//! - c_num_mufu_nan_f32 (MISS 258): sqrt, rsqrt and lg2 of negative numbers (negative
+//!   subnormals the .ftz forms flush to -0, and -2) have no real value: not analyzed.
+//! - c_num_mufu_inf_f32 (MISS 258): lg2, rsqrt and rcp of an exact 0 (a sum that is 1 in f32)
+//!   have no finite value: not analyzed, also under max, min, ex2, rcp and add.
+//! - c_num_mufu_nan_mma (MISS 258): such a MUFU result under an MMA factor (bf16 mma.sync):
+//!   the products' outputs are not analyzed.
 //!
 //! The invariant catches a taint drop at FFMA, FMNMX (c_num_amax_f32) or the PTX
 //! cvt.f32.bf16 (MISS 36 mutants): the dropped value would become an exact constant and the claimed error too small.
@@ -62,7 +75,12 @@ fn f32s(p: &Path) -> Vec<f64> {
 
 /// Runs `ptxv num`; its stdout and the (front, CSV text) pairs it wrote.
 fn num(case: &str) -> (String, Vec<(&'static str, String)>) {
-    let out = std::env::temp_dir().join(format!("ptxv-test-num-{case}-{}", std::process::id()));
+    num_tagged(case, "num")
+}
+
+/// `num` into an output directory of its own (`tag`: tests of one case run in parallel).
+fn num_tagged(case: &str, tag: &str) -> (String, Vec<(&'static str, String)>) {
+    let out = std::env::temp_dir().join(format!("ptxv-test-{tag}-{case}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
     let r = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
         .args(["num", root().join("fixtures").join(case).to_str().unwrap()])
@@ -424,6 +442,524 @@ fn roundings_through_immediates_bit_operations_and_atomics_are_not_exact() {
     }
 }
 
+/// MISS 205: c_num_stasync_f32 (probes/stasync_num_shadow r5_stasync_co_c1): out[t] = add.rn(t,
+/// 0.1f) stored by st.async over the input x[t] = rn(t + 0.1f), the same bits. The word takes the
+/// stored value's node: every element's claimed error is |GB300 - (t + 0.1f)| (up to 3.8e-7, at
+/// out[8]) on both fronts. Before, the word kept x's input node: abs_err 0 and bound 0 claimed at
+/// the 31 elements with a rounding.
+#[test]
+fn stasync_words_take_the_stored_value_node() {
+    let tenth = 0.1f32 as f64;
+    let fp64: Vec<f64> = (0..32).map(|t| t as f64 + tenth).collect();
+    let (analyzed, text) = check_claims("c_num_stasync_f32", &fp64);
+    assert_eq!(analyzed.len(), 64, "{text}");
+}
+
+/// MISS 224: c_num_nic_write_f32 (probes/nic_num_shadow loop): one GPU, a loopback IBGDA queue
+/// pair; dst holds a copy of the input c (c[i] = rn(x[i] + y[i])), the RDMA write of src[i] =
+/// x[i] + y[i] replaces it with the same bits, and out = dst after the signal's completion. The
+/// write moves src's nodes: every element's claimed error is |GB300 - (x + y)| (up to 1.0, at
+/// out[3]) and its bound covers it, on both fronts. Before, out kept the copy's input node:
+/// abs_err 0 and bound 0 at every element.
+#[test]
+fn nic_writes_move_numerics_nodes() {
+    let case = "c_num_nic_write_f32";
+    let x = [0.1f32, 1.0, 3.0, 1e8];
+    let y = [0.2f32, 1e-8, 0.1, 1.0];
+    let fp64: Vec<f64> = x
+        .iter()
+        .zip(&y)
+        .map(|(&a, &b)| a as f64 + b as f64)
+        .collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert_eq!(analyzed.len(), 8, "{text}");
+    let hw = buf(case, "expected/out.bin");
+    let (text, csvs) = num_opt(case);
+    for (front, csv) in csvs {
+        let csv = csv.unwrap_or_else(|| panic!("{front}: {text}"));
+        for line in csv.lines().skip(1) {
+            let c: Vec<&str> = line.split(',').collect();
+            let i: usize = c[0].parse().unwrap();
+            let bound: f64 = c[6].parse().unwrap();
+            let err = (hw[i] - fp64[i]).abs();
+            assert!(
+                err > 0.0 && bound >= err,
+                "{front} element {i}: bound {bound}, GB300 error {err}\n{text}"
+            );
+        }
+    }
+}
+
+/// MISS 257: c_num_nic_atomic_f32: NIC atomics (one GPU, a loopback queue pair) on dst's 8-byte
+/// words: W0..W3 = (rn(0.1f + 0.2f), rn(1 + 1e-8f)) (roundings of constants), W4 = (2.0f, 3.0f),
+/// W5 = four bf16 elements of those roundings (16-bit stores), W6, W7 = the same roundings of
+/// input data. out[0..16) = dst after the atomics, out[16..32) = the values they fetched, outh =
+/// W5's bf16 elements. On each front every claim equals the element's exact error and its bound
+/// covers it, and:
+/// - W1, W5, W6 (a fetch-add of 0) and W3's low word (a fetch-add of 2^32) are unchanged whatever
+///   the words held: they keep their nodes and 16-bit provenance (claimed on the PTX front; the
+///   SASS front, where ptxas folds the constants' roundings, claims W6 only, as MISS 108's gate
+///   allows);
+/// - no claim at W0 (a compare-and-swap that fails on rounded words: the exact computation may
+///   swap), W2, W7 (a fetch-add of 1: the low word changed, the high word's carry is the low
+///   word's) and W3's high word (changed): input data;
+/// - W4 (swapped in 7.0f, 5.0f) is claimed exact;
+/// - the fetched values carry the old words' nodes.
+///
+/// Until MISS 257 every word lost its node without taint: W0..W3 were claimed exact on both
+/// fronts (abs_err 0, bound 0), where the unchanged words' errors are 7.45e-9 and 1.0e-8.
+#[test]
+fn nic_atomics_keep_unchanged_words_and_taint_decided_ones() {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Want {
+        Claim,
+        NoClaim,
+        Either,
+    }
+    use Want::*;
+    let case = "c_num_nic_atomic_f32";
+    let r = [0.1f32 as f64 + 0.2f32 as f64, 1.0 + 1e-8f32 as f64];
+    let h = [(0.1f32 + 0.2f32) as f64, (1.0f32 + 1e-8f32) as f64];
+    // Per element: (exact, simulated), PTX front, SASS front.
+    let rounded = |k: usize, ptx: Want, sass: Want| ((r[k], h[k]), ptx, sass);
+    let exact = |v: f64| ((v, v), Claim, Claim);
+    // A fetch-add of 1 on the word's bits: the next f32 up.
+    let up = |v: f32| f32::from_bits(v.to_bits() + 1) as f64;
+    // W5's words read as f32: two bf16 elements each, whose words hold roundings (input data,
+    // MISS 115).
+    let bf16_pairs = [f32::from_bits(0x3f80_3e9a), f32::from_bits(0x3e9a_3f80)];
+    let w5 = |k: usize| ((f64::NAN, bf16_pairs[k] as f64), NoClaim, NoClaim);
+    let mut out = vec![
+        rounded(0, NoClaim, NoClaim),
+        rounded(1, NoClaim, NoClaim),
+        rounded(0, Claim, Either),
+        rounded(1, Claim, Either),
+        ((r[0], up(0.1f32 + 0.2f32)), NoClaim, NoClaim),
+        rounded(1, NoClaim, NoClaim),
+        rounded(0, Claim, Either),
+        ((r[1], up(1.0f32 + 1e-8f32)), NoClaim, NoClaim),
+        exact(7.0),
+        exact(5.0),
+        w5(0),
+        w5(1),
+        rounded(0, Claim, Claim),
+        rounded(1, Claim, Claim),
+        ((r[0], up(0.1f32 + 0.2f32)), NoClaim, NoClaim),
+        rounded(1, NoClaim, NoClaim),
+    ];
+    for _ in 0..4 {
+        out.extend([rounded(0, Claim, Either), rounded(1, Claim, Either)]);
+    }
+    out.extend([exact(2.0), exact(3.0), w5(0), w5(1)]);
+    for _ in 0..2 {
+        out.extend([rounded(0, Claim, Claim), rounded(1, Claim, Claim)]);
+    }
+    // bf16(rn(0.1f + 0.2f)) = 0x3e9a; bf16(1) = 1.
+    let hb = [f32::from_bits(0x3e9a_0000) as f64, 1.0];
+    let outh: Vec<_> = [0, 1, 1, 0]
+        .into_iter()
+        .map(|k| ((r[k], hb[k]), Claim, Either))
+        .collect();
+    let dir = std::env::temp_dir().join(format!("ptxv-test-num257-{case}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let p = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .args(["num", root().join("fixtures").join(case).to_str().unwrap()])
+        .arg("--out")
+        .arg(&dir)
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&p.stdout),
+        String::from_utf8_lossy(&p.stderr)
+    );
+    assert!(p.status.success(), "{text}");
+    for front in ["ptx", "sass"] {
+        for (sfx, want) in [("", &out), (".outh", &outh)] {
+            let file = dir.join(format!("good.{front}.num{sfx}.csv"));
+            let csv = std::fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("{}: {e}\n{text}", file.display()));
+            let mut rows = 0;
+            for line in csv.lines().skip(1) {
+                let c: Vec<&str> = line.split(',').collect();
+                let i: usize = c[0].parse().unwrap();
+                let ((exact, hw), ptx, sass) = want[i];
+                let w = if front == "ptx" { ptx } else { sass };
+                let claimed = c[11] == "false" && c[12] == "false";
+                let at = format!("{front}{sfx} element {i}: {line}");
+                rows += 1;
+                let got = c[1].parse::<f32>().unwrap() as f64;
+                assert_eq!(got, hw, "{at}");
+                assert!(w != Claim || claimed, "{at}: no claim\n{text}");
+                assert!(w != NoClaim || !claimed, "{at}: claimed\n{text}");
+                if claimed {
+                    let abs_err: f64 = c[3].parse().unwrap();
+                    let bound: f64 = c[6].parse().unwrap();
+                    let err = (hw - exact).abs();
+                    assert!(
+                        (abs_err - err).abs() <= 1e-12 * exact.abs().max(1.0) && bound >= err,
+                        "{at}: abs_err {abs_err}, bound {bound}, exact error {err}\n{text}"
+                    );
+                }
+            }
+            assert_eq!(rows, want.len(), "{front}{sfx}: {text}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MISS 206 (defense in depth): a bound that an analyzed element of its output exceeds is no
+/// bound. c_num_nonfinite_f32's overflowed elements carry infinite errors (N-NUM-NONFINITE), so
+/// cor1a_ok and running_ok are false and every element of the output reports both bounds as
+/// unknown, as does the summary's bound / error ratio; c_num_sum_f32 (no violation) keeps its
+/// bounds. Until MISS 206 the bounds printed whatever they were (an overflowed MUFU bound:
+/// 2^-126 against errors of 7.7e25, probes/mufu_bound_top).
+#[test]
+fn bounds_an_output_violates_are_unknown() {
+    let (text, csvs) = num_tagged("c_num_nonfinite_f32", "num-unknown");
+    for (front, csv) in csvs {
+        for line in csv.lines().skip(1) {
+            let c: Vec<&str> = line.split(',').collect();
+            assert_eq!(
+                (c[6], c[7]),
+                ("unknown", "unknown"),
+                "{front}: {line}\n{text}"
+            );
+        }
+        let summary = text
+            .lines()
+            .find(|l| l.starts_with(&format!("num good {front:<4}:")))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            summary.contains("cor1a_ok=false running_ok=false")
+                && summary.contains("bound/err(mean)=unknown"),
+            "{summary}"
+        );
+    }
+    let (text, csvs) = num_tagged("c_num_sum_f32", "num-unknown");
+    for (front, csv) in csvs {
+        for line in csv.lines().skip(1) {
+            let c: Vec<&str> = line.split(',').collect();
+            assert!(
+                c[11] == "true" || c[6].parse::<f64>().is_ok(),
+                "{front}: {line}\n{text}"
+            );
+        }
+    }
+}
+
+/// MISS 206: c_num_mufu_top_f32: PTX rcp.approx.f32 (no .ftz) of subnormals 2^-128 + k 2^-149
+/// gives 0x7f7ffff8 / 0x7f7ffff0 at k = 1, 2, among the 16 largest finite magnitudes, where
+/// |hw| (1 + 2^-20) rounds to infinity in f32. Every claimed element's bounds cover its GB300
+/// error |GB300 - 1/x| (1/x in f64: a relative error of 2^-53, far below the margins), and the
+/// output keeps its bounds (cor1a_ok). Before, the MUFU bound at those two elements was 2^-126
+/// against errors of 7.7e25 and 3.1e26 (since the bound check of MISS 206, unknown for the whole
+/// output). The SASS front claims none of these elements.
+#[test]
+fn mufu_bound_at_the_top_magnitudes_covers_gb300() {
+    let case = "c_num_mufu_top_f32";
+    let x = buf(case, "data/x.bin");
+    let hw = buf(case, "expected/out.bin");
+    let (text, csvs) = num_opt(case);
+    let csv = csvs[0].1.as_ref().unwrap_or_else(|| panic!("{text}"));
+    let mut claimed = vec![];
+    for line in csv.lines().skip(1) {
+        let c: Vec<&str> = line.split(',').collect();
+        let i: usize = c[0].parse().unwrap();
+        if c[11] == "true" {
+            continue;
+        }
+        claimed.push(i);
+        let te = (hw[i] - 1.0 / x[i]).abs();
+        let slack = 1e-15 * (1.0 / x[i]).abs();
+        for b in [c[6], c[7]] {
+            let b: f64 = b
+                .parse()
+                .unwrap_or_else(|_| panic!("element {i}: {line}\n{text}"));
+            assert!(
+                b >= te - slack,
+                "element {i}: bound {b} < |GB300 - 1/x| {te}\n{text}"
+            );
+        }
+    }
+    assert!(
+        claimed.contains(&0) && claimed.contains(&1),
+        "{claimed:?}\n{text}"
+    );
+    assert!(text.contains("num good ptx : outputs=32 thm1_exact=false spec_match=None cor1a_ok=true running_ok=true"), "{text}");
+}
+
+/// MISS 207: c_num_mufu_ftz_f32: PTX ex2.approx.ftz.f32 (oute), rcp.approx.ftz.f32 (outr) and
+/// sqrt.approx.ftz.f32 (outs), a one-instruction slice node each in `ptxv num`, carry the swept
+/// MUFU bound plus the flush of a subnormal operand (sqrt: 0 against sqrt(x) up to 2^-63). Every
+/// claimed element's bounds on both fronts cover its GB300 error |GB300 - f(x)| (f(x) in f64), and
+/// every output keeps its bounds. Before, the PTX front's bound was 0 at every element, below
+/// errors up to 1.5e31 (ex2 of 128 - 2^-17), 4.7e-10 (rcp of 128 - 2^-17) and 5.4e-20 (sqrt of a
+/// subnormal); since MISS 206's bound check, unknown for the whole output.
+#[test]
+fn ptx_ftz_approx_results_carry_the_sweep_bound() {
+    let case = "c_num_mufu_ftz_f32";
+    let (x, y) = (buf(case, "data/x.bin"), buf(case, "data/y.bin"));
+    let out = std::env::temp_dir().join(format!("ptxv-test-numftz-{case}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let r = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .args(["num", root().join("fixtures").join(case).to_str().unwrap()])
+        .arg("--out")
+        .arg(&out)
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&r.stdout).to_string();
+    assert!(r.status.success(), "{text}");
+    // (output, CSV name suffix, operands, the exact function of an operand)
+    type Out = (&'static str, &'static str, Vec<f64>, fn(f64) -> f64);
+    let outputs: [Out; 3] = [
+        ("oute", "", x.clone(), f64::exp2),
+        ("outr", ".outr", y, |v| 1.0 / v),
+        ("outs", ".outs", x, f64::sqrt),
+    ];
+    for (name, sfx, arg, f) in outputs {
+        let hw = buf(case, &format!("expected/{name}.bin"));
+        for front in ["ptx", "sass"] {
+            let csv =
+                std::fs::read_to_string(out.join(format!("good.{front}.num{sfx}.csv"))).unwrap();
+            let mut claimed = 0;
+            for line in csv.lines().skip(1) {
+                let c: Vec<&str> = line.split(',').collect();
+                let i: usize = c[0].parse().unwrap();
+                if c[11] == "true" {
+                    continue;
+                }
+                claimed += 1;
+                let te = (hw[i] - f(arg[i])).abs();
+                let slack = 1e-15 * f(arg[i]).abs();
+                for b in [c[6], c[7]] {
+                    let b: f64 = b
+                        .parse()
+                        .unwrap_or_else(|_| panic!("{name} {front} {i}: {line}\n{text}"));
+                    assert!(
+                        b >= te - slack,
+                        "{name} {front} {i}: bound {b} < {te}\n{text}"
+                    );
+                }
+            }
+            assert_eq!(claimed, 32, "{name} {front}\n{text}");
+            let summary = text
+                .lines()
+                .find(|l| l.starts_with(&format!("num good {front:<4}: output={name} ")))
+                .unwrap_or_else(|| panic!("{text}"));
+            assert!(
+                summary.contains("cor1a_ok=true running_ok=true"),
+                "{summary}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+/// MISS 258: c_num_mufu_nan_f32: out[32 k + t] = sqrt.approx.ftz, rsqrt.approx.ftz,
+/// lg2.approx.ftz, ex2.approx.ftz(lg2.approx.ftz), max(lg2.approx.ftz, -200) and sqrt.approx (no
+/// .ftz) of x[t]. At a negative operand (three negative subnormals, which the .ftz forms and the
+/// bare MUFU units flush to -0, and -2) the true functions have no real value: on both fronts
+/// every such element is not analyzed, nonfinite with its exact value and errors NaN where it
+/// keeps a node (max(NaN, -200) at -2 keeps none, nor does the SASS front's sqrt.approx
+/// sequence: untracked). Every other element is claimed (on the SASS front all but sqrt.approx),
+/// every claim's bounds cover |GB300 - f(x)| (f in f64), and the output keeps its bounds. Until
+/// MISS 258 num_mufu took the true value's NaN as the exact value 0: sqrt of a negative subnormal
+/// was claimed with abs_err 0, ex2(lg2(.)) of it had exact 1 and abs_err 1, max(lg2(.), -200)
+/// exact 0 and abs_err 200, and the NaN results at -2 carried infinite errors, so the output's
+/// bounds were unknown.
+#[test]
+fn mufu_results_without_a_real_value_are_not_analyzed() {
+    let case = "c_num_mufu_nan_f32";
+    let x = buf(case, "data/x.bin");
+    let hw = buf(case, "expected/out.bin");
+    let f: [fn(f64) -> f64; 6] = [
+        f64::sqrt,
+        |v| 1.0 / v.sqrt(),
+        f64::log2,
+        |v| v.log2().exp2(),
+        |v| v.log2().max(-200.0),
+        f64::sqrt,
+    ];
+    let (text, csvs) = num_opt(case);
+    for (front, csv) in csvs {
+        let csv = csv.unwrap_or_else(|| panic!("{case} {front}: no CSV\n{text}"));
+        let mut claimed = 0;
+        for line in csv.lines().skip(1) {
+            let c: Vec<&str> = line.split(',').collect();
+            let i: usize = c[0].parse().unwrap();
+            let (k, t) = (i / 32, i % 32);
+            let (untracked, nonfinite) = (c[11] == "true", c[12] == "true");
+            // No node: max(NaN, -200) at -2, the SASS front's sqrt.approx sequence.
+            let dropped = (k == 4 && x[t] == -2.0) || (k == 5 && front == "sass");
+            if x[t] < 0.0 {
+                assert!(
+                    untracked && (dropped || nonfinite && c[2] == "NaN" && c[3] == "NaN"),
+                    "{front} element {i} (x = {:e}): analyzed ({line})\n{text}",
+                    x[t]
+                );
+                continue;
+            }
+            if untracked {
+                assert!(dropped, "{front} element {i}: no claim ({line})\n{text}");
+                continue;
+            }
+            claimed += 1;
+            let e = f[k](x[t]);
+            let te = (hw[i] - e).abs();
+            let slack = 1e-15 * e.abs();
+            for b in [c[6], c[7]] {
+                let b: f64 = b
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{front} element {i}: {line}\n{text}"));
+                assert!(
+                    b >= te - slack,
+                    "{front} element {i}: bound {b} < {te}\n{text}"
+                );
+            }
+        }
+        let want = if front == "ptx" { 6 * 16 } else { 5 * 16 };
+        assert_eq!(claimed, want, "{front}\n{text}");
+        let summary = text
+            .lines()
+            .find(|l| l.starts_with(&format!("num good {front:<4}: ")))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            summary.contains("cor1a_ok=true running_ok=true"),
+            "{summary}"
+        );
+    }
+}
+
+/// MISS 258: c_num_mufu_inf_f32: out[32 k + t] = chain_k(x[t]), x = ((a + b) + c) + e, for lg2,
+/// rsqrt and rcp .approx, their .ftz forms, max(lg2f, -1000), min(rsqrtf, 1000),
+/// min(rcpf, 1000), ex2f(lg2f), rcpf(rsqrtf), max(lg2, -1000) and add(lg2f, 1000). In lanes 0..15
+/// x is 1 in f32 and exactly 0, where lg2, rsqrt and rcp have no finite true value (-inf, +inf,
+/// a pole): on both fronts every such element is not analyzed, nonfinite with its exact value and
+/// errors NaN where it keeps a node (the SASS front's non-ftz sequences keep none: untracked). In
+/// lanes 16..31 (x = 2, 0.5, 3, 1.5, exact) every element is claimed (on the SASS front all but
+/// the four chains of a non-ftz form), every claim's bounds cover |GB300 - f(x)| (f in f64), and
+/// the output keeps its bounds. Until then num_mufu took the infinite true values as the exact
+/// value 0: max(lg2.approx.ftz(x), -1000) was claimed exact with bound 43 where the true error is
+/// 1000, and ex2(lg2.approx.ftz(x)) with error 0 where it is 1.
+#[test]
+fn mufu_results_without_a_finite_value_are_not_analyzed() {
+    let case = "c_num_mufu_inf_f32";
+    let [a, b, c, e] = ["a", "b", "c", "e"].map(|n| buf(case, &format!("data/{n}.bin")));
+    let hw = buf(case, "expected/out.bin");
+    let f: [fn(f64) -> f64; 13] = [
+        f64::log2,
+        |v| 1.0 / v.sqrt(),
+        |v| 1.0 / v,
+        f64::log2,
+        |v| 1.0 / v.sqrt(),
+        |v| 1.0 / v,
+        |v| v.log2().max(-1000.0),
+        |v| (1.0 / v.sqrt()).min(1000.0),
+        |v| (1.0 / v).min(1000.0),
+        |v| v,
+        f64::sqrt,
+        |v| v.log2().max(-1000.0),
+        |v| v.log2() + 1000.0,
+    ];
+    // The chains of a non-ftz form: no node on the SASS front.
+    let plain = [0, 1, 2, 11];
+    let (text, csvs) = num_opt(case);
+    for (front, csv) in csvs {
+        let csv = csv.unwrap_or_else(|| panic!("{case} {front}: no CSV\n{text}"));
+        let mut claimed = 0;
+        for line in csv.lines().skip(1) {
+            let col: Vec<&str> = line.split(',').collect();
+            let i: usize = col[0].parse().unwrap();
+            let (k, t) = (i / 32, i % 32);
+            let (untracked, nonfinite) = (col[11] == "true", col[12] == "true");
+            let dropped = front == "sass" && plain.contains(&k);
+            // The exact operand (these sums are exact in f64).
+            let x = a[t] + b[t] + c[t] + e[t];
+            if x == 0.0 {
+                assert!(
+                    untracked && (dropped || nonfinite && col[2] == "NaN" && col[3] == "NaN"),
+                    "{front} element {i} (exact operand 0): analyzed ({line})\n{text}"
+                );
+                continue;
+            }
+            if untracked {
+                assert!(dropped, "{front} element {i}: no claim ({line})\n{text}");
+                continue;
+            }
+            claimed += 1;
+            let ex = f[k](x);
+            let te = (hw[i] - ex).abs();
+            let slack = 1e-15 * ex.abs();
+            for bnd in [col[6], col[7]] {
+                let bnd: f64 = bnd
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{front} element {i}: {line}\n{text}"));
+                assert!(
+                    bnd >= te - slack,
+                    "{front} element {i}: bound {bnd} < {te}\n{text}"
+                );
+            }
+        }
+        let want = if front == "ptx" { 13 * 16 } else { 9 * 16 };
+        assert_eq!(claimed, want, "{front}\n{text}");
+        let summary = text
+            .lines()
+            .find(|l| l.starts_with(&format!("num good {front:<4}: ")))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            summary.contains("cor1a_ok=true running_ok=true"),
+            "{summary}"
+        );
+    }
+}
+
+/// MISS 258: c_num_mufu_nan_mma: D = A B + 0 by mma.sync.m16n8k16 (bf16, f32 accumulate) with
+/// A = bf16(sqrt.approx.ftz.f32(x[l])) for the lane l holding the element (x[0] = -3 2^-149, which
+/// .ftz flushes to -0, where sqrt has no real value; x[l] = 1 in the other lanes) and B = bf16
+/// ones. out[0..16) (rows 0 and 8 of D) hold lane 0's products: on both fronts not analyzed,
+/// nonfinite with exact value and errors NaN. out[16..128) are 16 exactly: claimed with error 0.
+/// Until then out_rec did not walk an MMA's factor nodes: out[0..16) were claimed with abs_err 0
+/// and bound 6.79e-6 against the exact value made up for the MUFU (0).
+#[test]
+fn mufu_under_an_mma_factor_without_a_real_value_is_not_analyzed() {
+    let case = "c_num_mufu_nan_mma";
+    let hw = buf(case, "expected/out.bin");
+    let (text, csvs) = num_opt(case);
+    for (front, csv) in csvs {
+        let csv = csv.unwrap_or_else(|| panic!("{case} {front}: no CSV\n{text}"));
+        let mut claimed = 0;
+        for line in csv.lines().skip(1) {
+            let col: Vec<&str> = line.split(',').collect();
+            let i: usize = col[0].parse().unwrap();
+            let (untracked, nonfinite) = (col[11] == "true", col[12] == "true");
+            if i < 16 {
+                assert!(
+                    untracked && nonfinite && col[2] == "NaN" && col[3] == "NaN",
+                    "{front} element {i}: analyzed ({line})\n{text}"
+                );
+                continue;
+            }
+            assert!(!untracked, "{front} element {i}: no claim ({line})\n{text}");
+            claimed += 1;
+            assert_eq!(hw[i], 16.0, "{front} element {i}");
+            let abs_err: f64 = col[3].parse().unwrap();
+            assert_eq!(abs_err, 0.0, "{front} element {i}: {line}\n{text}");
+        }
+        assert_eq!(claimed, 112, "{front}\n{text}");
+        let summary = text
+            .lines()
+            .find(|l| l.starts_with(&format!("num good {front:<4}: ")))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            summary.contains("cor1a_ok=true running_ok=true"),
+            "{summary}"
+        );
+    }
+}
+
 /// N-NUM-UDIV: c_num_udiv_f32: div / rem .u32 by du = 7 and .s32 by ds = -9, which ptxas
 /// lowers to I2F.RP, MUFU.RCP, F2I.TRUNC and an integer correction (.s32 on |n| and |d|, then
 /// the signs; the remainder's correction partly by a selection), decide load addresses and a
@@ -676,6 +1212,47 @@ fn overflowed_sums_carry_infinite_errors() {
             "{line}"
         );
     }
+}
+
+/// The error in ulps at an output of +-FLT_MAX (MISS 161; fixtures/c_num_fltmax_f32, the
+/// independent review's probe, GB300 output): add.rz(FLT_MAX, (t + 1) 2^99) is FLT_MAX in the
+/// even lanes, (t + 1) 2^99 below the exact sum, (t + 1) / 32 of the top binade's ulp 2^104. Every
+/// claim is |GB300 - exact|, and its ulp figure that over 2^104 (the odd lanes: over their own
+/// ulp). Before, FLT_MAX's ulp was its distance to +inf and the even lanes' figure 0: max_err
+/// printed 0.50 ulp (an odd lane's) against 31/32 ulp.
+#[test]
+fn ulp_figure_at_flt_max_uses_the_top_binade() {
+    let case = "c_num_fltmax_f32";
+    let x = buf(case, "data/x.bin");
+    let fp64: Vec<f64> = (0..32).map(|t| x[t] + x[32 + t]).collect();
+    let hw = buf(case, "expected/out.bin");
+    let (analyzed, text) = check_claims(case, &fp64);
+    for front in ["ptx", "sass"] {
+        assert_eq!(
+            analyzed.iter().filter(|a| a.0 == front).count(),
+            32,
+            "{case} {front}\n{text}"
+        );
+    }
+    let (_, csvs) = num_opt(case);
+    for (front, csv) in csvs {
+        for line in csv.unwrap().lines().skip(1) {
+            let c: Vec<&str> = line.split(',').collect();
+            let i: usize = c[0].parse().unwrap();
+            let (abs_err, ulps): (f64, f64) = (c[3].parse().unwrap(), c[5].parse().unwrap());
+            let h = hw[i] as f32;
+            let ulp = if h == f32::MAX {
+                2f64.powi(104)
+            } else {
+                (f32::from_bits(h.to_bits() + 1) - h) as f64
+            };
+            assert_eq!(ulps, abs_err / ulp, "{case} {front} element {i}\n{text}");
+            if i.is_multiple_of(2) {
+                assert_eq!(ulps, (i + 1) as f64 / 32.0, "{case} {front} element {i}");
+            }
+        }
+    }
+    assert!(text.contains("(0.97 ulp)"), "{text}");
 }
 
 /// Non-finite values (N-NUM-NONFINITE, MISS 63). Even lanes: (x + y) + (u + v) is NaN and x + y
@@ -982,4 +1559,50 @@ fn sass_claims_need_a_ptx_claim_with_the_same_exact_value() {
     let (analyzed, text) = check_claims(case, &fp64);
     assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
     assert!(text.contains("the PTX front makes no claim"), "{text}");
+}
+
+/// A kernel with PTX the PTX front-end refuses (MISS 160; fixtures/c_num_fold_ptxref_f32, the
+/// independent review's probe, GB300 output): x + mul.rn(0.1f, 3), the product folded by ptxas into
+/// an immediate, next to atom.dec.u32 (variant good) or activemask.b32 (variant refused, which
+/// the PTX front-end does not model). Neither variant gets a claim: in good the PTX front runs
+/// (atom.dec is modeled) and claims nothing, so neither does the SASS front (MISS 108); in refused
+/// the PTX front-end refuses the PTX, so no PTX claim bounds the SASS front's and it makes none.
+/// Before, the PTX front-end refused both and the SASS front claimed 32 of 32 alone (0.50 ulp of
+/// the computed output; 19 under-claimed, true error up to 0.5625 ulp).
+#[test]
+fn sass_claims_need_a_ptx_front_that_runs() {
+    let tenth = f32::from_bits(0x3dcc_cccd) as f64;
+    let case = "c_num_fold_ptxref_f32";
+    let x = buf(case, "data/x.bin");
+    let fp64: Vec<f64> = (0..32).map(|t| x[t] + tenth * 3.0).collect();
+    let (analyzed, text) = check_claims(case, &fp64);
+    assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
+    assert!(!text.contains("not run"), "{text}");
+    assert!(
+        text.contains("no PTX claim with the same exact value"),
+        "{text}"
+    );
+
+    let out = std::env::temp_dir().join(format!("ptxv-test-numv-{case}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let r = std::process::Command::new(env!("CARGO_BIN_EXE_ptxv"))
+        .args(["num", root().join("fixtures").join(case).to_str().unwrap()])
+        .args(["--variant", "refused", "--out"])
+        .arg(&out)
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&r.stdout).to_string();
+    assert!(r.status.success(), "{text}");
+    let _ = std::fs::remove_dir_all(&out);
+    assert!(
+        text.contains("num refused ptx : not run, the PTX front-end refuses it"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "num refused sass: output=out NOT ANALYZED: the PTX front-end refuses this kernel's PTX"
+        ),
+        "{text}"
+    );
 }

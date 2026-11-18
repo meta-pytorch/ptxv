@@ -1,0 +1,19 @@
+# GB300 (one GPU, GPU 3), 2026-11-12, measured by the RVS2 review on a build of 6d676091:
+# PTXV_HW_EXPECT=variant ptxv hw --runs 1000 --scrub (the patched image checked by --image-fnv); grid 1x1x1, block 256
+hw good   [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw F32_COVER_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw F32_NOWAIT_S2 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 9 distinct
+hw F32_OWN_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw F32_NOWAIT_S4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 8 distinct
+hw F32_COVER_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw F32_NOWAIT_S8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): 7 distinct
+hw F64_COVER_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw F64_NOWAIT_S2 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 25
+hw F64_OWN_S2 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw F64_COVER_S4 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw F64_NOWAIT_S4 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 25
+hw F64_COVER_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+hw F64_NOWAIT_S8 [scrubbed smem] 1000/1000 runs differ from the correct output (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 25
+hw F64_OWN_S8 [scrubbed smem] matches simulator bitwise (1000 runs, 0.5s) distinct outputs (count, words differing): [(1000, 0)]
+# Within one width FRND completes in issue order in this layout: COVER and OWN 0 / 1000 (bounds at
+# grid 1x1x1, block 256, stalls 2 / 4 / 8), NOWAIT 1000 / 1000 (the positive control discriminates).

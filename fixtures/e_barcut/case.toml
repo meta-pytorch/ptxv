@@ -24,6 +24,8 @@ buffer = "out"
 [[variants]]
 id = "good"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "BC1"
@@ -34,7 +36,7 @@ replace = "bra NEXT;"
 expect = ["race"]
 # SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
 # on the hardware; what it leaves is the schedule-dependent outcome.
-expect_sass = ["nondeterministic", "violation"]
+expect_sass = ["contract", "nondeterministic", "violation"]
 
 [[variants]]
 id = "BC2"
@@ -45,7 +47,7 @@ replace = "setp.lt.u32 %p5, %r2, 16;\n    setp.le.u32 %p6, %r11, 1;\n    or.pred
 expect = ["deadlock", "race"]
 # SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
 # on the hardware; what it leaves is the schedule-dependent outcome.
-expect_sass = ["deadlock", "violation"]
+expect_sass = ["contract", "deadlock", "violation"]
 
 [[variants]]
 id = "BC3"
@@ -56,7 +58,7 @@ replace = "bar.arrive 1, 128;\n    setp.eq.u32 %p3, %r11, 1;"
 expect = ["deadlock", "nondeterministic", "race", "violation"]
 # SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
 # on the hardware; what it leaves is the schedule-dependent outcome.
-expect_sass = ["deadlock", "nondeterministic", "violation"]
+expect_sass = ["contract", "deadlock", "nondeterministic", "violation"]
 
 [[variants.edits]]
 marker = "@PDONE"
@@ -82,7 +84,7 @@ replace = "bar.sync 2;"
 expect = ["race", "violation"]
 # SASS: LDS/STS are relaxed .cta strong (S-SMEM-STRONG): the shared-memory race is no race
 # on the hardware; what it leaves is the schedule-dependent outcome.
-expect_sass = ["nondeterministic", "violation"]
+expect_sass = ["contract", "nondeterministic", "violation"]
 
 [[variants]]
 id = "BC5"

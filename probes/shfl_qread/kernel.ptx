@@ -1,0 +1,27 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPREAD, MISS 106 follow-up): a SHFL reading an earlier SHFL's result in the queue.
+// ptxas: SHFL A (wr=SB1), SHFL B reading A's result (waits on SB1), an IADD3 reading it too.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry shfl_qread(.param .u64 out_p, .param .u32 seed)
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r21, [seed];
+    mov.u32 %r1, %tid.x;
+    mul.lo.u32 %r10, %r1, %r21;
+    shfl.sync.bfly.b32 %r12, %r10, 1, 31, -1;   // @A
+    shfl.sync.bfly.b32 %r14, %r12, 2, 31, -1;   // @B
+    add.u32 %r15, %r12, 7;
+    mul.wide.u32 %rd2, %r1, 16;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v4.u32 [%rd3], {%r12, %r14, %r15, %r10};
+    ret;
+}

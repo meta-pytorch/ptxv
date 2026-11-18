@@ -1,0 +1,59 @@
+# run.sh, 2026-11-13, on int7 a52ab526: exit 0
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+rc=0
+
+# On int7 a52ab526 with the landing key left out of the sync-only footprints (srcmut
+# sync-pipe-landing-nokey): exit 1
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [clean]                    MISMATCH
+good  sass nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [clean]                    MISMATCH
+rc=1
+
+# On agentDP 6f398a99 (last-arrival keys, MISS 231 follow-up), where
+# probes/sync_pipe_issue_order passes with the landing key left out: exit 0
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+rc=0
+
+# On agentDP 6f398a99 with the landing key left out: exit 1
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [clean]                    MISMATCH
+good  sass nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [clean]                    MISMATCH
+rc=1
+
+# DPOR (PTXV_EXPLORER=dpor) on int7 a52ab526 and on agentDP 6f398a99: [clean] on both fronts
+# (PTX 308 states, outputs=1; SASS 392 states, outputs=1), against [nondeterministic]. A
+# test_wait reads the phase key, which only the completing arrival writes: in the trace where X
+# lands before rank 1's arrival, X does not complete phase 0 and does not conflict with the test,
+# so the schedule R, test_wait (false), X is never run. Not pinned here (expected/classes.txt).
+
+# On agentDP 342df677 (MISS 273, 274, 275, int7 8b1dd54b), unreduced and DPOR lines added: exit 0
+good  ptx  unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass unreduced expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+rc=0
+# With MISS 275 the landing key no longer decides this probe: the test writes the count keys,
+# which the landing reads, so the reduction orders the landing against the test without the key
+# (srcmut sync-pipe-landing-nokey survives; see its entry).

@@ -50,3 +50,4 @@ buffer = "z"
 id = "good"
 summary = "as written"
 expect = ["clean"]
+expect_sass = ["contract"]

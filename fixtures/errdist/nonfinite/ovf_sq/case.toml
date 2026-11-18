@@ -1,0 +1,33 @@
+name = "ovf_sq"
+description = """entry ovf_sq of ../ovf.ptx (an overflow to +Inf where RN of the exact value is
++Inf too)."""
+ptx = "../ovf.ptx"
+entry = "ovf_sq"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [64]
+init = "normal"
+seed = 7
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

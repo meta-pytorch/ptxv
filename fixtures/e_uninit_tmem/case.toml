@@ -28,9 +28,13 @@ value = 0
 id = "good"
 summary = "the loaded value is used only when the store that fills TMEM ran"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "use"
 summary = "the loaded value is stored unconditionally"
 edits = [{ marker = "@USE", find = "selp.u32 %r13, %r10, 7, %p1;", replace = "mov.u32 %r13, %r10; setp.eq.u32 %p1, %r9, 0;" }]
 expect = ["violation"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "violation"]

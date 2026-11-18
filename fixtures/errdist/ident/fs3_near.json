@@ -1,0 +1,1 @@
+{"version": 1, "seed": 1, "name": "x U[0, 8192) (t in [0, 8), around the probed steps); u U[2^23, 1.5 2^23)", "tensors": {"x": {"dist": {"kind": "uniform", "lo": 0.0, "hi": 8192.0}}, "u": {"dist": {"kind": "uniform", "lo": 8388608.0, "hi": 12582912.0}}}, "default": {"dist": {"kind": "normal"}}}

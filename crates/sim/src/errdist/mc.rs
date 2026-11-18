@@ -99,6 +99,19 @@ pub fn round_out(y: f64, y_lo: f64, f: Format) -> f64 {
     if y_lo == 0.0 {
         return r;
     }
+    if r.is_infinite() {
+        // At the overflow tie, max + half its spacing, RN(y) is the infinity; a low part of
+        // the other sign puts the exact value below the tie, where RN is max, on either side.
+        // Until MISS 66's follow-up the tie test below took the infinite distance as no tie
+        // and gave the infinity: equal to a kernel's overflow there (P(differ) 0 where GB300
+        // differs on 0.165 of bf16 / f16 outputs) and differing from a kernel's correct max.
+        let max = f.max();
+        return if y.abs() == max + ulp_out(max, f) / 2.0 && y.signum() != y_lo.signum() {
+            max.copysign(y)
+        } else {
+            r
+        };
+    }
     // Ties of y alone are broken by y_lo; elsewhere y decides.
     let q = ulp_out(y, f);
     let half = (r - y).abs();
@@ -107,6 +120,61 @@ pub fn round_out(y: f64, y_lo: f64, f: Format) -> f64 {
         return f.round(y + y_lo.signum() * q * 0.25, false).0;
     }
     r
+}
+
+/// The reference of a NaN / Inf output (`nonfinite_outcome`).
+#[derive(Clone, Copy, Debug)]
+pub enum NonfiniteRef {
+    /// Single mode: RN of the finite exact value in the output format (an infinity where the
+    /// exact magnitude rounds past the format's maximum).
+    Exact(f64),
+    /// A pair: R's output, against C's.
+    Pair(f32),
+}
+
+/// Whether an output whose value (in a pair: C's or R's) is NaN / Inf differs from its
+/// reference (N-ERRDIST-NONFINITE, MISS 66): Some(true) where the bits differ, Some(false)
+/// where they are the same, None where they are not modeled. A single kernel's value equals RN
+/// of a finite exact value only as the same infinity (RN of a finite value is never NaN). In a
+/// pair C equals R only as the same infinity (an infinity has one encoding, and a NaN has none
+/// of a number's), except where both are NaN: their bits are the NaN payloads, which the DAG
+/// does not model (its validation matches NaN with NaN), so that outcome is unknown.
+pub fn nonfinite_outcome(out: f32, reference: NonfiniteRef) -> Option<bool> {
+    match reference {
+        NonfiniteRef::Exact(rn) => Some(out as f64 != rn),
+        NonfiniteRef::Pair(r) if out.is_nan() && r.is_nan() => None,
+        NonfiniteRef::Pair(r) => Some(out.to_bits() != r.to_bits()),
+    }
+}
+
+/// Count a NaN / Inf output (`nonfinite_outcome`) at tracked output `o`: compared in P(differ),
+/// outside the error moments and the PMF's lattice (a differing one has no ulp distance; an
+/// equal one is at 0), and, where it differs from its reference, over the worst-case bound. An
+/// equal infinity is RN of the exact value, a correct overflow, outside the bound's premise
+/// that no value overflows: neither checked nor over (MISS 66 follow-up; until then every
+/// single kernel's NaN / Inf output was over it, 9561 correct overflows flagged as WORST CASE
+/// EXCEEDED on the fifth review's tie probes). A pair's NaN in both kernels is left out
+/// (`Obs::nan_pair`).
+fn count_nonfinite(obs: &mut Obs, st: &Setup, o: usize, out: f32, reference: NonfiniteRef) {
+    let Some(d) = nonfinite_outcome(out, reference) else {
+        obs.nan_pair += 1;
+        return;
+    };
+    obs.compared += 1;
+    obs.differ += d as u64;
+    obs.nonfinite_cmp += 1;
+    obs.nonfinite_differ += d as u64;
+    if d {
+        obs.off_lattice += 1;
+    } else {
+        *obs.pmf_ulp.entry(0).or_default() += 1;
+    }
+    let pre = st.r.pre_rounded.get(o).copied().unwrap_or(false);
+    if st.wc.is_some() && !pre && d {
+        obs.wc_checked += 1;
+        obs.wc_exceed += 1;
+        obs.wc_ratio = f64::INFINITY;
+    }
 }
 
 /// Observed errors of one source (DAG Monte Carlo, simulator, GPU).
@@ -165,10 +233,34 @@ pub struct Obs {
     pub ood_inputs: u64,
     /// Outputs with S = 0 (no nonzero term) or an untracked value: skipped.
     pub skipped: u64,
-    /// Outputs (of R or C, or the exact value) that are NaN / Inf: out of domain, outside
-    /// the error statistics; and the inputs with any.
+    /// Single mode: outputs whose exact value is not determined (non-finite in the exact
+    /// arithmetic: non-finite leaves, past f64's range, a non-finite scale), left out of
+    /// P(differ) and the statistics (out of domain); and the inputs with any. Until MISS 66
+    /// every output with a NaN / Inf value (R's, C's or the exact one) was counted here.
     pub nonfinite: u64,
     pub nonfinite_inputs: u64,
+    /// Outputs with a NaN / Inf value (R's, or in a pair C's or R's) compared in P(differ)
+    /// (`nonfinite_outcome`: against RN of a finite exact value; a pair C against R), outside
+    /// the error moments; and those that differ (N-ERRDIST-NONFINITE).
+    pub nonfinite_cmp: u64,
+    pub nonfinite_differ: u64,
+    /// A pair's outputs where C and R are both NaN: their bits are not modeled, so they are left
+    /// out of P(differ) (out of domain).
+    pub nan_pair: u64,
+    /// A pair's outputs whose exact value is not determined, with C or R finite: compared C
+    /// against R in P(differ) (no exact value needed), left out of the moments.
+    pub noexact_pair: u64,
+    /// Single mode: outputs above an instruction slice without an identified real function
+    /// (`nonlin::real::Table::unident`): no exact value, left out of P(differ) (out of the
+    /// domain). Until MISS 88 they were counted as NaN / Inf outputs.
+    pub unidentified: u64,
+    /// Single mode: outputs above an identified slice whose alternatives, forms that fit its
+    /// probes as well, disagree with its form there (`nonlin::real::Table::ambig`): no
+    /// established exact value, left out of P(differ) (MISS 147).
+    pub ambiguous: u64,
+    /// Per input with an output compared or left out (`left`): (compared + left out, left
+    /// out), for the left-out share's interval (`left_share`).
+    pub input_left: Vec<(u64, u64)>,
     /// Tracked outputs of the kernel itself (R, or C in a pair) that are NaN / Inf, and the
     /// inputs with any: P(output non-finite) (`ptxv check --nonfinite` scans the same).
     pub out_nonfinite: u64,
@@ -193,6 +285,12 @@ pub struct Obs {
 }
 
 impl Obs {
+    /// Outputs left out of P(differ) for want of a determined outcome: no determined exact
+    /// value (`nonfinite`), a slice without an identified real function (`unidentified`) or
+    /// whose alternatives disagree (`ambiguous`), a pair's NaN in both kernels (`nan_pair`).
+    pub fn left(&self) -> u64 {
+        self.nonfinite + self.unidentified + self.ambiguous + self.nan_pair
+    }
     pub fn merge(&mut self, o: Obs) {
         self.inputs += o.inputs;
         self.outputs_per_input = self.outputs_per_input.max(o.outputs_per_input);
@@ -234,6 +332,13 @@ impl Obs {
         self.skipped += o.skipped;
         self.nonfinite += o.nonfinite;
         self.nonfinite_inputs += o.nonfinite_inputs;
+        self.nonfinite_cmp += o.nonfinite_cmp;
+        self.nonfinite_differ += o.nonfinite_differ;
+        self.nan_pair += o.nan_pair;
+        self.noexact_pair += o.noexact_pair;
+        self.unidentified += o.unidentified;
+        self.ambiguous += o.ambiguous;
+        self.input_left.extend(o.input_left);
         self.out_nonfinite += o.out_nonfinite;
         self.out_nonfinite_inputs += o.out_nonfinite_inputs;
         self.seen += o.seen;
@@ -289,6 +394,7 @@ pub fn observe(
     // Agent AG: non-chain outputs take their exact value from the real-arithmetic evaluation.
     let mut own: Option<super::nonlin::real::Table> = None;
     let off0 = obs.ident_off;
+    let l0 = obs.left();
     obs.skipped += (n - st.tracked.len()) as u64;
     for (k, &o32) in st.tracked.iter().enumerate() {
         let o = o32 as usize;
@@ -297,7 +403,7 @@ pub fn observe(
             None => !ev.r_out[k].is_finite(),
         };
         obs.out_nonfinite += kernel_nf as u64;
-        let mut outside = false;
+        let (mut outside, mut unident, mut ambig) = (false, false, false);
         let ex = match (&st.chain[k], st.r.outputs[o]) {
             (Some(ch), _) => st.r.exact(ch, ev.w, acc),
             (None, Some(op)) => {
@@ -306,6 +412,8 @@ pub fn observe(
                     None => own.get_or_insert_with(|| super::nonlin::real::eval_table(st.r, ev.w)),
                 };
                 outside = t.outside[op as usize];
+                unident = t.unident[op as usize];
+                ambig = t.ambig[op as usize];
                 super::nonlin::real::exact_of(&t.v, op)
             }
             (None, None) => {
@@ -316,20 +424,58 @@ pub fn observe(
         obs.seen += 1;
         let rv = ev.r_out[k] as f64;
         let cnf = ev.c_out.is_some_and(|c| !c[k].is_finite());
+        // ASSUME(N-ERRDIST-NONFINITE): a NaN / Inf output is compared wherever its reference
+        // is known: in a pair C against R, a single kernel's against RN of a finite exact value
+        // (`nonfinite_outcome`, `count_nonfinite`). Until 2026-11-11 every output with a NaN /
+        // Inf value was left out of the domain, and an intermediate overflow at 0.5% of the
+        // outputs reported P(differ) 0 [0, 1.45e-5] (MISS 66).
+        let pair_nf = match ev.c_out {
+            Some(c) if cnf || !rv.is_finite() => Some((c[k], NonfiniteRef::Pair(ev.r_out[k]))),
+            _ => None,
+        };
         // MISS 57: the exact value is unknown here (a slice outside the decision patterns its
         // identification saw). A pair's P(differ) compares C with R and still counts it.
         if outside {
             obs.ident_off += 1;
-            if let Some(c) = ev.c_out {
-                if c[k].is_finite() && rv.is_finite() {
-                    obs.differ += (c[k].to_bits() != ev.r_out[k].to_bits()) as u64;
-                    obs.compared += 1;
-                }
+            if let Some((out, reference)) = pair_nf {
+                count_nonfinite(obs, st, o, out, reference);
+            } else if let Some(c) = ev.c_out {
+                obs.differ += (c[k].to_bits() != ev.r_out[k].to_bits()) as u64;
+                obs.compared += 1;
             }
             continue;
         }
-        if !ex.y.is_finite() || !ex.s.is_finite() || !rv.is_finite() || cnf {
-            obs.nonfinite += 1;
+        if let Some((out, reference)) = pair_nf {
+            count_nonfinite(obs, st, o, out, reference);
+            continue;
+        }
+        if unident || !ex.y.is_finite() || !ex.s.is_finite() {
+            // The exact value is not determined. A pair compares C with R without it (both
+            // finite here) and leaves the moments out; a single kernel's output is left out of
+            // the domain, by its reason (MISS 88: above a slice without an identified real
+            // function, until 2026-11-11 counted as a NaN / Inf output; MISS 147: above one
+            // whose alternatives disagree).
+            if let Some(c) = ev.c_out {
+                obs.differ += (c[k].to_bits() != ev.r_out[k].to_bits()) as u64;
+                obs.compared += 1;
+                obs.noexact_pair += 1;
+            } else if ambig {
+                obs.ambiguous += 1;
+            } else if unident {
+                obs.unidentified += 1;
+            } else {
+                obs.nonfinite += 1;
+            }
+            continue;
+        }
+        if !rv.is_finite() {
+            count_nonfinite(
+                obs,
+                st,
+                o,
+                ev.r_out[k],
+                NonfiniteRef::Exact(round_out(ex.y, ex.y_lo, f)),
+            );
             continue;
         }
         if ex.s == 0.0 {
@@ -447,6 +593,10 @@ pub fn observe(
             .push((obs.differ - d0) as f64 / (obs.compared - c0) as f64);
         obs.input_compared.push(obs.compared - c0);
     }
+    let left = obs.left() - l0;
+    if obs.compared - c0 + left > 0 {
+        obs.input_left.push((obs.compared - c0 + left, left));
+    }
     if obs.ident_off > off0 {
         obs.ident_off_inputs += 1;
     }
@@ -497,6 +647,19 @@ pub fn ood_events(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<&'static str> {
 
 /// The out-of-domain cause of inputs with `Obs::ident_off` outputs.
 pub const IDENT_OFF_CAUSE: &str = "exact value unknown: an instruction slice outside the decision patterns its identification probed";
+/// The out-of-domain cause of inputs with `Obs::nonfinite` outputs (single mode: the exact
+/// value is not determined). Until MISS 66 it read "non-finite output (NaN / Inf)", and every
+/// NaN / Inf output was left out.
+pub const NONFINITE_EXACT_CAUSE: &str =
+    "non-finite exact value (NaN / Inf in the exact arithmetic)";
+/// The out-of-domain cause of inputs with `Obs::nan_pair` outputs.
+pub const NAN_PAIR_CAUSE: &str = "NaN in both kernels (the bits of a NaN are not modeled)";
+/// The out-of-domain cause of inputs with `Obs::unidentified` outputs. Until MISS 88 they read
+/// "non-finite output (NaN / Inf)" although P(output NaN / Inf) was 0.
+pub const UNIDENT_CAUSE: &str = "no exact value: a slice without an identified real function";
+/// The out-of-domain cause of inputs with `Obs::ambiguous` outputs (MISS 147).
+pub const AMBIG_CAUSE: &str =
+    "no exact value: forms that fit a slice's probes equally well disagree there";
 
 /// Monte Carlo configuration.
 pub struct McCfg {
@@ -796,7 +959,7 @@ fn one(
         }
     }
     let keep = keep_set(st.tracked.len(), cfg.keep, t);
-    let nf0 = obs.nonfinite;
+    let (nf0, np0, un0, am0) = (obs.nonfinite, obs.nan_pair, obs.unidentified, obs.ambiguous);
     let io0 = obs.ident_off_inputs;
     // Importance sampling: this input's own counts (its PMF in a fresh map, merged back).
     let before = (obs.differ, obs.compared, obs.out_nonfinite, obs.seen);
@@ -834,15 +997,18 @@ fn one(
         obs.pmf_ulp = all;
         obs.is_rec.push(rec);
     }
-    // NaN / Inf outputs: out of domain (counted, never dropped silently).
-    let mut counted = !causes_empty;
-    if obs.nonfinite > nf0 {
-        obs.ood_inputs += !counted as u64;
-        counted = true;
-        *obs.ood
-            .entry("non-finite output (NaN / Inf)".to_string())
-            .or_default() += 1;
-    }
+    // Outputs left out of P(differ): out of domain (counted, never dropped silently), by
+    // their reason.
+    let counted = ood_left(
+        obs,
+        &[
+            (obs.nonfinite > nf0, NONFINITE_EXACT_CAUSE),
+            (obs.unidentified > un0, UNIDENT_CAUSE),
+            (obs.ambiguous > am0, AMBIG_CAUSE),
+            (obs.nan_pair > np0, NAN_PAIR_CAUSE),
+        ],
+        !causes_empty,
+    );
     // MISS 57: outputs whose exact value is unknown (a slice outside the decision patterns its
     // identification saw).
     if obs.ident_off_inputs > io0 {
@@ -850,6 +1016,55 @@ fn one(
         *obs.ood.entry(IDENT_OFF_CAUSE.to_string()).or_default() += 1;
     }
     Ok(())
+}
+
+/// An input with outputs left out of P(differ) is out of the domain, under each reason it has
+/// (`left`, cause); `counted`: the input already is. Returns whether it is now.
+fn ood_left(obs: &mut Obs, causes: &[(bool, &str)], mut counted: bool) -> bool {
+    for &(left, cause) in causes {
+        if left {
+            obs.ood_inputs += !counted as u64;
+            counted = true;
+            *obs.ood.entry(cause.to_string()).or_default() += 1;
+        }
+    }
+    counted
+}
+
+/// Each statement's share of alpha in Tier 3's widened P(differ) interval: its own interval
+/// (two-sided) and the one-sided `bounds` that widen it (the unknown share U, MISS 57; the
+/// left-out share q, MISS 66) take alpha / (1 + bounds) each, so that by the union bound the
+/// widened interval holds at level 1 - alpha. Until MISS 66's follow-up (the fifth review's
+/// D7) each took alpha itself: Tier 3's two-sided 95% and q's one-sided 97.5% held at about
+/// 92.5% together.
+pub fn level_share(alpha: f64, bounds: usize) -> f64 {
+    alpha / (1 + bounds) as f64
+}
+
+/// The share of P(differ)'s outputs left out (`Obs::left`) and its interval at level
+/// 1 - alpha, as `p_interval` bounds P(differ): the left-out outputs in place of the differing
+/// ones, over the compared and left-out outputs per input (`Obs::input_left`), so where few
+/// inputs have any the input-level bound holds however an input's outputs are left out
+/// together. None where no output is left out.
+pub fn left_share(obs: &Obs, alpha: f64) -> Option<(f64, f64, f64)> {
+    let l = obs.left();
+    if l == 0 {
+        return None;
+    }
+    let n = obs.compared + l;
+    let view = Obs {
+        differ: l,
+        compared: n,
+        input_differ: obs
+            .input_left
+            .iter()
+            .map(|&(t, k)| k as f64 / t as f64)
+            .collect(),
+        input_compared: obs.input_left.iter().map(|&(t, _)| t).collect(),
+        ..Default::default()
+    };
+    let (lo, hi) = p_interval(&view, alpha);
+    Some((l as f64 / n as f64, lo, hi))
 }
 
 /// Output values of an evaluated program (untracked outputs: 0).
@@ -860,27 +1075,24 @@ pub fn outputs(p: &Prog, w: &[crate::mma_lp::Operand]) -> Vec<f32> {
         .collect()
 }
 
-/// Below this many inputs with a differing output, P(differ)'s interval also takes the
-/// input-level bound (`p_interval`, `input_bound`).
-pub const SMALL_K: usize = 20;
-
 /// The interval of P(differ) at level 1 - alpha. Inputs are the independent unit: outputs of
 /// one input share its elements (a GEMM row, an MX block's scale), so the interval is the
 /// wider of the binomial (Clopper-Pearson) interval over outputs and the batch-means interval
 /// over inputs (Student t over the per-input fractions). Outputs alone were ~3x too narrow
-/// on MXF8 (seed-to-seed spread +-0.0002 against +-0.00007). Where fewer than SMALL_K inputs
-/// have a differing output the batch-means interval does not hold: at 0 it has no width and
-/// left the outputs' interval alone, [0, 3.69 / outputs], which takes the outputs as
-/// independent; at 1 of 200 it is [0, 0.0149]. When an input's outputs differ together (the
-/// review's clustered probe: 512 outputs each) those missed P in 55% of default runs and P
-/// 1.5e-2 in 20% of 200-input runs. There the interval also takes the input-level bound
-/// (`input_bound`), which holds however an input's outputs differ together; at 0 differing
-/// inputs it is Clopper-Pearson over inputs, [0, 3.69 / inputs] at 95% (MISS 120).
+/// on MXF8 (seed-to-seed spread +-0.0002 against +-0.00007). Neither holds where an input's
+/// outputs can differ together, so the interval also takes the input-level bound
+/// (`input_bound`), which holds however they do; at 0 differing inputs it is Clopper-Pearson
+/// over inputs, [0, 4.38 / inputs] at 95%. MISS 120 took it where fewer than 20 inputs had a
+/// differing output (at 0 the batch-means interval has no width, and the outputs' [0, 3.69 /
+/// outputs] missed P in 55% of default runs of the review's probe whose 512 outputs per input
+/// differ together); MISS 139 takes it at any count: with single outputs differing on most
+/// inputs the batch-means interval missed a rare cluster it had not seen (the third review's
+/// rE_mix, 4032 of 4096 outputs one value: 2.758e-4 [0, 1.075e-3] against the exact
+/// 2.346e-3, 25 of 40 seeds below P at 200 inputs).
 // ASSUME(N-ERRDIST-MC): inputs are independent.
 pub fn p_interval(obs: &Obs, alpha: f64) -> (f64, f64) {
     let (mut lo, mut hi) = p_interval_obs(obs, alpha);
-    let f = &obs.input_differ;
-    if !f.is_empty() && f.iter().filter(|&&x| x > 0.0).count() < SMALL_K {
+    if !obs.input_differ.is_empty() {
         let (il, ih) = input_bound(obs, alpha);
         (lo, hi) = (lo.min(il), hi.max(ih));
     }
@@ -891,7 +1103,7 @@ pub fn p_interval(obs: &Obs, alpha: f64) -> (f64, f64) {
 /// side, the check of Tier 0 against Tier 3, the plain reference of importance sampling): the
 /// outputs' and the batch-means intervals, without the input-level bound `p_interval` adds
 /// for a claim. A narrower interval here refuses more, which costs precision only. With the
-/// bound a kernel_db run's simulator validation (4 inputs, so always fewer than SMALL_K) held
+/// bound a kernel_db run's simulator validation (4 inputs) held
 /// P(differ) to intervals like [1.4e-3, 0.84] at 0.22, and 20 refusals in 18 of 199 runs
 /// lapsed.
 pub fn p_interval_obs(obs: &Obs, alpha: f64) -> (f64, f64) {
@@ -911,11 +1123,14 @@ pub fn p_interval_obs(obs: &Obs, alpha: f64) -> (f64, f64) {
 /// The input-level interval of P(differ) per compared output at level 1 - alpha, valid
 /// however the outputs of one input differ together (only inputs are independent). With c_i
 /// the outputs input i compared and f_i its differing fraction, g_i = c_i f_i / c_max is in
-/// [0, 1], and P(differ) = E[c f] / E[c] = E[g] c_max / E[c]. Hoeffding's bound on the mean
-/// of [0, 1] variables (n KL(mean g || q) <= ln(2 / alpha) on each side) bounds E[g], and the
-/// observed c_max / mean c scales it (1 where every input compares the same outputs). At 0
-/// differing inputs the upper end is 1 - (alpha / 2)^(1/n): Clopper-Pearson over inputs on
-/// "some output of the input differs", which bounds P(differ) per output from above.
+/// [0, 1], and P(differ) = E[c f] / E[c] = E[g] c_max / E[c]. Two bounds on the mean of [0, 1]
+/// variables, each at level 1 - alpha / 2, bound E[g] where both hold: Hoeffding's (n KL(mean g
+/// || q) <= ln(4 / alpha) on each side), the narrower where the g_i are 0 / 1 or near 0, and
+/// the empirical Bernstein one (`special::eb_mean_bounds`), the narrower where they
+/// concentrate. The observed c_max / mean c scales it (1 where every input compares the same
+/// outputs). At 0 differing inputs the upper end is 1 - (alpha / 4)^(1/n): Clopper-Pearson over
+/// inputs on "some output of the input differs" (until MISS 139, at alpha / 2, Hoeffding's
+/// bound alone: (alpha / 2)^(1/n)).
 pub fn input_bound(obs: &Obs, alpha: f64) -> (f64, f64) {
     let f = &obs.input_differ;
     let n = f.len();
@@ -929,8 +1144,15 @@ pub fn input_bound(obs: &Obs, alpha: f64) -> (f64, f64) {
     };
     let cmax = c.iter().copied().fold(0.0f64, f64::max).max(1.0);
     let cmean = c.iter().sum::<f64>() / n as f64;
-    let g = f.iter().zip(&c).map(|(f, c)| f * c / cmax).sum::<f64>() / n as f64;
-    let (lo, hi) = super::special::kl_mean_bounds(g.clamp(0.0, 1.0), n, alpha);
+    let g: Vec<f64> = f
+        .iter()
+        .zip(&c)
+        .map(|(f, c)| (f * c / cmax).clamp(0.0, 1.0))
+        .collect();
+    let mean = g.iter().sum::<f64>() / n as f64;
+    let (kl, kh) = super::special::kl_mean_bounds(mean.clamp(0.0, 1.0), n, alpha / 2.0);
+    let (el, eh) = super::special::eb_mean_bounds(&g, alpha / 2.0);
+    let (lo, hi) = (kl.max(el).min(mean), kh.min(eh).max(mean));
     let s = cmax / cmean.max(1e-300);
     ((lo * s).min(1.0), (hi * s).min(1.0))
 }
@@ -1329,7 +1551,9 @@ mod tests {
     #[test]
     fn p_interval_counts_inputs_where_few_differ() {
         // 200 inputs of 512 outputs that differ together. At 0 differing inputs the outputs'
-        // interval alone was [0, 3.6e-5]; the inputs' is [0, 1 - 0.025^(1/200)] = [0, 0.0183].
+        // interval alone was [0, 3.6e-5]; the inputs' is Clopper-Pearson's over inputs at
+        // alpha / 2 (the input bound's share of the level): [0, 1 - 0.0125^(1/200)] =
+        // [0, 0.0216] (MISS 120's, at alpha: 0.0183).
         let mut o = Obs {
             compared: 200 * 512,
             ..Default::default()
@@ -1337,7 +1561,7 @@ mod tests {
         o.input_differ = vec![0.0; 200];
         o.input_compared = vec![512; 200];
         let (lo, hi) = p_interval(&o, 0.05);
-        let cp0 = 1.0 - 0.025f64.powf(1.0 / 200.0);
+        let cp0 = 1.0 - 0.0125f64.powf(1.0 / 200.0);
         assert_eq!(lo, 0.0);
         assert!((hi - cp0).abs() < 1e-9 * cp0, "{hi} vs {cp0}");
         // At 1 of 200 the batch-means interval was [0, 0.0149]: P = 1.5e-2 is inside now.
@@ -1363,6 +1587,71 @@ mod tests {
         assert!(l > 0.07 && l < 0.1 && h > 0.1 && h < 0.13, "[{l}, {h}]");
     }
 
+    /// MISS 66: the share of outputs left out of P(differ) (`left_share`) has the interval
+    /// P(differ) would have, inputs as the unit: one input of 300 with 1 of 64 outputs left out
+    /// bounds the share by Hoeffding's bound over inputs (about 4.4 / 300 at 95%), not by the
+    /// outputs' 1 / 19200; an output left out on every input is a share bounded over inputs
+    /// too (MISS 139).
+    #[test]
+    fn left_share_counts_inputs() {
+        let mut o = Obs {
+            compared: 300 * 64 - 1,
+            nonfinite: 1,
+            ..Default::default()
+        };
+        assert!(left_share(&Obs::default(), 0.05).is_none());
+        o.input_left = (0..300).map(|i| (64, (i == 5) as u64)).collect();
+        let (q, lo, hi) = left_share(&o, 0.05).unwrap();
+        assert_eq!(q, 1.0 / 19200.0);
+        assert!(lo == 0.0 && hi > 0.01 && hi < 0.02, "[{lo}, {hi}]");
+        // Every input leaves 1 of its 64 outputs out (an unidentified slice above one output).
+        let o = Obs {
+            compared: 300 * 63,
+            unidentified: 300,
+            input_left: vec![(64, 1); 300],
+            ..Default::default()
+        };
+        let (q, lo, hi) = left_share(&o, 0.05).unwrap();
+        assert_eq!(q, 1.0 / 64.0);
+        // 300 inputs cannot exclude one in 80 that leaves more out (MISS 139).
+        assert!(lo <= q && hi >= q && hi < 0.04, "[{lo}, {hi}]");
+    }
+
+    /// MISS 66 / 88: an input with outputs left out is out of the domain under each reason it
+    /// has, once.
+    #[test]
+    fn left_out_outputs_are_labelled_by_reason() {
+        let mut o = Obs::default();
+        let counted = ood_left(
+            &mut o,
+            &[
+                (false, NONFINITE_EXACT_CAUSE),
+                (true, UNIDENT_CAUSE),
+                (true, NAN_PAIR_CAUSE),
+            ],
+            false,
+        );
+        assert!(counted);
+        assert_eq!(o.ood_inputs, 1);
+        assert_eq!(
+            o.ood.keys().map(|k| k.as_str()).collect::<Vec<_>>(),
+            [NAN_PAIR_CAUSE, UNIDENT_CAUSE]
+        );
+        // Already out of the domain for another cause: not counted twice.
+        let mut o = Obs::default();
+        assert!(ood_left(
+            &mut o,
+            &[
+                (true, NONFINITE_EXACT_CAUSE),
+                (false, UNIDENT_CAUSE),
+                (false, NAN_PAIR_CAUSE)
+            ],
+            true
+        ));
+        assert_eq!(o.ood_inputs, 0);
+        assert_eq!(o.ood[NONFINITE_EXACT_CAUSE], 1);
+    }
+
     #[test]
     fn p_interval_counts_inputs_not_outputs() {
         // 100 inputs of 1000 outputs: half the inputs differ everywhere, half nowhere. The
@@ -1375,7 +1664,10 @@ mod tests {
         o.input_differ = (0..100).map(|i| (i % 2) as f64).collect();
         let (lo, hi) = p_interval(&o, 0.05);
         assert!(lo < 0.41 && hi > 0.59, "[{lo}, {hi}]");
-        // Independent outputs: the binomial interval stands.
+        // Every input at 0.5: the outputs' binomial interval (+-0.003) took them as
+        // independent; 100 inputs cannot exclude one in 25 whose outputs all differ (MISS 139).
+        // The empirical Bernstein bound narrows with the observed variance: +-0.06, against
+        // Hoeffding's +-0.15.
         let mut o = Obs {
             differ: 50_000,
             compared: 100_000,
@@ -1383,8 +1675,52 @@ mod tests {
         };
         o.input_differ = vec![0.5; 100];
         let (lo, hi) = p_interval(&o, 0.05);
-        let (cl, ch) = super::super::special::clopper_pearson(50_000, 100_000, 0.05);
-        assert_eq!((lo, hi), (cl, ch));
+        assert!(lo < 0.46 && hi > 0.54 && hi < 0.57, "[{lo}, {hi}]");
         assert!((t_quantile(0.975, 1e6) - 1.96).abs() < 1e-3);
+    }
+
+    /// MISS 66 follow-up (the fifth review's D1): at the output format's overflow tie, max plus
+    /// half its spacing, RN of the exact value is max where the low part has the other sign,
+    /// on both sides, and the infinity where it has the same sign or is 0.
+    #[test]
+    fn round_out_breaks_the_overflow_tie_by_the_low_part() {
+        for (f, max) in [
+            (Format::Bf16, 2f64.powi(128) - 2f64.powi(120)),
+            (Format::F16, 65504.0),
+            (Format::F32, f32::MAX as f64),
+        ] {
+            let tie = max + ulp_out(max, f) / 2.0;
+            for s in [1.0, -1.0] {
+                assert_eq!(round_out(s * tie, -s * 1e-30, f), s * max, "{f:?} {s}");
+                assert_eq!(round_out(s * tie, s * 1e-30, f), s * f64::INFINITY);
+                assert_eq!(round_out(s * tie, 0.0, f), s * f64::INFINITY);
+                // Below the tie y decides.
+                assert_eq!(round_out(s * max, s * 1e-30, f), s * max);
+            }
+        }
+    }
+
+    /// MISS 139 (the third review's rE_mix): 4032 of an input's 4096 outputs are one value that
+    /// rarely differs (39 of 20,000 GB300 inputs), and single outputs differ on most inputs, so
+    /// 20 or more inputs have a differing output and MISS 120's input-level bound was off: the
+    /// batch-means interval at 200 inputs that saw no cluster was [0, 1.075e-3] for P 2.346e-3
+    /// (exact). The input-level bound is taken at any count.
+    #[test]
+    fn p_interval_counts_inputs_at_any_count() {
+        let n = 200;
+        let mut o = Obs {
+            compared: n as u64 * 4096,
+            ..Default::default()
+        };
+        // Single outputs: one of the 4096 differs on 3 inputs in 4.
+        o.input_differ = (0..n)
+            .map(|i| if i % 4 == 0 { 0.0 } else { 1.0 / 4096.0 })
+            .collect();
+        o.input_compared = vec![4096; n];
+        o.differ = o.input_differ.iter().filter(|&&f| f > 0.0).count() as u64;
+        let (lo, hi) = p_interval(&o, 0.05);
+        assert!(lo <= 1.8e-4 && hi >= 2.346e-3, "[{lo}, {hi}]");
+        let (l, h) = p_interval_obs(&o, 0.05);
+        assert!(l > 0.0 && h < 2.346e-3, "[{l}, {h}]");
     }
 }

@@ -1,0 +1,69 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+// MISS 258 repro (r8z_under): MUFU results whose true function is not finite at
+// the operand's exact value 0. x = ((a + b) + c) + e.
+.visible .entry r8z_under(.param .u64 pa, .param .u64 pb, .param .u64 pc, .param .u64 pe, .param .u64 pout)
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .reg .f32 %f<64>;
+    .reg .b64 %rd<16>;
+    ld.param.u64 %rd1, [pa];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u64 %rd2, [pb];
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.param.u64 %rd3, [pc];
+    cvta.to.global.u64 %rd3, %rd3;
+    ld.param.u64 %rd10, [pe];
+    cvta.to.global.u64 %rd10, %rd10;
+    ld.param.u64 %rd4, [pout];
+    cvta.to.global.u64 %rd4, %rd4;
+    mov.u32 %r0, %tid.x;
+    mul.wide.u32 %rd5, %r0, 4;
+    add.s64 %rd6, %rd1, %rd5;
+    ld.global.f32 %f1, [%rd6];
+    add.s64 %rd7, %rd2, %rd5;
+    ld.global.f32 %f2, [%rd7];
+    add.s64 %rd8, %rd3, %rd5;
+    ld.global.f32 %f3, [%rd8];
+    add.s64 %rd11, %rd10, %rd5;
+    ld.global.f32 %f8, [%rd11];
+    add.rn.f32 %f4, %f1, %f2;
+    add.rn.f32 %f5, %f4, %f3;
+    add.rn.f32 %f7, %f5, %f8;
+    lg2.approx.f32 %f10, %f7;
+    rsqrt.approx.f32 %f11, %f7;
+    rcp.approx.f32 %f12, %f7;
+    lg2.approx.ftz.f32 %f13, %f7;
+    rsqrt.approx.ftz.f32 %f14, %f7;
+    rcp.approx.ftz.f32 %f15, %f7;
+    max.f32 %f16, %f13, 0fC47A0000;
+    min.f32 %f17, %f14, 0f447A0000;
+    min.f32 %f18, %f15, 0f447A0000;
+    ex2.approx.ftz.f32 %f19, %f13;
+    rcp.approx.ftz.f32 %f20, %f14;
+    max.f32 %f21, %f10, 0fC47A0000;
+    add.rn.f32 %f22, %f13, 0f447A0000;
+    add.s64 %rd9, %rd4, %rd5;
+    st.global.f32 [%rd9+0], %f10;
+    st.global.f32 [%rd9+128], %f11;
+    st.global.f32 [%rd9+256], %f12;
+    st.global.f32 [%rd9+384], %f13;
+    st.global.f32 [%rd9+512], %f14;
+    st.global.f32 [%rd9+640], %f15;
+    st.global.f32 [%rd9+768], %f16;
+    st.global.f32 [%rd9+896], %f17;
+    st.global.f32 [%rd9+1024], %f18;
+    st.global.f32 [%rd9+1152], %f19;
+    st.global.f32 [%rd9+1280], %f20;
+    st.global.f32 [%rd9+1408], %f21;
+    st.global.f32 [%rd9+1536], %f22;
+    ret;
+}

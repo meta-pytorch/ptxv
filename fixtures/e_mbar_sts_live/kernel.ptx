@@ -1,0 +1,80 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// mbarrier re-initialization over a live object without mbarrier.inval, and plain shared
+// stores over a live mbarrier. Three warps; lane 0 of each takes part after the second
+// bar.sync. Thread 0 zeroes d, initializes `a` with count 2 (@INIT), and after a bar.sync
+// re-initializes `a` through a per-thread address (@REINIT: count 1, over the live object, no
+// inval). ptxas lowers the per-thread-address init to `STS.64` of the state word plus
+// `SYNCS.CCTL.IVALL`, with no `SYNCS.CCTL.IV`. Warps 1 and 2 each write a word of d and
+// arrive on `a`; warp 0 waits on phase 0 of `a` and reads both words.
+//   good: with count 1, phase 0 completes after the first arrival: the read of the other word
+//         races with its write, and the second arrival completes phase 1, so a wait that
+//         starts after it waits for phase 2 forever (deadlock).
+//   CNT2*: `a` starts with count 1 and is re-initialized with count 2; only warp 1 arrives
+//         (@ONEPROD): phase 0 never completes (deadlock).
+// The variants replace @REINIT with the uniform-address init (SYNCS.EXCH.64), an inval first
+// (SYNCS.CCTL.IV + STS.64), a plain st.shared.u64 of the state word or of zero, or the legal
+// memory reuse after an inval; PRE stores zero over `a` before its first init. WARP: all 32
+// lanes of warp 0 re-initialize `a` with its own count through a per-thread address that is
+// `a` in each of them (one STS.64 on SASS; 32 unordered inits on PTX).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_sts_live(.param .u64 out_p)
+.maxntid 96, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b8 a[8];
+    .shared .align 4 .b8 d[8];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, a;
+    mov.u32 %r3, d;
+    and.b32 %r4, %r1, 31;
+    setp.ne.u32 %p1, %r4, 0;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra AFTER_INIT;
+    mov.u32 %r20, 0;
+    st.shared.u32 [d], %r20;
+    st.shared.u32 [d+4], %r20;
+    mov.b64 %rd6, 0;                                   // @PRE
+    mbarrier.init.shared::cta.b64 [%r2], 2;            // @INIT
+AFTER_INIT:
+    bar.sync 0;
+    @%p2 bra AFTER_REINIT;                             // @RG
+    shl.b32 %r25, %r1, 3;                              // @RADDR
+    add.u32 %r26, %r2, %r25;
+    mbarrier.init.shared::cta.b64 [%r26], 1;           // @REINIT
+AFTER_REINIT:
+    bar.sync 0;
+    @%p1 bra DONE;
+    setp.eq.u32 %p3, %r1, 0;
+    @%p3 bra CONSUMER;
+    // producers: warp 1 writes d[0], warp 2 writes d[1]
+    shr.u32 %r5, %r1, 5;
+    setp.gt.u32 %p6, %r5, 2;                           // @ONEPROD
+    @%p6 bra DONE;
+    sub.u32 %r6, %r5, 1;
+    shl.b32 %r7, %r6, 2;
+    add.u32 %r8, %r3, %r7;
+    st.shared.u32 [%r8], %r5;
+    mbarrier.arrive.release.cta.shared::cta.b64 _, [%r2];
+    bra DONE;
+CONSUMER:
+W:
+    mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %p4, [%r2], 0;
+    @!%p4 bra W;
+    ld.shared.u32 %r10, [d];
+    ld.shared.u32 %r11, [d+4];
+    add.u32 %r12, %r10, %r11;
+    st.global.u32 [%rd1], %r12;
+DONE:
+    ret;
+}

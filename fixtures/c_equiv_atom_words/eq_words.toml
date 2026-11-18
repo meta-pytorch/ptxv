@@ -1,0 +1,103 @@
+# MISS 177: each ref against cand_copy (out = x) at data/ (w = x), on both fronts; none holds.
+# Until MISS 177 every ref here was L0 PROVEN on the PTX front (the SASS front: see the test) from
+# the node of the x a word held before the atomic. ref_cas64swap, ref_exch64, ref_bf16hi and
+# ref_red16hi differ from x at the captured inputs (the node check refuses them too); ref_exch64same
+# and ref_bf16hisame equal x there and differ elsewhere (GB300 at data_plus1/); ref_cas64fail always
+# equals x (a precision cost). The self pair stays L0.
+reference = { case = "cand_copy", variant = "good", front = "ptx" }
+
+[[candidates]]
+case = "ref_cas64swap"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_cas64swap"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_cas64fail"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_cas64fail"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_exch64"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_exch64"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_bf16hi"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_bf16hi"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_red16hi"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_red16hi"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_exch64same"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_exch64same"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_bf16hisame"
+variant = "good"
+front = "ptx"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "ref_bf16hisame"
+variant = "good"
+front = "sass"
+expect = "none (unproven)"
+
+[[candidates]]
+case = "cand_copy"
+variant = "good"
+front = "ptx"
+expect = "L0"
+
+[[candidates]]
+case = "cand_copy"
+variant = "good"
+front = "sass"
+expect = "L0"

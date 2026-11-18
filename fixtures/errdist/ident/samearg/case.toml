@@ -1,0 +1,32 @@
+name = "ident_samearg"
+description = """MISS 138: entry samearg of ../fs3.ptx (see its header), y = RM(floor(u / 8192) + u), captured u = 1.25 * 2^23: y = u reads the slice's only argument and is within 1.2e-4 relative of it on the probes; the fitted y = c u is within a rounding."""
+ptx = "../fs3.ptx"
+entry = "samearg"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["y"]
+
+[[buffers]]
+name = "u"
+dtype = "f32"
+shape = [64]
+init = "file"
+file = "u.bin"
+
+[[buffers]]
+name = "y"
+dtype = "f32"
+shape = [64]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "u"
+
+[[params]]
+kind = "ptr"
+buffer = "y"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

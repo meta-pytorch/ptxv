@@ -1,0 +1,30 @@
+name = "probe_dpor_cycle_proviso"
+description = """
+DPOR repro (MISS 274, the stack proviso): thread 0 stays at a test_wait of an mbarrier word
+zeroed by a plain store and repeats one state; warps 1 and 2 race on x, with no step that
+conflicts with thread 0's. DPOR picks thread 0 first, so without adding every process enabled
+on the cycle to the cycle's frames it cuts the repeated state and never runs warps 1 and 2
+([violation], the race lost). SASS: ptxas removes the unused test_wait and the stores' race
+leaves no class there, so the case pins PTX only (expect_sass clean).
+"""
+ptx = "kernel.ptx"
+entry = "dpor_cycle_proviso"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = []
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "thread 0 repeats one state; warps 1 and 2 race on x"
+expect = ["race", "violation"]
+expect_sass = ["clean"]

@@ -1,0 +1,40 @@
+name = "e_dsmem_exit"
+description = """
+S-CLUSTER-LIFE against the local reduction (MISS 153): CTA 1 stores into CTA 0's shared word
+through st.shared::cluster; CTA 0 writes the word and reads it back. good: barrier.cluster
+between the store and CTA 0's write, clean. NOBAR: no cluster barrier: the store races with CTA 0's
+accesses when it lands first and is a lifetime violation after CTA 0's exit: race, violation.
+Both fronts reported only the violation while the local reduction expanded CTA 0's exit alone
+(CTA 0's last thread, with CTA 1 still live)."""
+ptx = "kernel.ptx"
+entry = "e_dsmem_exit"
+grid = [2, 1, 1]
+block = [1, 1, 1]
+cluster = [2, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "barrier.cluster between the remote store and CTA 0's write"
+expect = ["clean"]
+
+[[variants]]
+id = "NOBAR"
+summary = "no barrier.cluster"
+edits = [
+    { marker = "@BAR_A1", find = "barrier.cluster.arrive.release;", replace = "" },
+    { marker = "@BAR_W1", find = "barrier.cluster.wait.acquire;", replace = "" },
+    { marker = "@BAR_A0", find = "barrier.cluster.arrive.release;", replace = "" },
+    { marker = "@BAR_W0", find = "barrier.cluster.wait.acquire;", replace = "" },
+]
+expect = ["race", "violation"]

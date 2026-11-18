@@ -1,0 +1,49 @@
+name = "probe_half_add_controls"
+description = """
+Positive controls for probes/half_add on its inputs (GB300 only, check.py): the f16 / bf16 RN
+references, add.ftz.f16x2 (HADD2.FTZ), RZ adds (FADD.RZ + F2FP.PACK_AB.RZ) and a bf16 add with
+subnormals flushed (FADD.FTZ + F2FP.BF16.F32.PACK_AB). expected/ is GB300's output."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+ptxas_toolkit = "13.0"
+entry = "half_add_ctl"
+grid = [16, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "inh"
+dtype = "u32"
+shape = [4096, 2]
+init = "file"
+file = "../inh.bin"
+
+[[buffers]]
+name = "inb"
+dtype = "u32"
+shape = [4096, 2]
+init = "file"
+file = "../inb.bin"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [6, 4096]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "inh"
+
+[[params]]
+kind = "ptr"
+buffer = "inb"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["clean"]

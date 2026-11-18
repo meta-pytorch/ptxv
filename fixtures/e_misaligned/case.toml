@@ -39,6 +39,8 @@ marker = "@OFFV4"
 find = "0;"
 replace = "8;"
 expect = ["fault"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "fault"]
 hw_note = "GB300: cuCtxSynchronize: misaligned address (ptxv probe, 2026-11-05)"
 
 [[variants]]

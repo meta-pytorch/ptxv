@@ -1,0 +1,19 @@
+# run.sh, 2026-11-12, on int7 b1ad9ae3 (before the fix): exit 1
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [clean]                    MISMATCH
+good  sass nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [clean]                    MISMATCH
+rc=1
+
+# After the fix (the landing key in sync-only footprints): exit 0
+good  ptx  stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  ptx  certify  expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass nosyncpor expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+rc=0
+
+# On agentDP after merging int7 05eb1a04 (2cd6794f): exit 0, every line ok

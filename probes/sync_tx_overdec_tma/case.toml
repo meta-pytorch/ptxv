@@ -1,0 +1,56 @@
+name = "probe_sync_tx_overdec_tma"
+description = """
+Stateful and DPOR repro (MISS 231 follow-up, MISS 268): expect_tx 16 with bulk copies of 32 and
+16 bytes on one mbarrier, every arrival made. The 16-byte copy landing first completes phase 0
+early (the consumer reads the 32-byte copy's destination while it is in flight: race; its
+complete_tx then lands in phase 1: violation); the 32-byte copy first takes tx below 0
+(deadlock). The landings do not commute; the count key orders them for DPOR and for the
+synchronization reduction, whose footprints carry space 16 too (exec.rs `rec_tx`). run.sh
+pins each explorer's classes, the unreduced search (every reduction off) included.
+"""
+ptx = "kernel.ptx"
+entry = "tx_overdec_tma"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [16]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "expect 16, copies 32 + 16"
+expect = ["deadlock", "race", "violation"]
+
+[[variants]]
+id = "BAL"
+summary = "expect 48 (balanced)"
+expect = ["clean"]
+marker = "@E"
+find = "[%r4], 16;"
+replace = "[%r4], 48;"
+
+[[variants]]
+id = "LATE"
+summary = "the producer adds expect_tx 32 after issuing both copies: tx returns to 0 in the 32-first order (no deadlock)"
+expect = ["race", "violation"]
+marker = "@L"
+find = "mov.u32 %r20, 0;"
+replace = "mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%r4], 32;"

@@ -25,6 +25,8 @@ buffer = "out"
 id = "good"
 summary = "ld; wait::ld; st: ordered by the wait"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 
 [[variants]]
 id = "Q"

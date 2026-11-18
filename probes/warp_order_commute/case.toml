@@ -1,0 +1,135 @@
+name = "probe_warp_order_commute"
+description = """
+E-WARP-ORDER repro (MISS 220): the PTX strong-pair report flags two lanes of one converged warp
+that apply one update to one word at two instructions (the same atomic operation, operand,
+semantics, scope and size) as nondeterministic although both old values are dead and neither
+lane publishes: the word goes 0, 1, 2 in either order, so no thread, not even one reading
+between the adds, can tell the orders apart (ISA text); GB300 stores 2 in every run (good). The
+controls stay reported: DIFF, REG and REDDIFF (different values added: a reader between the
+adds sees a value only one order leaves; REG adds one register holding lane + 1), SCOPE (.cta
+and .gpu), LIVE (lane 1's old value stored), REL, RED_REL and FENCED (lane 0 publishes its data
+through its add: acq_rel adds, release reductions, a relaxed add after a release fence; lane 1
+reads the data, ordered only when lane 0 adds first). RED: two equal reductions, clean. Grid 1,
+block 32. expected/ is GB300's output per variant (ptxas cubin, `ptxv hw`, 1000 runs per
+variant): out.bin is good's, the other variants' are expected/<variant>.bin (`ptxv check`'s
+bitwise report compares every variant with out.bin). `bash probes/warp_order_commute/run.sh`
+prints the GB300 outputs next to ptxv's verdicts and exits 1 while a verdict differs from the
+expected one."""
+ptx = "kernel.ptx"
+entry = "k"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "lane 0 and lane 1 each add 1 at consecutive instructions, old values dead: one update, the word goes 0, 1, 2 in either order (clean); GB300 2"
+expect = ["clean"]
+
+[[variants]]
+id = "DIFF"
+summary = "control: lane 1 adds 2 (a reader between the adds sees 1 or 2: reported, nondeterministic)"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@B1"
+find = "@%p2 atom.global.add.u32 %r6, [%rd1], 1;"
+replace = "@%p2 atom.global.add.u32 %r6, [%rd1], 2;"
+
+[[variants]]
+id = "REG"
+summary = "control: both lanes add %r3 = lane + 1 (one operand register, values 1 and 2: nondeterministic)"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@A0"
+find = "@%p1 atom.global.add.u32 %r5, [%rd1], 1;"
+replace = "@%p1 atom.global.add.u32 %r5, [%rd1], %r3;"
+edits = [{ marker = "@B1", find = "@%p2 atom.global.add.u32 %r6, [%rd1], 1;", replace = "@%p2 atom.global.add.u32 %r6, [%rd1], %r3;" }]
+
+[[variants]]
+id = "RED"
+summary = "control: red.global.add of 1 at both instructions: clean"
+expect = ["clean"]
+marker = "@A0"
+find = "@%p1 atom.global.add.u32 %r5, [%rd1], 1;"
+replace = "@%p1 red.global.add.u32 [%rd1], 1;"
+edits = [{ marker = "@B1", find = "@%p2 atom.global.add.u32 %r6, [%rd1], 1;", replace = "@%p2 red.global.add.u32 [%rd1], 1;" }]
+
+[[variants]]
+id = "REDDIFF"
+summary = "control: red.global.add of 1 and of 2 (different values: nondeterministic)"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@A0"
+find = "@%p1 atom.global.add.u32 %r5, [%rd1], 1;"
+replace = "@%p1 red.global.add.u32 [%rd1], 1;"
+edits = [{ marker = "@B1", find = "@%p2 atom.global.add.u32 %r6, [%rd1], 1;", replace = "@%p2 red.global.add.u32 [%rd1], 2;" }]
+
+[[variants]]
+id = "SCOPE"
+summary = "control: lane 0's add at .cta scope, lane 1's at .gpu (different scopes: nondeterministic)"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@A0"
+find = "@%p1 atom.global.add.u32 %r5, [%rd1], 1;"
+replace = "@%p1 atom.relaxed.cta.global.add.u32 %r5, [%rd1], 1;"
+
+[[variants]]
+id = "LIVE"
+summary = "control: lane 1 stores its old value (0 or 1 under the PTX model; GB300 issues in program order, 1): nondeterministic"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@READ"
+find = "// @READ"
+replace = "@%p2 st.global.u32 [%rd1+4], %r6;"
+
+[[variants]]
+id = "REL"
+summary = "control: lane 0 stores data, both lanes add 1 with acq_rel, lane 1 then reads data: synchronized only when lane 0 adds first (nondeterministic: the other order is reported, not explored)"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@DATA"
+find = "mov.u32 %r2, 42;"
+replace = "mov.u32 %r2, 42;\n    @%p1 st.global.u32 [%rd1+8], %r2;"
+edits = [
+  { marker = "@A0", find = "@%p1 atom.global.add.u32 %r5, [%rd1], 1;", replace = "@%p1 atom.acq_rel.gpu.global.add.u32 %r5, [%rd1], 1;" },
+  { marker = "@B1", find = "@%p2 atom.global.add.u32 %r6, [%rd1], 1;", replace = "@%p2 atom.acq_rel.gpu.global.add.u32 %r6, [%rd1], 1;" },
+  { marker = "@READ", find = "// @READ", replace = "@%p2 ld.global.u32 %r7, [%rd1+8];\n    @%p2 st.global.u32 [%rd1+12], %r7;" },
+]
+
+[[variants]]
+id = "RED_REL"
+summary = "control: REL with red.release.gpu by both lanes and fence.acq_rel after lane 1's (the reductions' publishing side): nondeterministic"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@DATA"
+find = "mov.u32 %r2, 42;"
+replace = "mov.u32 %r2, 42;\n    @%p1 st.global.u32 [%rd1+8], %r2;"
+edits = [
+  { marker = "@A0", find = "@%p1 atom.global.add.u32 %r5, [%rd1], 1;", replace = "@%p1 red.release.gpu.global.add.u32 [%rd1], 1;" },
+  { marker = "@B1", find = "@%p2 atom.global.add.u32 %r6, [%rd1], 1;", replace = "@%p2 red.release.gpu.global.add.u32 [%rd1], 1;\n    fence.acq_rel.gpu;" },
+  { marker = "@READ", find = "// @READ", replace = "@%p2 ld.global.u32 %r7, [%rd1+8];\n    @%p2 st.global.u32 [%rd1+12], %r7;" },
+]
+
+[[variants]]
+id = "FENCED"
+summary = "control: REL with relaxed adds, fence.acq_rel before them and after lane 1's (a release fence publishes: membar_vc): nondeterministic"
+expect = ["nondeterministic"]
+expect_sass = ["clean"]
+marker = "@DATA"
+find = "mov.u32 %r2, 42;"
+replace = "mov.u32 %r2, 42;\n    @%p1 st.global.u32 [%rd1+8], %r2;\n    fence.acq_rel.gpu;"
+edits = [
+  { marker = "@B1", find = "@%p2 atom.global.add.u32 %r6, [%rd1], 1;", replace = "@%p2 atom.global.add.u32 %r6, [%rd1], 1;\n    fence.acq_rel.gpu;" },
+  { marker = "@READ", find = "// @READ", replace = "@%p2 ld.global.u32 %r7, [%rd1+8];\n    @%p2 st.global.u32 [%rd1+12], %r7;" },
+]

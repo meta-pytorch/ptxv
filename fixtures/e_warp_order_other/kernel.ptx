@@ -1,0 +1,51 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// E-WARP-ORDER audit: what happens only in the order the converged warp does not show.
+// Lane 0 stores data (plain) then a flag (release); lane 1, on later instructions of the
+// converged warp, reads the flag (acquire) and then the data. In program order the acquire
+// reads 1 and orders the data read; in the other order (allowed by PTX without
+// bar.warp.sync) it reads 0 and the data read races with lane 0's store.
+//   good: unconditional data read: a race only in the other order.
+//   TRAP: lane 1 traps when the flag reads 0 (a fault only in the other order).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_warp_order_other(.param .u64 out_p)
+{
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 4 .b32 x;
+    .shared .align 4 .b32 y;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, x;
+    mov.u32 %r7, y;
+    setp.eq.u32 %p1, %r1, 0;
+    setp.eq.u32 %p2, %r1, 1;
+    mov.u32 %r3, 0;
+    @%p1 st.shared.u32 [%r2], %r3;
+    bar.warp.sync -1;
+    mov.u32 %r10, 1;
+    mov.u32 %r11, 5;
+    mov.u32 %r12, 9;
+    mov.u32 %r13, 9;
+    @%p1 st.shared.u32 [%r7], %r11;
+    @%p1 st.release.cta.shared.u32 [%r2], %r10;
+    @%p2 ld.acquire.cta.shared.u32 %r12, [%r2];
+    setp.eq.and.u32 %p3, %r12, 0, %p2;
+    @%p3 bra OTHER;                      // @OTHER
+    @%p2 ld.shared.u32 %r13, [%r7];
+OTHER:
+    bar.warp.sync -1;
+    @!%p2 bra DONE;
+    st.global.u32 [%rd1], %r12;
+    st.global.u32 [%rd1+4], %r13;
+DONE:
+    ret;
+}

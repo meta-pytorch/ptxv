@@ -88,7 +88,7 @@ mod tests {
         Alloc {
             name: "event".into(),
             base,
-            init: vec![0; 16],
+            init: std::sync::Arc::new(vec![0; 16]),
             undef: false,
             dead: false,
         }

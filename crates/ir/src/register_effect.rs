@@ -344,7 +344,9 @@ fn word_count(bytes: u8) -> u16 {
 fn atomic_value_sources(result: &mut Vec<Reg>, op: AtomOp, bytes: u8, v: &Val) {
     match op {
         AtomOp::Exch => vector(result, v),
-        AtomOp::FAddFtz => floating_sources(result, v, bytes),
+        // A vector red / atom add (REDG / ATOMG .E.ADD.F32x2 / F32x4 / BF16x4): every data
+        // register, one per 4 bytes (int7 MISS 181, RVS3 R1).
+        AtomOp::FAddFtz | AtomOp::AddBf16x2 => floating_sources(result, v, bytes),
         _ => slots(result, v),
     }
 }

@@ -1,0 +1,77 @@
+probes/half_add on GB300 (sm_103, driver 580.126.20), CUDA 13.0 ptxas (V13.0.88), 2026-11-12.
+
+Runs: `ptxv hw-worker probes/half_add <cubin> --runs 20` plain and `--scrub`, and the same for
+probes/half_add/controls: 20/20 + 20/20 runs each bitwise equal to expected/ (one distinct
+output per kernel).
+
+Inputs (gen.py, seed 76): per format 8192 lane pairs: all 44 x 44 pairs of an edge set
+(signed zeros, subnormals, the normal-range ends, infinities, NaNs of both signs, quiet and
+signalling, several payloads), 600 exact-sum ties rounded up in magnitude and 600 rounded
+down, 102 sums at and around the overflow threshold, 300 cancellations to subnormal results,
+200 subnormal + subnormal sums, every NaN code with 1.0 (2046 f16, 254 bf16), up to 400 NaN
+codes with 1.0 first, 200 NaN + NaN, signed-zero sums / inf - inf / NaN + inf / -0 + NaN 16
+times each, random patterns for the rest. Lane classes below are counted per output (the
+selector outputs pair other halves, so their classes differ).
+
+Model (half.py `add`, exact rationals): one round-to-nearest-even rounding of the exact sum,
+subnormal inputs and results kept (no flush), overflow to infinity, every NaN result 0x7fff,
+an exact zero sum -0 only for (-0) + (-0). "alternatives refuted" counts lanes where the
+alternative model gives other bits and GB300 gave the model's.
+
+`check.py` output:
+add.rn.f16x2 (HFMA2 a, 1, 1, b): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 20, inf - inf 34, inf operand 200, nan 3478, nan:negative 1783, nan:non-canonical payload 3332, nan:signalling 1754, overflow to inf 59, subnormal input 818, subnormal result 437, tie, rounded down in magnitude 679, tie, rounded up in magnitude 651, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 1688, FTZ 605, NaN propagation (first NaN quieted) 3350, -0 for -0 + +0 34
+HADD2 a, b.H1_H1: 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 12, inf - inf 17, inf operand 204, nan 3423, nan:negative 1764, nan:non-canonical payload 3272, nan:signalling 1719, overflow to inf 38, subnormal input 862, subnormal result 234, tie, rounded down in magnitude 408, tie, rounded up in magnitude 423, zero + zero: +0 + +0 9, zero + zero: +0 + -0 10, zero + zero: -0 + +0 6, zero + zero: -0 + -0 8
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 1662, FTZ 449, NaN propagation (first NaN quieted) 3285, -0 for -0 + +0 16
+HADD2 a, b.H0_H0 (lanes swapped): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 22, inf - inf 20, inf operand 229, nan 3446, nan:negative 1773, nan:non-canonical payload 3312, nan:signalling 1767, overflow to inf 51, subnormal input 863, subnormal result 286, tie, rounded down in magnitude 387, tie, rounded up in magnitude 367, zero + zero: +0 + +0 9, zero + zero: +0 + -0 9, zero + zero: -0 + +0 11, zero + zero: -0 + -0 9
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 1599, FTZ 470, NaN propagation (first NaN quieted) 3310, -0 for -0 + +0 20
+add.rn.bf16x2 (HFMA2.BF16_V2 a, 1, 1, b): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 21, inf - inf 34, inf operand 200, nan 1483, nan:negative 775, nan:non-canonical payload 1335, nan:signalling 848, overflow to inf 50, subnormal input 742, subnormal result 426, tie, rounded down in magnitude 656, tie, rounded up in magnitude 632, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 2737, FTZ 548, NaN propagation (first NaN quieted) 1352, -0 for -0 + +0 34
+HADD2.BF16_V2 a, b.H1_H1: 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 13, inf - inf 15, inf operand 223, nan 1546, nan:negative 795, nan:non-canonical payload 1393, nan:signalling 853, overflow to inf 33, subnormal input 874, subnormal result 235, tie, rounded down in magnitude 343, tie, rounded up in magnitude 334, zero + zero: +0 + +0 11, zero + zero: +0 + -0 7, zero + zero: -0 + +0 8, zero + zero: -0 + -0 7
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 2781, FTZ 336, NaN propagation (first NaN quieted) 1399, -0 for -0 + +0 15
+HADD2.BF16_V2 a, b.H0_H0 (lanes swapped): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 15, inf - inf 19, inf operand 262, nan 1608, nan:negative 801, nan:non-canonical payload 1446, nan:signalling 891, overflow to inf 33, subnormal input 842, subnormal result 254, tie, rounded down in magnitude 350, tie, rounded up in magnitude 337, zero + zero: +0 + +0 9, zero + zero: +0 + -0 11, zero + zero: -0 + +0 9, zero + zero: -0 + -0 11
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 2806, FTZ 351, NaN propagation (first NaN quieted) 1447, -0 for -0 + +0 20
+ATOMG.E.ADD.F16x2.RN (final word): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 20, inf - inf 34, inf operand 200, nan 3478, nan:negative 1783, nan:non-canonical payload 3332, nan:signalling 1754, overflow to inf 59, subnormal input 818, subnormal result 437, tie, rounded down in magnitude 679, tie, rounded up in magnitude 651, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 1688, FTZ 605, NaN propagation (first NaN quieted) 3350, -0 for -0 + +0 34
+ATOM.E.ADD.F16x2.RN generic (final word): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 20, inf - inf 34, inf operand 200, nan 3478, nan:negative 1783, nan:non-canonical payload 3332, nan:signalling 1754, overflow to inf 59, subnormal input 818, subnormal result 437, tie, rounded down in magnitude 679, tie, rounded up in magnitude 651, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 1688, FTZ 605, NaN propagation (first NaN quieted) 3350, -0 for -0 + +0 34
+REDG.E.ADD.F16x2.RN (final word): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 20, inf - inf 34, inf operand 200, nan 3478, nan:negative 1783, nan:non-canonical payload 3332, nan:signalling 1754, overflow to inf 59, subnormal input 818, subnormal result 437, tie, rounded down in magnitude 679, tie, rounded up in magnitude 651, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 1688, FTZ 605, NaN propagation (first NaN quieted) 3350, -0 for -0 + +0 34
+atom.add.noftz.f16 generic, CAS loop (final word): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 20, inf - inf 34, inf operand 200, nan 3478, nan:negative 1783, nan:non-canonical payload 3332, nan:signalling 1754, overflow to inf 59, subnormal input 818, subnormal result 437, tie, rounded down in magnitude 679, tie, rounded up in magnitude 651, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 1688, FTZ 605, NaN propagation (first NaN quieted) 3350, -0 for -0 + +0 34
+ATOMG.E.ADD.BF16x2.RN (final word): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 21, inf - inf 34, inf operand 200, nan 1483, nan:negative 775, nan:non-canonical payload 1335, nan:signalling 848, overflow to inf 50, subnormal input 742, subnormal result 426, tie, rounded down in magnitude 656, tie, rounded up in magnitude 632, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 2737, FTZ 548, NaN propagation (first NaN quieted) 1352, -0 for -0 + +0 34
+ATOM.E.ADD.BF16x2.RN generic (final word): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 21, inf - inf 34, inf operand 200, nan 1483, nan:negative 775, nan:non-canonical payload 1335, nan:signalling 848, overflow to inf 50, subnormal input 742, subnormal result 426, tie, rounded down in magnitude 656, tie, rounded up in magnitude 632, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 2737, FTZ 548, NaN propagation (first NaN quieted) 1352, -0 for -0 + +0 34
+REDG.E.ADD.BF16x2.RN (final word): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 21, inf - inf 34, inf operand 200, nan 1483, nan:negative 775, nan:non-canonical payload 1335, nan:signalling 848, overflow to inf 50, subnormal input 742, subnormal result 426, tie, rounded down in magnitude 656, tie, rounded up in magnitude 632, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 2737, FTZ 548, NaN propagation (first NaN quieted) 1352, -0 for -0 + +0 34
+atom.add.noftz.bf16 generic, CAS loop (final word): 8192 of 8192 lanes = model
+  classes: exact cancellation (x + -x) 21, inf - inf 34, inf operand 200, nan 1483, nan:negative 775, nan:non-canonical payload 1335, nan:signalling 848, overflow to inf 50, subnormal input 742, subnormal result 426, tie, rounded down in magnitude 656, tie, rounded up in magnitude 632, zero + zero: +0 + +0 17, zero + zero: +0 + -0 17, zero + zero: -0 + +0 17, zero + zero: -0 + -0 17
+  alternatives refuted (lanes where the alternative differs and GB300 = model): RZ 2737, FTZ 548, NaN propagation (first NaN quieted) 1352, -0 for -0 + +0 34
+ATOMG.E.ADD.F16x2.RN old: 4096 of 4096 words = the initial word
+ATOM.E.ADD.F16x2.RN old: 4096 of 4096 words = the initial word
+atom.add.noftz.f16 old (two halves): 4096 of 4096 words = the initial word
+ATOMG.E.ADD.BF16x2.RN old: 4096 of 4096 words = the initial word
+ATOM.E.ADD.BF16x2.RN old: 4096 of 4096 words = the initial word
+atom.add.noftz.bf16 old (two halves): 4096 of 4096 words = the initial word
+control add.rn.f16x2 (= main j = 0): 4714 of 4714 non-NaN lanes = its model; 0 differ from the RN no-flush model
+control HADD2.FTZ: 4714 of 4714 non-NaN lanes = its model; 605 differ from the RN no-flush model
+control RZ f16 add: 4714 of 4714 non-NaN lanes = its model; 1688 differ from the RN no-flush model
+control add.rn.bf16x2 (= main j = 3): 6709 of 6709 non-NaN lanes = its model; 0 differ from the RN no-flush model
+control RZ bf16 add: 6709 of 6709 non-NaN lanes = its model; 2737 differ from the RN no-flush model
+control bf16 add, subnormals flushed: 6709 of 6709 non-NaN lanes = its model; 548 differ from the RN no-flush model
+control HADD2.FTZ NaN results: {'0x7fff': 3478}
+PASS 0

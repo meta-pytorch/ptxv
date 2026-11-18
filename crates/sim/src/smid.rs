@@ -257,6 +257,7 @@ pub fn check_placements(
         drop(m0);
         let mut v = check(make);
         crate::clock::mark_clock_outputs(&mut v, &probe);
+        crate::explore::mark_unexplored(&mut v);
         return v;
     };
     let nsmid = m0.nsmid;
@@ -289,6 +290,7 @@ pub fn check_placements(
     v.notes.push(note(n, &mode, nsmid));
     sampled(&mut v, &m0k, &mode);
     crate::clock::mark_clock_outputs(&mut v, &probe);
+    crate::explore::mark_unexplored(&mut v);
     v
 }
 
@@ -302,6 +304,7 @@ pub fn explore_smid(m0: Machine, run: &mut dyn FnMut(Machine) -> Verdict) -> Ver
     // ASSUME(E-CLOCK): once per launch check (not again inside an outer enumeration).
     if !fixed {
         crate::clock::mark_clock_outputs(&mut v, &probe);
+        crate::explore::mark_unexplored(&mut v);
     }
     v
 }

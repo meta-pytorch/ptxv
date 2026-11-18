@@ -1,0 +1,49 @@
+# run.sh, 2026-11-12, on agentDP 72da73cd (before the fixes): exit 1
+good  ptx  stateful expected [race]                     observed [race]                     ok
+good  ptx  dpor     expected [nondeterministic,race]    observed [clean]                    MISMATCH
+good  ptx  certify  expected [race]                     observed [race]                     ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+NODELAY ptx  stateful expected [race]                     observed [race]                     ok
+NODELAY ptx  dpor     expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+NODELAY ptx  certify  expected [race]                     observed [race]                     ok
+NODELAY sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+NODELAY sass dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+NODELAY sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+TESTWAIT ptx  stateful expected [race]                     observed [race]                     ok
+TESTWAIT ptx  dpor     expected [nondeterministic,race]    observed [clean]                    MISMATCH
+TESTWAIT ptx  certify  expected [race]                     observed [race]                     ok
+TESTWAIT sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+TESTWAIT sass dpor     expected [nondeterministic]         observed [clean]                    MISMATCH
+TESTWAIT sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+HINT  ptx  stateful expected [race]                     observed [race]                     ok
+HINT  ptx  dpor     expected [nondeterministic,race]    observed [clean]                    MISMATCH
+HINT  ptx  certify  expected [race]                     observed [race]                     ok
+rc=1
+
+# After the MISS 230/231/233 fixes (04fbfa49): exit 0
+good  ptx  stateful expected [race]                     observed [race]                     ok
+good  ptx  dpor     expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+good  ptx  certify  expected [race]                     observed [race]                     ok
+good  sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+good  sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+NODELAY ptx  stateful expected [race]                     observed [race]                     ok
+NODELAY ptx  dpor     expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+NODELAY ptx  certify  expected [race]                     observed [race]                     ok
+NODELAY sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+NODELAY sass dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+NODELAY sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+TESTWAIT ptx  stateful expected [race]                     observed [race]                     ok
+TESTWAIT ptx  dpor     expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+TESTWAIT ptx  certify  expected [race]                     observed [race]                     ok
+TESTWAIT sass stateful expected [nondeterministic]         observed [nondeterministic]         ok
+TESTWAIT sass dpor     expected [nondeterministic]         observed [nondeterministic]         ok
+TESTWAIT sass certify  expected [nondeterministic]         observed [nondeterministic]         ok
+HINT  ptx  stateful expected [race]                     observed [race]                     ok
+HINT  ptx  dpor     expected [nondeterministic,race]    observed [nondeterministic,race]    ok
+HINT  ptx  certify  expected [race]                     observed [race]                     ok
+rc=0
+
+# On agentDP after merging int7 05eb1a04 (2cd6794f): exit 0, every line ok

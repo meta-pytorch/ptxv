@@ -1,0 +1,46 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// A store over an mbarrier's memory unordered with the inval (or init) of it.
+// Thread 0 initializes `a` (count 1) uniformly; bar.sync; thread IVT invalidates `a`, thread
+// STT stores over `a`'s memory; no ordering between them. In the order store-then-inval the
+// store lands on a live object (violation on both fronts after MISS 218's fix).
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry e_mbar_store_order(.param .u64 out_p)
+.maxntid 64, 1, 1
+{
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<8>;
+    .reg .pred %p<8>;
+    .shared .align 8 .b8 a[8];
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, a;
+    setp.ne.u32 %p2, %r1, 0;
+    @%p2 bra AFTER_INIT;
+    mbarrier.init.shared::cta.b64 [%r2], 1;            // @INIT
+AFTER_INIT:
+    bar.sync 0;                                        // @B1
+    setp.eq.u32 %p3, %r1, 0;                           // @IVT
+    @!%p3 bra NOINV;
+    mbarrier.inval.shared::cta.b64 [%r2];              // @INV
+NOINV:                                                 // @MID
+    setp.eq.u32 %p4, %r1, 32;                          // @STT
+    @!%p4 bra NOST;
+    mov.b64 %rd5, 0;                                   // @VAL
+    st.shared.u64 [%r2], %rd5;                         // @STORE
+NOST:
+    bar.sync 0;
+    setp.ne.u32 %p5, %r1, 0;
+    @%p5 bra DONE;
+    mov.u32 %r9, 1;
+    st.global.u32 [%rd1], %r9;
+DONE:
+    ret;
+}

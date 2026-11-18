@@ -1,0 +1,8 @@
+# fuzz.sh (seed 2, 400 cases, PTX), as RDP2 ran it on agentDP 6f398a99: 1 of 400 cases miss
+c2_0282 unreduced [deadlock,nondeterministic,race] default [deadlock] dpor [deadlock] MISS-default MISS-dpor
+# The same set on 8f358949 (one last-arrival key, before the levels): 0 misses.
+
+# After the fix (the under key, MISS 273), agentDP: PTX 0 of 400 cases miss (261 comparable:
+# the other 139 have an incomplete or inconclusive search within run.sh's 40 s and 150000
+# states, as in RDP2's run, which compared 261 at 6f398a99).
+# SASS (the E-only tree): 0 of 400 cases miss (400 comparable).

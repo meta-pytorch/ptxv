@@ -1,0 +1,42 @@
+name = "c_num_mufu_nan_f32"
+description = """
+MISS 258: out[32 k + t] = op_k(x[t]) for k = 0 .. 5: sqrt.approx.ftz.f32, rsqrt.approx.ftz.f32,
+lg2.approx.ftz.f32, ex2.approx.ftz.f32(lg2.approx.ftz.f32), max.f32(lg2.approx.ftz.f32, -200) and
+sqrt.approx.f32 (no .ftz). x[t % 8 < 3] are the negative subnormals 0x80000003, 0x807fffff and
+0x80000100 (the .ftz forms flush them to -0), x[t % 8 == 3] = -2, the other lanes positive normals.
+sqrt, rsqrt and lg2 of a negative number have no real value: those elements' exact values are not
+determined (N-NUM-NONFINITE). expected/: GB300."""
+ptxas_toolkit = "13.0"
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "num_mufu_nan"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "f32"
+shape = [32]
+init = "file"
+file = "data/x.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [192]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]

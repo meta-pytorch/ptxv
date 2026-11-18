@@ -1,0 +1,57 @@
+name = "e_cpasync_src_war"
+description = """
+E-CPASYNC, the copy's global load (MISS 117): it is not ordered before the instructions the
+issuer runs after the cp.async (PTX ISA 9.5 8.9.1.1), and modifying the source before the copy
+completes is undefined (9.7.10.28.1), so a store to the source ordered only after them races
+with it. BAR (another thread's store after a barrier the issuer reaches before its
+wait) and OWN (the issuer's own store after the copy) are races on both fronts; good (the wait,
+then the barrier) is clean. Before, the load was checked only at issue, with the issuer's clock,
+and both were clean."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_src_war"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out", "src"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[variants]]
+id = "good"
+summary = "wait, then the barrier; thread 32 stores to the source after it"
+expect = ["clean"]
+
+[[variants]]
+id = "BAR"
+summary = "the barrier before the wait; thread 32 stores to the source after it"
+edits = [
+    { marker = "@WAIT1", find = "cp.async.wait_group 0;     // @WAIT1", replace = "" },
+    { marker = "@WAIT2", find = "// @WAIT2", replace = "cp.async.wait_group 0;" },
+]
+expect = ["race"]
+
+[[variants]]
+id = "OWN"
+summary = "thread 0 stores to the source after the cp.async, before its wait (thread 32 does not)"
+edits = [
+    { marker = "@OWN", find = "// @OWN", replace = "st.global.u32 [%rd2+4], %r3;" },
+    { marker = "@ST32", find = "st.global.u32 [%rd2+4], %r3;     // @ST32", replace = "" },
+]
+expect = ["race"]

@@ -1,0 +1,41 @@
+name = "probe_dpor_tx_commute_remote"
+description = """
+DPOR repro (MISS 231): a remote expect_tx (a tx increment landing as a remote operation)
+against a local copy's complete_tx into one phase; SASS only (the PTX front does not take
+expect_tx on another CTA's mbarrier). run.sh pins every explorer's classes
+(expected/classes.txt).
+"""
+ptx = "kernel.ptx"
+entry = "dpor_tx_commute_remote"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "x"
+dtype = "u32"
+shape = [8]
+init = "iota"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "x"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "rank 1's copy lands before rank 0's remote expect_tx: early completion, tb unordered"
+# PTX: expect_tx on another CTA's mbarrier is not modeled (S-MBAR); the drained op's target
+# check reports the CTA's exit as well.
+expect = ["unmodeled", "violation"]
+expect_sass = ["nondeterministic", "race", "violation"]

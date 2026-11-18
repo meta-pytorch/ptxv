@@ -25,3 +25,5 @@ buffer = "out"
 id = "good"
 summary = "LDS.128 then LDS into a dead register of the first load, no scoreboard wait"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]

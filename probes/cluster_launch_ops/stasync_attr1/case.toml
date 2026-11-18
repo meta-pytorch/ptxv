@@ -1,0 +1,37 @@
+name = "cluster_launch_ops_stasync_attr1"
+description = """
+MISS 209 hardware probe: st.async.shared::cluster.mbarrier::complete_tx::bytes.b32 of the thread's own word (S[t] = t + 7); out[t] = S[t] afterwards (S[t] starts at t). Launch: no directive; case.toml cluster = [1, 1, 1] (the runner passes it as the launch attribute).
+GB300 (ptxv probe): runs (expected/stasync_attr1.gb300.txt)."""
+ptx = "kernel.ptx"
+arch = "sm_103a"
+entry = "cl_stasync_attr1"
+grid = [1, 1, 1]
+cluster = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[buffers]]
+name = "src"
+dtype = "u32"
+shape = [4]
+init = "file"
+file = "../src.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "src"
+
+[[variants]]
+id = "good"
+summary = "no directive"
+expect = ["clean"]

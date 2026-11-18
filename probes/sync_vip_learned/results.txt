@@ -1,0 +1,32 @@
+# run.sh, 2026-11-13, on upstream main 05e1989c78 (before the fix): exit 1
+fixtures/e_peek_result      ACQ   sass unreduced -                          expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  -                          expected [nondeterministic,violation] observed [clean]                      MISMATCH
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_THREADS=1             expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_POR_SEED_WALKS=0      expected [nondeterministic,violation] observed [nondeterministic]           MISMATCH
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_POR_SEED_WALKS=1      expected [nondeterministic,violation] observed [clean]                      MISMATCH
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_THREADS=1,PTXV_POR_SEED_WALKS=1 expected [nondeterministic,violation] observed [clean]                      MISMATCH
+fixtures/e_peek_result      ACQ   sass dpor      -                          expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_cpasync_arrive_inflight LATER ptx  unreduced -                          expected [nondeterministic,race,violation] observed [nondeterministic,race,violation] ok
+fixtures/e_cpasync_arrive_inflight LATER ptx  stateful  -                          expected [race]                       observed [race]                       ok
+
+# on the integration merge 9c96c76231 (before the fix): exit 1
+fixtures/e_peek_result      ACQ   sass unreduced -                          expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  -                          expected [nondeterministic,violation] observed [clean]                      MISMATCH
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_THREADS=1             expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_POR_SEED_WALKS=0      expected [nondeterministic,violation] observed [nondeterministic]           MISMATCH
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_POR_SEED_WALKS=1      expected [nondeterministic,violation] observed [clean]                      MISMATCH
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_THREADS=1,PTXV_POR_SEED_WALKS=1 expected [nondeterministic,violation] observed [clean]                      MISMATCH
+fixtures/e_peek_result      ACQ   sass dpor      -                          expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_cpasync_arrive_inflight LATER ptx  unreduced -                          expected [nondeterministic,race,violation] observed [nondeterministic,race,violation] ok
+fixtures/e_cpasync_arrive_inflight LATER ptx  stateful  -                          expected [race]                       observed [race]                       ok
+
+# After the fix (the learned sets take a poll's read): exit 0
+fixtures/e_peek_result      ACQ   sass unreduced -                          expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  -                          expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_THREADS=1             expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_POR_SEED_WALKS=0      expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_POR_SEED_WALKS=1      expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass stateful  PTXV_THREADS=1,PTXV_POR_SEED_WALKS=1 expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_peek_result      ACQ   sass dpor      -                          expected [nondeterministic,violation] observed [nondeterministic,violation] ok
+fixtures/e_cpasync_arrive_inflight LATER ptx  unreduced -                          expected [nondeterministic,race,violation] observed [nondeterministic,race,violation] ok
+fixtures/e_cpasync_arrive_inflight LATER ptx  stateful  -                          expected [race]                       observed [race]                       ok

@@ -69,6 +69,8 @@ value = 0
 id = "good"
 summary = "as compiled by Triton"
 expect = ["clean"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract"]
 hw_note = "the SASS run (MUFU per N-MUFU) equals expected/ (GB300) bitwise (tests/fixtures.rs captured_outputs_match_the_gpu)"
 
 [[variants]]
@@ -76,4 +78,6 @@ id = "nosb"
 summary = "SASS: SHFL.BFLY R7 (the sum of squares' first butterfly step) at 0x170 gets no write scoreboard (wr SBn -> none)"
 patch = [{ at = "@0x170", wbar = 7 }]
 expect = ["violation"]
+# SASS strict: E-HW-SB-QUEUE contracts (sb-hwq: / sb-unmeasured:).
+expect_sass = ["contract", "violation"]
 hw_note = "the consumer's wait no longer covers the variable-latency result: it reads the register before it is written"

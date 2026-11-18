@@ -1,0 +1,96 @@
+name = "e_cpasync_arrive_release"
+description = """
+E-CPASYNC-MBAR, what the arrive-on of cp.async.mbarrier.arrive releases (MISS 118): it is ordered
+after the issuing thread's prior cp.async operations only, "not to those of any other instruction
+issued by the thread" (PTX ISA 9.5 8.9.1.1), so it releases the copies' writes and nothing else
+of the thread. WHOLE (the store before the cp.async), BETWEEN (the store after it), NOCP (no
+cp.async) and GLOBAL (a global word) are races on the PTX front; good (a release arrive as well)
+is clean. On the SASS front the plain-LDS/STS pass reports the race of WHOLE, BETWEEN and NOCP,
+and the strong re-check, which reads LDS / STS as relaxed .cta strong, leaves them clean
+(S-SMEM-STRONG); GLOBAL races there too. Before, the arrive-on released the issuer's whole clock
+and every variant was clean."""
+ptx = "kernel.ptx"
+entry = "e_cpasync_arrive_release"
+grid = [1, 1, 1]
+block = [64, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[buffers]]
+name = "in"
+dtype = "u32"
+shape = [4]
+init = "iota"
+
+[[buffers]]
+name = "g"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[params]]
+kind = "ptr"
+buffer = "in"
+
+[[params]]
+kind = "ptr"
+buffer = "g"
+
+[[variants]]
+id = "good"
+summary = "a release arrive by thread 0 after the cp.async arrive-on (count 2)"
+expect = ["clean"]
+
+[[variants]]
+id = "WHOLE"
+summary = "only the cp.async arrive-on (count 1); the store before the cp.async"
+edits = [
+    { marker = "@COUNT", find = "mbarrier.init.shared::cta.b64 [%r5], 2;", replace = "mbarrier.init.shared::cta.b64 [%r5], 1;" },
+    { marker = "@REL", find = "mbarrier.arrive.shared::cta.b64 %rd3, [%r5];", replace = "" },
+]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "BETWEEN"
+summary = "WHOLE with the store between the cp.async and the cp.async arrive"
+edits = [
+    { marker = "@COUNT", find = "mbarrier.init.shared::cta.b64 [%r5], 2;", replace = "mbarrier.init.shared::cta.b64 [%r5], 1;" },
+    { marker = "@REL", find = "mbarrier.arrive.shared::cta.b64 %rd3, [%r5];", replace = "" },
+    { marker = "@ST1", find = "st.shared.u32 [%r8], %r3;", replace = "" },
+    { marker = "@ST2", find = "// @ST2", replace = "st.shared.u32 [%r8], %r3;" },
+]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "NOCP"
+summary = "no cp.async: the store, then cp.async.mbarrier.arrive.noinc only"
+edits = [
+    { marker = "@COUNT", find = "mbarrier.init.shared::cta.b64 [%r5], 2;", replace = "mbarrier.init.shared::cta.b64 [%r5], 1;" },
+    { marker = "@REL", find = "mbarrier.arrive.shared::cta.b64 %rd3, [%r5];", replace = "" },
+    { marker = "@CP", find = "cp.async.cg.shared.global [%r2], [%rd2], 16;", replace = "" },
+    { marker = "@LD2", find = "ld.shared.u32 %r7, [%r2+4];", replace = "mov.u32 %r7, 1;" },
+]
+expect = ["race"]
+expect_sass = ["clean"]
+
+[[variants]]
+id = "GLOBAL"
+summary = "WHOLE with the word in global memory"
+edits = [
+    { marker = "@COUNT", find = "mbarrier.init.shared::cta.b64 [%r5], 2;", replace = "mbarrier.init.shared::cta.b64 [%r5], 1;" },
+    { marker = "@REL", find = "mbarrier.arrive.shared::cta.b64 %rd3, [%r5];", replace = "" },
+    { marker = "@ST1", find = "st.shared.u32 [%r8], %r3;", replace = "st.global.u32 [%rd4], %r3;" },
+    { marker = "@LD1", find = "ld.shared.u32 %r6, [%r8];", replace = "ld.global.u32 %r6, [%rd4];" },
+]
+expect = ["race"]

@@ -1,0 +1,7 @@
+# variant front explorer classes (run.sh compares each line's observed classes with these).
+good ptx  unreduced [race,violation]
+good ptx  stateful  [race,violation]
+good ptx  dpor      [race,violation]
+good sass unreduced [clean]
+good sass stateful  [clean]
+good sass dpor      [clean]

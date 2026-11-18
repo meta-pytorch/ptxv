@@ -1,0 +1,61 @@
+name = "probe_stg_mmio_lane"
+description = """
+MISS 168 repro (gb300 profile, E-HW-STG-LOWEST): the 32 lanes of one
+st.mmio.relaxed.sys.global.u32 (SASS STG.E.MMIO.SYS) store their tid to one global word; after
+bar.warp.sync every lane reads it back. GB300 keeps the HIGHEST active lane's value (31 in every
+run), while E-HW-STG-LOWEST gives every 4-byte global store the lowest active lane's (0).
+TRAP31 traps on 31: GB300 traps in every launch, ptxv's gb300 level said clean. TRAP0 traps on
+0: gb300 trap, GB300 never. good: no trap, outputs out[32] and w[4]. grid 1, block 32.
+expected/gb300.txt: GB300's outcomes (`ptxv hw`). `bash probes/stg_mmio_lane/run.sh` exits 1
+while ptxv's gb300 level calls TRAP31 clean."""
+ptx = "kernel.ptx"
+entry = "stg_mmio_lane"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = ["out", "w"]
+
+[[buffers]]
+name = "w"
+dtype = "u32"
+shape = [4]
+init = "zeros"
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [32]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "w"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "st.mmio by every lane, no trap (GB300: w[0] = 31, every out word 31)"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.mmio.relaxed.sys.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@TRAP", find = "@%p1 trap;", replace = "// no trap" }]
+expect = ["nondeterministic"]
+
+[[variants]]
+id = "TRAP31"
+summary = "st.mmio by every lane; trap if lane 31's value remains (GB300: traps in every launch)"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.mmio.relaxed.sys.global.u32 [%rd4], %r1;"
+edits = [{ marker = "@CMP", find = "setp.eq.u32 %p1, %r3, 0;", replace = "setp.eq.u32 %p1, %r3, 31;" }]
+expect = ["nondeterministic", "trap"]
+
+[[variants]]
+id = "TRAP0"
+summary = "st.mmio by every lane; trap if lane 0's value remains (GB300: never)"
+marker = "@ST"
+find = "st.relaxed.gpu.global.u32 [%rd4], %r1;"
+replace = "st.mmio.relaxed.sys.global.u32 [%rd4], %r1;"
+expect = ["nondeterministic", "trap"]

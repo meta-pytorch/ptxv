@@ -28,7 +28,41 @@
 //! its threads, or makes its CTA launch impossible) is dependent on it; the disabled process
 //! is added to the frame's backtrack set when the transition is taken (MISS 136, MISS 146).
 //! Consuming a remote op and landing it write one key of its pipe (exec.rs `complete_remote`),
-//! so a drain also conflicts with the op's own landing.
+//! so a drain also conflicts with the op's own landing. Issuing a new op into a remote pipe
+//! writes the pipe's issue key (exec.rs `push_remote`), so two splits' issues into one pipe are
+//! dependent: their order is the pipe's landing order, which decides the prefix a drain lands
+//! (MISS 222, probes/dpor_pipe_issue_order: without it DPOR never reversed two lanes' issues).
+//! An issue commutes with the landing of an op already in the pipe (it enters behind it) and
+//! with a drain (which lands only the prefix up to the draining thread's own ops), so it
+//! writes a key of its own, not the landing key.
+//!
+//! Co-enabledness of polls: the race check skips an earlier conflicting transition that p's
+//! next transition waits for (`Footprint::acq`, `Footprint::waits_on`): an update that released
+//! the key a blocking wait (a spin try_wait, E-SPIN; `wait_group`; `bar.sync`;
+//! `barrier.cluster.wait`) acquires. Every such update comes after the completion of the
+//! previous phase or generation and before the one the wait observed, where the wait is
+//! blocked, so the pair is not co-enabled and needs no schedule of its own. A blocking poll
+//! starts its step (a step stops before every visible instruction), so no shorter step of p is
+//! enabled there either. Where the acquired generation cannot come round again (named-barrier,
+//! bulk-group and cluster-barrier generations; an mbarrier's first phase and its init) the wait
+//! is enabled only after those updates, so what happens before them is ordered before the wait
+//! too (their clocks are joined into its own). A parity poll that acquired a later phase also
+//! passes two phases earlier, and at init for parity 1 (`Footprint::acq_aba`), so only the
+//! releasing transitions are skipped there, not what happens before them (MISS 230,
+//! probes/dpor_aba_wait: joining the releaser's whole clock into the wait's clock hid the
+//! schedule where the wait passes at init). Where the generation cannot repeat the join is
+//! exact (keys name absolute phases and generations, and a re-init that reuses a phase-0 key is
+//! caught by the init-race check), and skipping only the releasing transitions there costs
+//! states and, in racy kernels, outcomes past the race that E-DRF lets go: their history, such
+//! as a producer's store before its arrive, stands as the last race of a wait never enabled
+//! beside it (e_sym good PTX 713 states against 45; fixtures/e_exitbound XB2 keeps one outcome
+//! of two; fixtures.rs `dpor_orders_releasers_history_before_a_wait_that_cannot_repeat` pins
+//! both). A non-blocking test (a try_wait / test_wait whose false result the kernel uses,
+//! `Machine::peeks`) is enabled before the completion too, with the other outcome: its acquire
+//! is an observation (`Footprint::obs`), ordered in the trace taken (the transition's clock)
+//! but not skipped, so the completion it observed is reversed with it like any conflicting
+//! transition (MISS 221, probes/dpor_testwait: skipping it hid the false outcome, a race in a
+//! kernel with no remote operations).
 //!
 //! Memory: every frame keeps, for each alternative, its successor `Machine` (`Alt::succ`, a
 //! full clone with the transition applied) besides its pid, footprint and op. RSS grows with
@@ -38,10 +72,22 @@
 //! created, disables) per alternative and the frame's own state, and recompute the successor
 //! (clone and apply) when an alternative is picked.
 //!
+//! Cycles: the search keeps the fingerprints of the states on its stack and does not enter a
+//! successor equal to one of them (a thread that stays at an instruction without changing the
+//! state, a spin whose iteration changes nothing), as the stateful search does not revisit a
+//! state. Races of the transitions after such a state with those on the cycle are not
+//! checked, so every process enabled at a frame of the cycle goes into that frame's backtrack
+//! set (the stack proviso). MISS 274: without the check one repeating path never ended
+//! (probes/dpor_cycle).
+//!
 //! What is preserved (relative to `explore`): every reachable deadlock, every reachable terminal
 //! output, and every finding a transition can produce, because every Mazurkiewicz trace of
-//! the dependency relation is represented. The cross-check is `tests/fixtures.rs`, which runs
-//! both explorers on every fixture and requires identical verdicts.
+//! the dependency relation is represented. That holds only as far as the footprints are
+//! complete (two transitions that do not commute must conflict) and the race check skips only
+//! pairs that are not co-enabled (above); MISS 221 and MISS 222 were one gap of each kind.
+//! The cross-check is `tests/fixtures.rs`, which runs both explorers on every fixture it
+//! checks and requires identical verdicts (for racy variants, the same classes but
+//! nondeterministic, E-DRF).
 
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -116,7 +162,11 @@ struct Alt {
 }
 
 /// Transitions taken that consumed a non-head FIFO op (their FIFO is backtracked although its
-/// head stays pending). Instrumentation for the cross-check tests (fixtures/e_dpor_nonhead).
+/// head stays pending). Instrumentation of a case that no longer arises: a drain
+/// (`drain_remote`, since MISS 184; fixtures/e_dpor_nonhead NH reached it before) and
+/// E-REMOTE-FIFO's delivery (`deliver_fifo_before`, since its follow-up;
+/// fixtures/e_remote_fifo_nonhead SASS before) land a remote pipe's head before the ops behind
+/// it. tests/fixtures.rs `deliver_fifo_before_lands_the_pipe_head_first` asserts it stays 0.
 pub static NONHEAD_BACKTRACKS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
@@ -200,7 +250,8 @@ fn successors(m: &Machine) -> Vec<Alt> {
     //   fence or MEMBAR.ALL.GPU; deliver_fifo_before): every op pending before and gone after,
     //   other than the transition's own, disables its process, its FIFO's head or not (a
     //   non-head op can land only after the ops ahead of it, which this transition may also
-    //   have to follow);
+    //   have to follow; both consuming paths land a remote pipe's head first, so the non-head
+    //   case, `Alt::nonhead`, is kept as a conservative rule only);
     // - exiting other threads (a trap or __assertfail exits every thread): a split whose
     //   threads are all Exited after;
     // - a CTA launch that is no longer possible after (its threads exited by a trap).
@@ -297,7 +348,7 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
         }
         // A blocked warp-level poll (spin::wpoll_loops) reads its flags.
         if let Some(&b) = m.wpolls.get(&pc) {
-            for (_, _, loc, bytes, _) in
+            for (_, _, loc, bytes, _, _) in
                 crate::spin::wpoll_dry(m, &members, pc, b).unwrap_or_default()
             {
                 match loc {
@@ -381,7 +432,13 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
                 }
             }
             ptxv_ir::Op::TmemAlloc { .. } | ptxv_ir::Op::TmemAllocRaw { .. } => {
-                f.add(3, m.threads[t].cta as u32, 0, 1, true)
+                f.add(3, m.threads[t].cta as u32, 0, 1, true);
+                // A paired alloc waits for its peer CTA's warp (E-PAIR), which writes both keys.
+                if let ptxv_ir::Op::TmemAlloc { pair: true, .. } = inst.op {
+                    if let Ok(p) = m.pair_peer(m.threads[t].cta) {
+                        f.add(3, p as u32, 0, 1, true);
+                    }
+                }
             }
             _ => {}
         }
@@ -554,10 +611,20 @@ pub fn explore_dpor(m0: Machine, max_states: usize) -> Verdict {
 /// others where it ran would land late after them, and the sleep sets and the last-conflict
 /// backtracking (which assume a transition's footprint does not change while it waits) can
 /// miss that order (`fixtures/mbar_over_arrival`; `fixtures/mbar_count_order` and its
-/// variants, which all over-arrive). Every execution of such a kernel has some update that
-/// writes the key (the arrivals beyond the expected count are not ordered after the completion,
-/// in whichever order they come), so the first DPOR execution that meets one stops the search,
-/// and the stateful explorer redoes it.
+/// variants, which all over-arrive). Every execution of a kernel that over-arrives has some
+/// update that writes the key (the arrivals beyond the expected count are not ordered after
+/// the completion, in whichever order they come), so the first DPOR execution that meets one
+/// stops the search, and the stateful explorer redoes it. That argument is about arrivals: a
+/// transaction-count update can land late in one order only (an expect_tx after a complete_tx
+/// that completed its phase early), so the order that produces the late update must be reached
+/// through a dependency of its own: the last-arrival key that a pure increment reads and the
+/// phase's last arrival writes, and the count key that an increment made with no arrival
+/// pending writes and every decrement reads (exec.rs `rec_tx`, MISS 231). An over-decrement
+/// (one that takes tx below 0) reads the last-arrival key, so it is ordered against the last
+/// arrival, and with no arrival pending it writes the count key, so it is ordered against the
+/// other decrements, one of which may complete the phase first (probes/dpor_tx_overdec,
+/// sync_tx_overdec_tma). These keys are in the synchronization-only footprints too: the
+/// stateful explorer's synchronization reduction depends on them as DPOR does.
 const OVER_ARRIVAL: &str = "dpor: over-arrival";
 
 fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
@@ -573,6 +640,8 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
     let mut outputs: Vec<Vec<u8>> = Vec::new();
     let mut out_seen: HashSet<Vec<u8>> = HashSet::new();
     let (mut states, mut transitions, mut terminal) = (1usize, 0usize, 0usize);
+    // Transitions taken with `Alt::nonhead` (PTXV_DPOR_DEBUG reports the count).
+    let mut nonhead_taken = 0usize;
     let mut complete = true;
 
     let debug = std::env::var("PTXV_DPOR_DEBUG").is_ok();
@@ -588,6 +657,10 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         exec: None,
     };
     frames.push(new_frame(&m0, vec![]));
+    // Fingerprints of the states on the stack (frame i's state is `stack_fp[i]`), and their
+    // frames: a transition back to one closes a cycle (MISS 274).
+    let mut stack_fp: Vec<u128> = vec![m0.fingerprint()];
+    let mut on_stack: HashMap<u128, usize> = HashMap::from([(stack_fp[0], 0)]);
     let mut cur: Machine = m0;
     let over = |f: &Frame| {
         f.alts.iter().any(|a| {
@@ -660,13 +733,24 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
                 }
                 for (p, (fp, op, th)) in &nexts {
                     // HB clock of p's next transition: p's history, its issuer (async ops),
-                    // and whatever the transition itself acquires (a poll acquires the phase
-                    // completion it observes, so it cannot be reordered before it).
+                    // and the transitions it waits for. A blocking wait is not enabled before an
+                    // update that released what it acquires (`Footprint::waits_on`), so that pair
+                    // needs no reversal and the search goes on to earlier conflicts. Where the
+                    // acquired generation cannot come round again (`waits_on_once`: named
+                    // barriers, bulk groups, the cluster barrier, an mbarrier's first phase or
+                    // its init), the wait is enabled only after those updates, so their history
+                    // is ordered before it too. A parity poll that acquired a later phase also
+                    // passes two phases earlier (`Footprint::acq_aba`), so only the releasing
+                    // transitions are skipped there, not their history (MISS 230, parity ABA:
+                    // joining the releaser's clock hid the schedule where try_wait.parity 1
+                    // passes at init, probes/dpor_aba_wait). A non-blocking test that observed a
+                    // completion (`Footprint::obs`) skips nothing: it was enabled before the
+                    // completion too, with the other outcome (MISS 221, probes/dpor_testwait).
                     let mut pred = pred_cv(&frames, *p, *op, th);
                     if !fp.acq.is_empty() {
                         for f in &frames[..n] {
                             let e = f.exec.as_ref().unwrap();
-                            if fp.acquires_from(&e.fp) {
+                            if fp.waits_on_once(&e.fp) {
                                 for (q, &k) in &e.cv {
                                     let v = pred.entry(*q).or_insert(0);
                                     *v = (*v).max(k);
@@ -676,7 +760,7 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
                     }
                     for j in (0..n).rev() {
                         let e = frames[j].exec.as_ref().unwrap();
-                        if e.pid == *p || !e.fp.conflicts(fp) {
+                        if e.pid == *p || !e.fp.conflicts(fp) || fp.waits_on(&e.fp) {
                             continue;
                         }
                         if pred.get(&e.pid).is_some_and(|&k| k >= j) {
@@ -761,6 +845,9 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         let Some(ai) = next_alt else {
             // Frame exhausted: backtrack.
             frames.pop();
+            if let Some(h) = stack_fp.pop() {
+                on_stack.remove(&h);
+            }
             if frames.is_empty() {
                 break;
             }
@@ -795,6 +882,10 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         let disables = frames[n].alts[ai].disables.clone();
         if frames[n].alts[ai].nonhead {
             NONHEAD_BACKTRACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            nonhead_taken += 1;
+            if debug {
+                eprintln!("dpor nonhead: {desc}");
+            }
         }
         frames[n].backtrack.extend(disables);
         let mut cv = pred_cv(&frames, pid, op, &threads);
@@ -831,6 +922,25 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         }
         states += 1;
         cur = succ;
+        // MISS 274: a successor equal to a state on the stack closes a cycle (a thread that
+        // stays at an mbarrier used before init, a spin whose iteration changes nothing). The
+        // search does not descend into it, as the stateful search does not revisit a state;
+        // without this one repeating path never ended (probes/mbar_zero upto0 PTX, RSS without
+        // bound). Every process enabled at a frame of the cycle is added to that frame's
+        // backtrack set (the stack proviso): a race of a transition after the cycle with one on
+        // it is not checked, so no process waits behind the cycle unexplored.
+        let h = cur.fingerprint();
+        if let Some(&j) = on_stack.get(&h) {
+            for f in &mut frames[j..=n] {
+                let en: Vec<Pid> = f.alts.iter().map(|a| a.pid).collect();
+                f.backtrack.extend(en);
+            }
+            let e = frames[n].exec.take().unwrap();
+            frames[n].sleep.push((e.pid, e.fp));
+            continue;
+        }
+        stack_fp.push(h);
+        on_stack.insert(h, frames.len());
         frames.push(new_frame(&cur, child_sleep));
         if over(frames.last().unwrap()) {
             over_arrival = true;
@@ -838,6 +948,8 @@ fn explore_dpor_one(m0: Machine, max_states: usize) -> Verdict {
         }
     }
     if debug {
+        // probes/remote_fifo_nonhead reads this line (a binary without it fails the probe).
+        eprintln!("dpor nonhead transitions: {nonhead_taken}");
         let mut v: Vec<_> = why.into_iter().collect();
         v.sort_by_key(|e| std::cmp::Reverse(e.1));
         for (k, c) in v.iter().take(15) {
@@ -1289,6 +1401,7 @@ mod remote_barrier_selection_tests {
     }
 
     #[test]
+    #[ignore = "OPEN-5 (upstream merge): needs a non-head backtrack on e_dpor_nonhead NH, which int7 MISS 184 makes dead; retarget pending; owner DP"]
     fn inner_dpor_backtracks_a_nonhead_consumed_op() {
         let case =
             Case::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_dpor_nonhead"))
@@ -1392,6 +1505,7 @@ mod tmem_selection_tests {
                             off: 0,
                         },
                         ncols: Val::Imm(32),
+                        pair: false,
                     },
                     Op::TmemFreeRaw { .. } => Op::TmemDealloc {
                         taddr: Val::Imm(0),

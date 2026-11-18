@@ -1,0 +1,10 @@
+# s > b ? s : b vs b > s ? b : s, s = sqrt.approx(a) (sass front). The model's claim, run without captures (check.py).
+max_states = 200000
+segments = true
+reference = { case = "sselgt_p", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "sselbs_p"
+variant = "good"
+front = "sass"
+certify = true

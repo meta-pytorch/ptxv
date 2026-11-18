@@ -1,0 +1,37 @@
+name = "probe_remote_fifo_nonhead"
+description = """
+Probe (E-REMOTE-FIFO, S-REMOTE-INFLIGHT pipe order) for deliver_fifo_before landing an op
+behind another lane's pending head in its remote pipe (review repro). run.sh prints the
+stateful, DPOR and --certify verdicts and the number of DPOR transitions that consumed an op
+behind its pipe's pending head (PTXV_DPOR_DEBUG "dpor nonhead transitions: N"), and exits 1
+while that number is not 0 or the binary does not print it (ebfacb16 does not; with an
+equivalent print it counts 1 on SASS, for both variants). The verdicts do not change.
+Fixture: fixtures/e_remote_fifo_nonhead.
+"""
+ptx = "kernel.ptx"
+entry = "remote_fifo_nonhead"
+grid = [2, 1, 1]
+cluster = [2, 1, 1]
+block = [32, 1, 1]
+outputs = ["out"]
+remote_fifo = true
+
+[[buffers]]
+name = "out"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+expect = ["race"]
+
+[[variants]]
+id = "NOST"
+marker = "@ST"
+replace = "<delete>"
+expect = ["violation"]

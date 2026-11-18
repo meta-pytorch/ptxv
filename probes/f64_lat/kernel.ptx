@@ -1,0 +1,51 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+// Probe (L-OPCLASS, MISS 151): the result latency of an f64-pipe op (DADD) with no write
+// scoreboard, read by a LOP3 (an ALU op, operands read at issue) D stall cycles later, with K
+// independent DADD followers between. gen.py rewrites the compiled window per variant.
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry f64l(.param .u64 out_p, .param .u32 seed)
+{
+    .reg .b32 %r<40>;
+    .reg .f64 %fd<20>;
+    .reg .b64 %rd<8>;
+    ld.param.u64 %rd1, [out_p];
+    cvta.to.global.u64 %rd1, %rd1;
+    ld.param.u32 %r2, [seed];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r30, %ctaid.x;
+    mov.u32 %r32, %ntid.x;
+    mad.lo.u32 %r31, %r30, %r32, %r1;
+    mul.lo.u32 %r3, %r31, %r2;
+    and.b32 %r4, %r3, 1048575;
+    or.b32 %r5, %r4, 1072693248;     // hi word: an f64 in [1, 2)
+    mov.b64 %fd1, {%r3, %r5};
+    add.f64 %fd2, %fd1, %fd1;        // DADD: the producer
+    add.f64 %fd3, %fd1, 0d3FF0000000000000;  // followers
+    add.f64 %fd4, %fd1, 0d4000000000000000;
+    add.f64 %fd5, %fd1, 0d4008000000000000;
+    add.f64 %fd6, %fd1, 0d4010000000000000;
+    add.f64 %fd7, %fd1, 0d4014000000000000;
+    add.f64 %fd8, %fd1, 0d4018000000000000;
+    add.f64 %fd9, %fd1, 0d401C000000000000;
+    add.f64 %fd10, %fd1, 0d4020000000000000;
+    mov.b64 {%r10, %r11}, %fd2;
+    xor.b32 %r12, %r11, %r2;         // LOP3: the reader (hi word)
+    mul.wide.u32 %rd2, %r31, 80;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.u32 [%rd3], %r12;
+    st.global.f64 [%rd3+8], %fd3;
+    st.global.f64 [%rd3+16], %fd4;
+    st.global.f64 [%rd3+24], %fd5;
+    st.global.f64 [%rd3+32], %fd6;
+    st.global.f64 [%rd3+40], %fd7;
+    st.global.f64 [%rd3+48], %fd8;
+    st.global.f64 [%rd3+56], %fd9;
+    st.global.f64 [%rd3+64], %fd10;
+    ret;
+}

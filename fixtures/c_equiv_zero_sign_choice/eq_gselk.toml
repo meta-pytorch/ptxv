@@ -1,0 +1,14 @@
+# MISS 135 (gen.py): out[i] = a + b, then k where a > 0 (a guarded store)
+# against (a + b, then k where a > 0) + (+0).
+# The candidate is the reference plus +0, but the choice can be k, a NaN payload,
+# whose non-finite polynomial coefficient refuses every level: none (unproven).
+max_states = 200000
+segments = true
+reference = { case = "gselk_ref", variant = "good", front = "sass", certify = true }
+
+[[candidates]]
+case = "gselk_cand"
+variant = "good"
+front = "sass"
+certify = true
+expect = "none (unproven)"

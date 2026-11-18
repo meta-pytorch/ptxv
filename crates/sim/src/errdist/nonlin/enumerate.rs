@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 
 use super::super::chain::Op;
 use super::super::chain::Prog;
+use super::super::mc::NonfiniteRef;
 use super::super::mc::U;
+use super::super::mc::nonfinite_outcome;
 use super::super::mc::round_out;
 use super::super::mc::ulp_out;
 use super::super::report::ErrorBar;
@@ -149,10 +151,11 @@ pub fn sub_prog_cut(p: &Prog, root: u32, stops: &[u32]) -> (Prog, Vec<u32>, Vec<
                     neg: *neg,
                     abs: *abs,
                 },
-                NlOp::Max { a, b, min } => NlOp::Max {
+                NlOp::Max { a, b, min, kind } => NlOp::Max {
                     a: m(a),
                     b: m(b),
                     min: *min,
+                    kind: *kind,
                 },
                 NlOp::Sel {
                     pred,
@@ -529,11 +532,26 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
     // MISS 57: probability where the exact value is unknown (a slice outside the decision
     // patterns its identification probed, `real::Table`).
     let mut outside = 0.0;
+    // MISS 66 / 88: probability without a determined outcome, left out of P(differ): a single
+    // kernel's where the exact value is not determined (non-finite in the exact arithmetic, or
+    // a slice without an identified real function above it), a pair's where both give NaN.
+    let mut undet = 0.0;
     // A pair's mass there: its P(differ) compares C with R bit for bit and needs no exact
     // value, so it is counted (as Tier 3 counts it, N-ERRDIST-IDENT); the moments, which
-    // take the exact output's ulp, leave it out. (mass, differing mass, sum of squares)
-    let (mut pair_out, mut pair_pd, mut pair_p2) = (0.0, 0.0, 0.0);
-    // Mass whose PMF key is off the output-ulp lattice (pairs only: C - R across binades).
+    // take the exact output's ulp, leave it out. Likewise where the exact value is not
+    // determined (`pair_noexact`). (mass, differing mass, sum of squares) over both, and each
+    // one's mass.
+    let (mut pair_mass, mut pair_pd, mut pair_p2) = (0.0, 0.0, 0.0);
+    let (mut pair_out, mut pair_noexact) = (0.0, 0.0);
+    // N-ERRDIST-NONFINITE (MISS 66): mass with a NaN / Inf output compared in P(differ) (as
+    // Tier 3, `mc::nonfinite_outcome`), and the part that differs; its error is outside the
+    // moments. Until 2026-11-11 it was skipped, and the law's P(differ) was conditional on
+    // finite outputs.
+    let (mut nf_mass, mut nf_pd) = (0.0, 0.0);
+    // Compared mass whose outputs are finite: none, no estimate (MISS 64).
+    let mut fin = 0.0;
+    // Mass whose PMF key is off the output-ulp lattice (pairs only: C - R across binades; a
+    // NaN / Inf output that differs).
     let mut off_lattice = 0.0;
     let mut wr = vec![crate::mma_lp::Operand::from_value(0.0); sr.ops.len()];
     let mut wc = sc
@@ -569,38 +587,9 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
         let rv = wr[sr.ops.len() - 1].v as f32 as f64;
         let real = super::real::eval_table(&sr, &wr);
         let root = sr.ops.len() - 1;
-        if real.outside[root] {
-            match (&sc, wc.as_mut()) {
-                (Some((spc, map, rest)), Some(w)) => {
-                    for &l in rest {
-                        w[l as usize] = crate::mma_lp::Operand::from_value(xs[0]);
-                    }
-                    for (k, &l) in map.iter().enumerate() {
-                        w[l as usize] = crate::mma_lp::Operand::from_value(xs[k]);
-                    }
-                    spc.eval_into(w);
-                    let cv = w[spc.ops.len() - 1].v as f32 as f64;
-                    if !cv.is_finite() || !rv.is_finite() {
-                        skipped += p;
-                    } else {
-                        pair_out += p;
-                        pair_p2 += p * p;
-                        pair_pd +=
-                            p * ((cv as f32).to_bits() != (rv as f32).to_bits()) as u8 as f64;
-                    }
-                }
-                _ => outside += p,
-            }
-            continue;
-        }
-        let ex = super::real::exact_of(&real.v, root as u32);
-        if !ex.y.is_finite() || !rv.is_finite() || ex.s == 0.0 {
-            skipped += p;
-            continue;
-        }
-        let ul = ulp_out(ex.y, ofmt);
-        let us = U * ex.s;
-        let (e, differ, kref) = match (&sc, wc.as_mut()) {
+        // A pair: C at the same leaves (its other leaves at the first leaf's value, which
+        // `independent` checked does not change the output).
+        let cv = match (&sc, wc.as_mut()) {
             (Some((spc, map, rest)), Some(w)) => {
                 for &l in rest {
                     w[l as usize] = crate::mma_lp::Operand::from_value(xs[0]);
@@ -609,18 +598,100 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
                     w[l as usize] = crate::mma_lp::Operand::from_value(xs[k]);
                 }
                 spc.eval_into(w);
-                let cv = w[spc.ops.len() - 1].v as f32 as f64;
-                if !cv.is_finite() {
-                    skipped += p;
-                    continue;
-                }
-                (
-                    cv - rv,
-                    (cv as f32).to_bits() != (rv as f32).to_bits(),
-                    None,
-                )
+                Some(w[spc.ops.len() - 1].v as f32 as f64)
             }
-            _ => {
+            _ => None,
+        };
+        let bits_differ = |c: f64| ((c as f32).to_bits() != (rv as f32).to_bits()) as u8 as f64;
+        // A pair's NaN / Inf output: C against R (None: NaN in both, the bits not modeled).
+        let pair_nf = cv
+            .filter(|c| !c.is_finite() || !rv.is_finite())
+            .map(|c| nonfinite_outcome(c as f32, NonfiniteRef::Pair(rv as f32)));
+        if real.outside[root] {
+            match (cv, pair_nf) {
+                (Some(_), Some(None)) => undet += p,
+                (Some(c), nf) => {
+                    let d = match nf {
+                        Some(Some(d)) => {
+                            nf_mass += p;
+                            nf_pd += p * d as u8 as f64;
+                            d as u8 as f64
+                        }
+                        _ => {
+                            fin += p;
+                            bits_differ(c)
+                        }
+                    };
+                    pair_mass += p;
+                    pair_p2 += p * p;
+                    pair_pd += p * d;
+                    pair_out += p;
+                }
+                (None, _) => outside += p,
+            }
+            continue;
+        }
+        let ex = super::real::exact_of(&real.v, root as u32);
+        // NaN / Inf outputs (N-ERRDIST-NONFINITE): a pair's C against R; a single kernel's
+        // against RN of the finite exact value.
+        let nf = match pair_nf {
+            Some(o) => Some(o),
+            None if !rv.is_finite() && ex.y.is_finite() && ex.s.is_finite() => {
+                Some(nonfinite_outcome(
+                    rv as f32,
+                    NonfiniteRef::Exact(round_out(ex.y, ex.y_lo, ofmt)),
+                ))
+            }
+            None => None,
+        };
+        match nf {
+            Some(Some(d)) => {
+                tot += p;
+                sum_p2 += p * p;
+                pd += p * d as u8 as f64;
+                nf_mass += p;
+                nf_pd += p * d as u8 as f64;
+                if d {
+                    off_lattice += p;
+                } else {
+                    *pmf.entry(0).or_default() += p;
+                }
+                continue;
+            }
+            Some(None) => {
+                undet += p;
+                continue;
+            }
+            None => {}
+        }
+        if !ex.y.is_finite() || !ex.s.is_finite() {
+            // The exact value is not determined: a pair compares C with R without it (both
+            // finite here), its moments left out.
+            match cv {
+                Some(c) => {
+                    pair_mass += p;
+                    pair_p2 += p * p;
+                    pair_pd += p * bits_differ(c);
+                    pair_noexact += p;
+                    fin += p;
+                }
+                None => undet += p,
+            }
+            continue;
+        }
+        if ex.s == 0.0 {
+            skipped += p;
+            continue;
+        }
+        let ul = ulp_out(ex.y, ofmt);
+        let us = U * ex.s;
+        let (e, differ, kref) = match cv {
+            Some(cv) => (
+                cv - rv,
+                (cv as f32).to_bits() != (rv as f32).to_bits(),
+                None,
+            ),
+            None => {
                 let rn = round_out(ex.y, ex.y_lo, ofmt);
                 // The pmf_ulp axis of a single kernel, as Tier 3's: output - RN(y), in output
                 // ulps. Keyed by the error against y itself, only tuples whose output error was
@@ -632,6 +703,7 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
                 )
             }
         };
+        fin += p;
         tot += p;
         sum_p2 += p * p;
         pd += p * differ as u8 as f64;
@@ -651,10 +723,12 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
             "every element value takes decisions inside an instruction slice that its identification never probed (MISS 57)".into(),
         ));
     }
-    if tot == 0.0 {
-        return Some(Err("no finite output".into()));
+    if fin == 0.0 {
+        return Some(Err(
+            "no finite output compared: every element value gives a NaN / Inf output, has no determined exact value or no nonzero term (MISS 64)".into(),
+        ));
     }
-    let n_eff = (tot + pair_out).powi(2) / (sum_p2 + pair_p2).max(1e-300);
+    let n_eff = (tot + pair_mass).powi(2) / (sum_p2 + pair_p2).max(1e-300);
     let mut eb = ErrorBar {
         kind: if exact { "exact" } else { "quadrature" }.into(),
         notes: vec![format!(
@@ -675,7 +749,17 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
     if skipped > 0.0 {
         eb.model_mass = Some(skipped);
         eb.notes.push(format!(
-            "{skipped:.3e} probability with a non-finite value (out of domain)"
+            "{skipped:.3e} probability without a nonzero term (out of domain)"
+        ));
+    }
+    if nf_mass > 0.0 {
+        eb.notes.push(format!(
+            "{nf_mass:.3e} probability with a NaN / Inf output: compared in P(differ) ({nf_pd:.3e} of it differs), outside the moments (N-ERRDIST-NONFINITE)"
+        ));
+    }
+    if pair_noexact > 0.0 {
+        eb.notes.push(format!(
+            "{pair_noexact:.3e} probability has no determined exact value: counted in P(differ) (a pair compares C with R), left out of the moments"
         ));
     }
     if pair_out > 0.0 {
@@ -683,23 +767,36 @@ pub fn elementwise(r: &Prog, c: Option<&Prog>, spec: &Spec) -> Option<Result<Est
             "{pair_out:.3e} probability takes decisions inside an instruction slice that its identification never probed: counted in P(differ) (a pair compares C with R and needs no exact value), left out of the moments"
         ));
     }
-    let p = (pd + pair_pd) / (tot + pair_out);
+    let p = (pd + pair_pd) / (tot + pair_mass);
     // MISS 57: the unknown share moves P(differ) by at most itself; the estimate stands only
     // while that is within 10% of P (the resolution every analytic estimate needs), and a
-    // Tier 0 claims an exact value it then does not have.
-    let q = outside / (tot + pair_out + outside);
+    // Tier 0 claims an exact value it then does not have. MISS 66 / 88: so does the share
+    // without a determined outcome (until 2026-11-11 skipped, a P(differ) conditional on the
+    // rest).
+    let all = tot + pair_mass + outside + undet;
+    let (q_out, q_un) = (outside / all, undet / all);
+    let q = q_out + q_un;
+    let ok = !exact && q <= 0.1 * p;
     let mut applicability = vec![];
     let mut applicable = None;
+    let need = if exact {
+        "; an exact value needs none"
+    } else {
+        " (with the rest left out, needs <= 10% of P)"
+    };
+    let verdict = if ok { "ok" } else { "FAILS" };
     if outside > 0.0 {
-        let ok = !exact && q <= 0.1 * p;
         applicability.push(format!(
-            "{q:.3e} of the law takes decisions inside an instruction slice that its identification never probed (exact value unknown, MISS 57): left out, the P(differ) interval widened by it{} {}",
-            if exact { "; an exact value needs none" } else { " (needs <= 10% of P)" },
-            if ok { "ok" } else { "FAILS" }
+            "{q_out:.3e} of the law takes decisions inside an instruction slice that its identification never probed (exact value unknown, MISS 57): left out, the P(differ) interval widened by it{need} {verdict}"
         ));
-        if !ok {
-            applicable = Some(false);
-        }
+    }
+    if undet > 0.0 {
+        applicability.push(format!(
+            "{q_un:.3e} of the law has no determined outcome (no determined exact value, or NaN in both kernels; MISS 66): left out, the P(differ) interval widened by it{need} {verdict}"
+        ));
+    }
+    if (outside > 0.0 || undet > 0.0) && !ok {
+        applicable = Some(false);
     }
     // Latin hypercube: at most the binomial spread of as many independent draws.
     let half = if lhs.is_some() {

@@ -155,7 +155,23 @@ impl Model {
 /// reading (the grids may run at the same time; E-LAUNCH-ORDER); an earlier model may hold a
 /// run of the case's own order, or of E-PDL's order of an unknown one, under the same key. The
 /// key covers the reading of an unknown order since (`case_key`).
-pub(crate) const MODEL_VERSION: u32 = 12;
+/// 13 to 15: not used by this tree (builds of other branches compiled models under them).
+/// 16: a compiled model holds each atomic add's flush flag (`chain::Op::Add::ftz`), which an
+/// fp32 atomic add in shared memory now clears (it keeps subnormals, MISS 142); a model
+/// compiled earlier holds the flag set for those adds too.
+/// 17: not used by this tree (builds of another branch compiled models under it).
+/// 18: an identified slice function reads every argument the slice depends on and has exact
+/// constants (MISS 138); identified slice functions carry the forms the probes cannot tell
+/// apart (`ident::RealFn::alts`), and a slice of FP adds, multiplies and FMAs takes polynomial
+/// forms only (MISS 147). An earlier model may hold a form that leaves out a term, or one with
+/// fitted constants, as the exact reference, and holds one form, used beyond its probes.
+/// 19: a compiled model's maxima carry their kind (`NlOp::Max::kind`: FMNMX, FMNMX.NAN, or a
+/// compare and select's mask; MISS 197, 202), which their evaluation and picks follow; a model
+/// compiled earlier evaluates every maximum as FMNMX.
+/// 20 to 25: not used by this tree (builds of other branches compiled models under them).
+/// 26: compiled with upstream's maximum slice form (ident::Func::Max) and its slice and moment
+/// changes, merged with int7's v19 rules.
+pub(crate) const MODEL_VERSION: u32 = 26;
 
 /// FNV-1a over the case files: every regular file of each case directory (sorted), the
 /// equiv.toml, the candidate index, the ptxv version and the reading of an unknown launch order
@@ -852,66 +868,20 @@ pub fn cmd(a: &Args) -> Result<()> {
             if p.is_nan() || p < 0.0 || rel.is_nan() {
                 break;
             }
-            // First to XCHECK_REL within the budget, then on to XCHECK_FINE while cheap. At P 0
-            // no input differed, and the interval [0, hi] counts inputs (`mc::p_interval`:
-            // about 3.69 / n at 95%), so Tier 3 takes the whole budget. Until MISS 120 it
-            // stopped at 300 inputs there with [0, 3.69 / outputs], which takes an input's
-            // outputs as independent: on the review's probe whose 512 outputs per input differ
-            // together (P 2.1e-3) 22 of 40 default runs reported 0 [0, 2.5e-5]. Where it
-            // compared nothing (every output out of domain) more inputs cannot narrow [0, 1]:
-            // kernel_db's all-NaN runs took up to 206 s for it. Such a Tier 3 is refused
-            // (`refuse_no_compared`, MISS 64).
-            let (mut want, mut bud) = if p == 0.0 && obs.compared > 0 {
-                (f64::INFINITY, budget)
-            } else if p == 0.0 || rel <= XCHECK_FINE {
-                (0.0, 0.0)
-            } else if rel > XCHECK_REL {
-                let w = (n as f64 * ((rel / XCHECK_REL).powi(2) * 1.2 - 1.0)).ceil();
-                (w, budget)
-            } else {
-                let w = (n as f64 * ((rel / XCHECK_FINE).powi(2) * 1.2 - 1.0)).ceil();
-                (w, budget.min(XCHECK_FINE_SECONDS))
+            let Some((extra, for_flips)) = grow_step(&GrowAt {
+                n,
+                per,
+                cap,
+                budget,
+                p,
+                rel,
+                compared: obs.compared > obs.nonfinite_cmp,
+                unknown: (partial > 0).then_some((obs.ident_off_inputs, obs.inputs)),
+                flips: (flippable.0 + flippable.1 > 0)
+                    .then_some((obs.flip_inputs, obs.flip_checked)),
+            }) else {
+                break;
             };
-            // MISS 57: the share of inputs whose exact value is unknown (a slice outside the
-            // decision patterns its identification probed): its bound, at FLIP_GROW of the
-            // gate's margin, when the whole budget reaches it at the observed share.
-            if partial > 0 && p > 0.0 {
-                let target = FLIP_GROW * EST_MAX_REL * p;
-                let all = ((budget * T3_WORK_PER_SECOND - n as f64 * per) / per)
-                    .floor()
-                    .min(cap.saturating_sub(n) as f64);
-                if let Some(m) = flip_inputs(obs.ident_off_inputs, obs.inputs, target, cap) {
-                    let need = m.saturating_sub(obs.inputs) as f64;
-                    let w = need.max((0.25 * n as f64).ceil());
-                    if need > 0.0 && need <= all && w > want {
-                        (want, bud) = (w, budget);
-                    }
-                }
-            }
-            // The flip bound, at FLIP_GROW of the gate's margin, when the whole budget reaches
-            // it at the observed share: inputs that cannot rescue the gate are not run.
-            let mut for_flips = false;
-            if flippable.0 + flippable.1 > 0 && p > 0.0 {
-                let target = FLIP_GROW * EST_MAX_REL * p;
-                let all = ((budget * T3_WORK_PER_SECOND - n as f64 * per) / per)
-                    .floor()
-                    .min(cap.saturating_sub(n) as f64);
-                if let Some(m) = flip_inputs(obs.flip_inputs, obs.flip_checked, target, cap) {
-                    let need = m.saturating_sub(obs.flip_checked) as f64;
-                    let w = need.max((0.25 * n as f64).ceil());
-                    if need > 0.0 && need <= all && w > want {
-                        (want, bud, for_flips) = (w, budget, true);
-                    }
-                }
-            }
-            if want <= 0.0 {
-                break;
-            }
-            let room = ((bud * T3_WORK_PER_SECOND - n as f64 * per) / per).floor();
-            let extra = want.min(room).min(cap.saturating_sub(n) as f64);
-            if extra < 0.25 * n as f64 {
-                break;
-            }
             let el = t0.elapsed().as_secs_f64();
             if el > timeout {
                 return Err(anyhow!(
@@ -919,11 +889,10 @@ pub fn cmd(a: &Args) -> Result<()> {
                      {timeout:.0} s); --mc N fixes the input count"
                 ));
             }
-            let more =
-                ptxv_sim::errdist::mc::run(&st, &spec, &ls, &mc_cfg(extra as usize, n as u64))
-                    .map_err(|e| anyhow!(e))?;
+            let more = ptxv_sim::errdist::mc::run(&st, &spec, &ls, &mc_cfg(extra, n as u64))
+                .map_err(|e| anyhow!(e))?;
             obs.merge(more);
-            n += extra as usize;
+            n += extra;
             flip_grew |= for_flips;
         }
         if obs.differ == 0 && n > MC_DEFAULT {
@@ -964,23 +933,62 @@ pub fn cmd(a: &Args) -> Result<()> {
             );
         }
     }
+    // Tier 3's interval and the one-sided bounds that widen it (U, q) share the 5% (union
+    // bound, `mc::level_share`).
+    let lv = ptxv_sim::errdist::mc::level_share(
+        0.05,
+        (partial > 0) as usize + (obs.left() > 0) as usize,
+    );
     // Never report where the exact reference is unknown on more than a sliver of the inputs
     // (MISS 57); otherwise the estimates' intervals widen by that sliver's bound.
-    let unknown = unknown_exact_gate(&obs, partial > 0)?;
+    let unknown = unknown_exact_gate(&obs, partial > 0, lv)?;
     let mut est = ptxv_sim::errdist::mc::estimate(
         &obs,
         3,
         "Monte Carlo through the numerics DAG",
         model.r.out_fmt,
     );
+    if let (Some((p, _, _)), true) = (est.p_differ, lv < 0.05) {
+        let (lo, hi) = ptxv_sim::errdist::mc::p_interval(&obs, lv);
+        est.p_differ = Some((p, lo, hi));
+        let bounds = if (partial > 0) && obs.left() > 0 {
+            "two bounds that widen"
+        } else {
+            "bound that widens"
+        };
+        est.applicability.push(format!(
+            "P(differ) interval at {:.2}%, so that with the {bounds} it the interval holds at 95% (union bound; MISS 66)",
+            100.0 * (1.0 - lv),
+        ));
+    }
     est.seconds = t0.elapsed().as_secs_f64();
     // At 0 inputs outside as well: a share up to U is unseen in Tier 3's sample, and its
     // exact value is unknown (until 2026-11-11 only a sample with inputs outside widened).
     if let Some(u) = unknown {
-        widen_unknown(&mut est, u);
+        widen_unknown(&mut est, u, lv);
     }
     if n > 0 {
-        refuse_no_compared(&mut est, &obs);
+        // The slices whose outputs have no exact value, named in the refusal (the fifth
+        // review's rE_fs4 cited MISS 64 alone).
+        let slices: Vec<String> = model
+            .idents
+            .iter()
+            .flat_map(|m| m.values())
+            .filter_map(|i| match &i.result {
+                Err(_) => Some(format!("@{} (not identified)", i.pc)),
+                Ok(f) if !f.alts.is_empty() => {
+                    Some(format!("@{} (forms the probes cannot tell apart)", i.pc))
+                }
+                Ok(_) => None,
+            })
+            .collect();
+        refuse_no_compared(&mut est, &obs, &slices);
+    }
+    // MISS 66: outputs left out of P(differ) widen its interval (Tier 3's P is over the
+    // compared outputs).
+    let left = ptxv_sim::errdist::mc::left_share(&obs, 2.0 * lv);
+    if let Some((_, _, q)) = left {
+        widen_left(&mut est, q, lv);
     }
     let mut rep = ptxv_sim::errdist::report::Report {
         version: ptxv_sim::errdist::report::REPORT_VERSION,
@@ -1010,9 +1018,9 @@ pub fn cmd(a: &Args) -> Result<()> {
             obs.inputs,
             obs.ident_off,
             if obs.ident_off_inputs > 0 {
-                format!("those outputs are left out, and the P(differ) intervals widened by the share's 95% bound {u:.2e}")
+                format!("those outputs are left out, and the P(differ) intervals widened by the share's bound {u:.2e} ({:.2}% one-sided)", 100.0 * (1.0 - lv))
             } else {
-                format!("the P(differ) intervals (Tier 3's too: its sample saw none, a share up to the bound is unseen) widened by the share's 95% bound {u:.2e}")
+                format!("the P(differ) intervals (Tier 3's too: its sample saw none, a share up to the bound is unseen) widened by the share's bound {u:.2e} ({:.2}% one-sided)", 100.0 * (1.0 - lv))
             }
         ));
     } else if obs.ident_off > 0 {
@@ -1117,20 +1125,16 @@ pub fn cmd(a: &Args) -> Result<()> {
                 .to_string(),
         );
     }
-    if obs.nonfinite > 0 {
-        rep.notes.push(format!(
-            "{} of {} outputs ({:.3e}) are NaN / Inf in Tier 3 ({} of {} inputs): out of domain, outside the error statistics",
-            obs.nonfinite,
-            obs.seen,
-            obs.nonfinite as f64 / obs.seen.max(1) as f64,
-            obs.nonfinite_inputs,
-            obs.inputs
-        ));
-    }
-    if n > 0 && obs.compared == 0 {
-        rep.notes.push(
-            "TIER 3 COMPARED NO OUTPUTS: every output is non-finite, untracked or has no nonzero term; its P(differ) says nothing".into(),
-        );
+    rep.notes.extend(nonfinite_notes(&obs, pair, lv));
+    if n > 0 && obs.compared == obs.nonfinite_cmp {
+        rep.notes.push(if obs.nonfinite_differ > 0 {
+            format!(
+                "TIER 3 COMPARED NO FINITE OUTPUT: every compared output is NaN / Inf, {} of them unlike their reference, so its P(differ) counts overflows or invalid operations, not rounding (MISS 64)",
+                obs.nonfinite_differ
+            )
+        } else {
+            "TIER 3 COMPARED NO FINITE OUTPUT: every output is NaN / Inf and equal to its reference, left out of P(differ), untracked or has no nonzero term; its P(differ) says nothing about rounding".into()
+        });
     }
     rep.worst_case = model.worst.clone().map(|mut w| {
         if st.wc.is_some() && obs.wc_checked > 0 {
@@ -1181,7 +1185,7 @@ pub fn cmd(a: &Args) -> Result<()> {
         }
         let mut val =
             ptxv_sim::errdist::validate::against_sample("sim", "tier 3", &obs, &v.obs, v.mismatch);
-        flag_nonfinite(&mut val, &obs, &v.obs);
+        flag_nonfinite(&mut val, &obs, &v.obs, true, lv);
         val.notes
             .push(format!("{:.1}s", t1.elapsed().as_secs_f64()));
         rep.validation.push(val);
@@ -1208,7 +1212,7 @@ pub fn cmd(a: &Args) -> Result<()> {
                     v.mismatch - v.atomic_mismatch,
                 );
                 val.dag_mismatch = v.mismatch;
-                flag_nonfinite(&mut val, &obs, &v.obs);
+                flag_nonfinite(&mut val, &obs, &v.obs, true, lv);
                 if v.atomic_mismatch > 0 {
                     val.notes.push(format!(
                         "{} differing outputs are fed by fp32 atomic adds, which GB300 adds in its own order (N-ERRDIST-DAG): not compared bit for bit",
@@ -1324,17 +1328,28 @@ pub fn cmd(a: &Args) -> Result<()> {
     // P(differ) interval widens by B, and the estimate stands only while B is within
     // EST_MAX_REL of P (the estimate-resolution rule). Selections and maxima whose decision inputs are exact
     // decide alike on every input and need no bound (`Prog::flippable`).
-    // MISS 57: the linearized tiers use the identified functions everywhere; the 95% bound of
-    // Tier 3's share of inputs outside their decision patterns (at 0 of n too, as the flip
-    // bound) bounds how far that moves them. (The elementwise law measures its own share,
-    // `enumerate::elementwise`.)
+    // MISS 57: the linearized tiers use the identified functions everywhere; the bound U of
+    // Tier 3's share of inputs outside their decision patterns (`unknown_exact_gate`, at 0 of
+    // n too, as the flip bound) bounds how far that moves them. (The elementwise law measures
+    // its own share, `enumerate::elementwise`.)
     if let Some(u) = unknown {
         for e in rep
             .estimates
             .iter_mut()
             .filter(|e| (e.tier == 1 || e.tier == 2) && !e.method.starts_with("elementwise"))
         {
-            widen_unknown(e, u);
+            widen_unknown(e, u, lv);
+        }
+    }
+    // MISS 66: the analytic tiers do not see the outputs Tier 3 left out (the elementwise law
+    // measures its own share, `enumerate::elementwise`).
+    if let Some((_, _, q)) = left {
+        for e in rep
+            .estimates
+            .iter_mut()
+            .filter(|e| e.tier < 3 && !e.method.starts_with("elementwise"))
+        {
+            widen_left(e, q, lv);
         }
     }
     if flippable.0 + flippable.1 > 0 {
@@ -1488,6 +1503,7 @@ pub fn cmd(a: &Args) -> Result<()> {
             "TIER 3 CROSS-CHECK FAILS: {d}; the headline falls back to tier 3"
         ));
     }
+    refuse_analytic_nonfinite(&mut rep, &obs);
     // Tier 0 claims the exact value, and Tier 3 samples the same DAG bit for bit: a Tier 0
     // outside Tier 3's 99.9% interval (batch means over inputs) is wrong, and is refused. Until
     // 2026-11-10 nothing compared them, and a definition error in Tier 0's f32 P(differ) stood
@@ -1537,7 +1553,13 @@ pub fn cmd(a: &Args) -> Result<()> {
                 v.mismatch - v.atomic_mismatch,
             );
             x.dag_mismatch = v.mismatch;
-            flag_nonfinite(&mut x, &obs, &v.obs);
+            flag_nonfinite(
+                &mut x,
+                &obs,
+                &v.obs,
+                e.method.starts_with("elementwise"),
+                lv,
+            );
             if let Some(g) = gpu {
                 x.notes.push(format!("GPU {g}"));
             }
@@ -1600,6 +1622,10 @@ pub fn cmd(a: &Args) -> Result<()> {
     ];
     if spec.has_input_errors() {
         rep.assumptions.push("N-ERRDIST-INERR".into());
+    }
+    // Tier 3 met outputs with a NaN / Inf value: how they count rests on it.
+    if obs.nonfinite_cmp + obs.left() + obs.noexact_pair > 0 {
+        rep.assumptions.push("N-ERRDIST-NONFINITE".into());
     }
     // Selections rest on it, and so do maxima under the flip gate.
     if st.r.selections() + st.c.map_or(0, |c| c.selections()) > 0 || flippable.1 > 0 {
@@ -1712,52 +1738,220 @@ pub(crate) fn headline(es: &[ptxv_sim::errdist::report::Estimate]) -> Option<usi
         .or_else(|| es.iter().position(|e| e.tier == 3 && stands(e)))
 }
 
-/// MISS 64: a Tier 3 that compared no output (every output out of the domain, untracked or
+/// MISS 64: a Tier 3 that compared no output (every output left out of P(differ), untracked or
 /// without a nonzero term) has the interval [0, 1] at any input count and a point that says
 /// nothing: it is refused, and it cross-checks no analytic estimate. Until 2026-11-11 it was
 /// the headline, P(differ) 0 over [0, 1] (the f16 exp kernel at x ~ N(1000, 1), where every
-/// output and its exact value overflow).
+/// output and its exact value overflow). So is a Tier 3 whose compared outputs are all NaN /
+/// Inf (N-ERRDIST-NONFINITE): it saw no rounding, only overflows or invalid operations
+/// (P(output NaN / Inf) reports them), and a case where every output is NaN / Inf does not
+/// report P(differ) 0 (row sums that overflow to +Inf, as RN of their exact values does).
+/// One whose NaN / Inf outputs differ from their reference stands (MISS 64's follow-up, the
+/// fifth review): its P(differ) counts overflows or invalid operations the exact values do not
+/// have (y = RN(2 + B x) through x 2^100 at x in [2^28, 2^29): Tier 3 1.0 [0.9855, 1], GB300
+/// 12800 of 12800 outputs differ), not a P 0 that rests on equal infinities alone.
 fn refuse_no_compared(
     e: &mut ptxv_sim::errdist::report::Estimate,
     obs: &ptxv_sim::errdist::mc::Obs,
+    slices: &[String],
 ) {
-    if obs.compared > 0 {
+    if obs.compared > obs.nonfinite_cmp || obs.nonfinite_differ > 0 {
         return;
     }
+    // `slices`: those without an exact value somewhere (MISS 88, 147), named where outputs
+    // rest on them.
+    let why = match obs.unidentified + obs.ambiguous {
+        0 => String::new(),
+        k if slices.is_empty() => {
+            format!("; {k} outputs rest on an instruction slice without an exact value")
+        }
+        k => format!(
+            "; {k} outputs rest on instruction slice {} without an exact value (MISS 88, MISS 147)",
+            slices.join(", ")
+        ),
+    };
     e.applicable = Some(false);
-    e.applicability.push(format!(
-        "Tier 3 compared no output over {} inputs (every output out of the domain, untracked or without a nonzero term): its P(differ) says nothing (MISS 64); no estimate FAILS",
-        obs.inputs
-    ));
+    e.applicability.push(if obs.compared == 0 {
+        format!(
+            "Tier 3 compared no output over {} inputs (every output left out of P(differ), untracked or without a nonzero term{why}): its P(differ) says nothing (MISS 64); no estimate FAILS",
+            obs.inputs
+        )
+    } else {
+        format!(
+            "Tier 3 compared no finite output over {} inputs: its {} compared outputs are all NaN / Inf and equal to their reference, so its P(differ) 0 rests on equal infinities alone and says nothing about rounding (MISS 64); no estimate FAILS",
+            obs.inputs, obs.compared
+        )
+    });
 }
 
-/// NaN / Inf outputs in a validation run: noted with Tier 3's rate; the validation fails when
-/// the observed run has them and Tier 3 (the model) has none, or none of the observed
-/// outputs could be compared.
+/// Tier 3's notes on outputs with a NaN / Inf value (N-ERRDIST-NONFINITE): those compared in
+/// P(differ), a pair's compared without a determined exact value, and those left out (the
+/// exact value not determined; a pair's NaN in both kernels).
+pub(crate) fn nonfinite_notes(
+    obs: &ptxv_sim::errdist::mc::Obs,
+    pair: bool,
+    lv: f64,
+) -> Vec<String> {
+    let frac = |k: u64| k as f64 / obs.seen.max(1) as f64;
+    let mut out = vec![];
+    if obs.nonfinite_cmp > 0 {
+        out.push(format!(
+            "{} of {} outputs ({:.3e}) are NaN / Inf in Tier 3 and compared in P(differ) ({} differ; {}): outside the error moments (N-ERRDIST-NONFINITE)",
+            obs.nonfinite_cmp,
+            obs.seen,
+            frac(obs.nonfinite_cmp),
+            obs.nonfinite_differ,
+            if pair {
+                "C against R"
+            } else {
+                "against RN of the finite exact value"
+            }
+        ));
+    }
+    if obs.noexact_pair > 0 {
+        out.push(format!(
+            "{} of {} outputs ({:.3e}) have no determined exact value in Tier 3: compared C against R in P(differ), left out of the moments",
+            obs.noexact_pair,
+            obs.seen,
+            frac(obs.noexact_pair)
+        ));
+    }
+    if obs.nonfinite > 0 {
+        out.push(format!(
+            "{} of {} outputs ({:.3e}) have no determined exact value (non-finite in the exact arithmetic) in Tier 3 ({} of {} inputs): left out of P(differ), whose intervals are widened by their share (MISS 66)",
+            obs.nonfinite,
+            obs.seen,
+            frac(obs.nonfinite),
+            obs.nonfinite_inputs,
+            obs.inputs
+        ));
+    }
+    if obs.unidentified > 0 {
+        out.push(format!(
+            "{} of {} outputs ({:.3e}) have no exact value in Tier 3 (an instruction slice without an identified real function above them, MISS 88): left out of P(differ), whose intervals are widened by their share (MISS 66)",
+            obs.unidentified,
+            obs.seen,
+            frac(obs.unidentified)
+        ));
+    }
+    if obs.ambiguous > 0 {
+        out.push(format!(
+            "{} of {} outputs ({:.3e}) have no established exact value in Tier 3 (an identified instruction slice above them whose alternatives, forms that fit its probes as well, disagree there, MISS 147): left out of P(differ), whose intervals are widened by their share (MISS 66)",
+            obs.ambiguous,
+            obs.seen,
+            frac(obs.ambiguous)
+        ));
+    }
+    if obs.nan_pair > 0 {
+        out.push(format!(
+            "{} of {} outputs ({:.3e}) are NaN in both kernels in Tier 3: the bits of a NaN are not modeled; left out of P(differ), whose intervals are widened by their share (MISS 66)",
+            obs.nan_pair,
+            obs.seen,
+            frac(obs.nan_pair)
+        ));
+    }
+    if let Some((s, _, q)) = ptxv_sim::errdist::mc::left_share(obs, 2.0 * lv) {
+        out.push(format!(
+            "outputs left out of P(differ): {s:.3e} of the compared and left-out outputs, at most {q:.2e} ({:.2}% one-sided, inputs as the unit): every P(differ) interval is widened by it, and an estimate stands only while it is within 10% of its P (MISS 66)",
+            100.0 * (1.0 - lv)
+        ));
+    }
+    out
+}
+
+/// Tiers 1 and 2 other than the elementwise law are refused when Tier 3 compared a NaN / Inf
+/// output that differs (N-ERRDIST-NONFINITE): their laws model rounding errors, not an
+/// overflow or an invalid operation. The elementwise law compares such outputs itself.
+pub(crate) fn refuse_analytic_nonfinite(
+    rep: &mut ptxv_sim::errdist::report::Report,
+    obs: &ptxv_sim::errdist::mc::Obs,
+) {
+    if obs.nonfinite_differ == 0 {
+        return;
+    }
+    for e in rep
+        .estimates
+        .iter_mut()
+        .filter(|e| (e.tier == 1 || e.tier == 2) && !e.method.starts_with("elementwise"))
+    {
+        e.applicable = Some(false);
+        e.applicability.push(format!(
+            "Tier 3 has {} NaN / Inf outputs that differ from their reference (an overflow or an invalid operation); tier {} does not model them FAILS",
+            obs.nonfinite_differ, e.tier
+        ));
+    }
+}
+
+/// Outputs with a NaN / Inf value in a validation run (N-ERRDIST-NONFINITE). Those compared
+/// are noted beside Tier 3's; where some differ, the validation does not agree with an
+/// estimate that does not model them (`models`: false for tiers 0-2 other than the elementwise
+/// law), nor with Tier 3 where Tier 3 saw none that differ. Those left out (no determined exact
+/// value; a pair's NaN in both kernels) are noted; the validation does not agree where Tier 3
+/// has none, where the observed run compared no finite output and no NaN / Inf one that differs
+/// (equal infinities alone, as `refuse_no_compared`), or where the observed share's 95% interval
+/// lies above Tier 3's bound q on it (`lv`: q's share of the level).
 fn flag_nonfinite(
     v: &mut ptxv_sim::errdist::report::Validation,
     t3: &ptxv_sim::errdist::mc::Obs,
     o: &ptxv_sim::errdist::mc::Obs,
+    models: bool,
+    lv: f64,
 ) {
-    if o.nonfinite == 0 && o.compared > 0 {
+    if o.nonfinite_cmp > 0 {
+        v.notes.push(format!(
+            "NaN / Inf outputs compared in P(differ): observed {} of {} ({} differ), Tier 3 {} of {} ({} differ) (N-ERRDIST-NONFINITE)",
+            o.nonfinite_cmp,
+            o.seen,
+            o.nonfinite_differ,
+            t3.nonfinite_cmp,
+            t3.seen,
+            t3.nonfinite_differ
+        ));
+        if o.nonfinite_differ > 0 && (!models || t3.nonfinite_differ == 0) {
+            v.agree = false;
+            v.notes.push(format!(
+                "DISAGREE: the observed run has NaN / Inf outputs that differ from their reference, which {} does not model",
+                v.against
+            ));
+        }
+    }
+    let left = |x: &ptxv_sim::errdist::mc::Obs| x.left();
+    // Nothing compared but equal infinities (MISS 64; its follow-up: a run whose NaN / Inf
+    // outputs differ compared them, as Tier 3 does).
+    let vacuous = o.compared == o.nonfinite_cmp && o.nonfinite_differ == 0;
+    if left(o) == 0 && !vacuous {
         return;
     }
-    let fr = |x: &ptxv_sim::errdist::mc::Obs| x.nonfinite as f64 / x.seen.max(1) as f64;
+    let fr = |x: &ptxv_sim::errdist::mc::Obs| left(x) as f64 / x.seen.max(1) as f64;
     v.notes.push(format!(
-        "non-finite outputs (NaN / Inf): observed {} of {} ({:.3e}), Tier 3 {:.3e}; out of domain, outside the compared statistics",
-        o.nonfinite,
+        "outputs left out (no determined exact value, a slice without an identified real function or whose alternatives disagree, or NaN in both kernels): observed {} of {} ({:.3e}), Tier 3 {:.3e}; left out, not compared",
+        left(o),
         o.seen,
         fr(o),
         fr(t3)
     ));
-    if (o.nonfinite > 0 && t3.nonfinite == 0) || o.compared == 0 {
+    if (left(o) > 0 && left(t3) == 0) || vacuous {
         v.agree = false;
-        v.notes.push(if o.compared == 0 {
-            "DISAGREE: no observed output could be compared".to_string()
+        v.notes.push(if vacuous {
+            "DISAGREE: no finite observed output could be compared, nor one that differs"
+                .to_string()
         } else {
-            "DISAGREE: the observed run has NaN / Inf outputs the model does not account for"
+            "DISAGREE: the observed run has outputs left out that the model does not account for"
                 .to_string()
         });
+    }
+    // MISS 66 follow-up (the fifth review's D6): the observed share against Tier 3's bound q,
+    // which widens every P(differ) interval. Until then the share was printed only: the
+    // review's rE_lmix observed 2.241e-3 on 2000 GB300 inputs against q 2.88e-4, "agree".
+    use ptxv_sim::errdist::mc::left_share;
+    let shares = (left_share(t3, 2.0 * lv), left_share(o, 0.05));
+    if let (Some((_, _, q)), Some((so, slo, _))) = shares {
+        if slo > q {
+            v.agree = false;
+            v.notes.push(format!(
+                "DISAGREE: the observed share of outputs left out, {so:.3e} (lower end {slo:.3e} at 95%), is above Tier 3's bound on it, {q:.2e}, which widens the P(differ) intervals (MISS 66)"
+            ));
+        }
     }
 }
 
@@ -1852,8 +2046,9 @@ fn flip_gate(
 /// (`mc::Obs::ident_off_inputs`, `nonlin::real::Table::outside`). The identified function is
 /// not the exact reference there, and single mode leaves those outputs out. `partial`: the
 /// run needs exact values (single mode) and its program has such slices
-/// (`Prog::partial_slices`); None otherwise. Else the share of inputs outside, at its 95%
-/// upper bound U (1 without Tier 3 inputs), moves P(differ) by at most U: refuse when inputs
+/// (`Prog::partial_slices`); None otherwise. Else the share of inputs outside, at its upper
+/// bound U at one-sided level 1 - `lv` (`mc::level_share`; 1 without Tier 3 inputs), moves
+/// P(differ) by at most U: refuse when inputs
 /// were left out and U exceeds EST_MAX_REL of Tier 3's P(differ) over the others (or nothing
 /// else was compared); else Some(U). Every estimate's interval widens by U (`widen_unknown`):
 /// the analytic tiers use the identified functions on every input, and Tier 3's sample, at 0
@@ -1863,19 +2058,21 @@ fn flip_gate(
 pub(crate) fn unknown_exact_gate(
     obs: &ptxv_sim::errdist::mc::Obs,
     partial: bool,
+    lv: f64,
 ) -> Result<Option<f64>> {
     if !partial {
         return Ok(None);
     }
     let (k, n) = (obs.ident_off_inputs, obs.inputs);
-    let (_, u) = ptxv_sim::errdist::special::clopper_pearson(k, n, 0.05);
+    let (_, u) = ptxv_sim::errdist::special::clopper_pearson(k, n, 2.0 * lv);
     let p = obs.differ as f64 / obs.compared.max(1) as f64;
     if k > 0 && (obs.compared == 0 || u > EST_MAX_REL * p) {
         let why = if obs.compared == 0 {
             "no other output has an exact reference".to_string()
         } else {
             format!(
-                "their share, at most {u:.2e} (95%), is more than {:.0}% of P(differ) {p:.3e} over the other outputs",
+                "their share, at most {u:.2e} ({:.2}% one-sided), is more than {:.0}% of P(differ) {p:.3e} over the other outputs",
+                100.0 * (1.0 - lv),
                 100.0 * EST_MAX_REL
             )
         };
@@ -1886,21 +2083,50 @@ pub(crate) fn unknown_exact_gate(
     Ok(Some(u))
 }
 
-/// Widen an estimate's P(differ) interval by U (`unknown_exact_gate`); an analytic estimate
-/// stands only while U is within EST_MAX_REL of its P.
-fn widen_unknown(e: &mut ptxv_sim::errdist::report::Estimate, u: f64) {
+/// Widen an estimate's P(differ) interval by U (`unknown_exact_gate`, one-sided level 1 - lv);
+/// an analytic estimate stands only while U is within EST_MAX_REL of its P.
+fn widen_unknown(e: &mut ptxv_sim::errdist::report::Estimate, u: f64, lv: f64) {
     let Some((p, lo, hi)) = e.p_differ else {
         return;
     };
     e.p_differ = Some((p, (lo - u).max(0.0), (hi + u).min(1.0)));
     let ok = e.tier == 3 || u <= EST_MAX_REL * p;
     e.applicability.push(format!(
-        "exact value unknown on a share of the inputs (an instruction slice outside its identification's decision patterns, MISS 57): at most {u:.2e} (95%), the P(differ) interval widened by it{} {}",
+        "exact value unknown on a share of the inputs (an instruction slice outside its identification's decision patterns, MISS 57): at most {u:.2e} ({:.2}% one-sided), the P(differ) interval widened by it{} {}",
+        100.0 * (1.0 - lv),
         if e.tier == 3 {
             String::new()
         } else {
             format!(" (needs <= {:.2e}: {:.0}% of P)", EST_MAX_REL * p, 100.0 * EST_MAX_REL)
         },
+        if ok { "ok" } else { "FAILS" }
+    ));
+    if !ok {
+        e.applicable = Some(false);
+    }
+}
+
+/// MISS 66: outputs left out of P(differ) for want of a determined outcome (`mc::Obs::left`:
+/// no determined exact value, a slice without an identified real function, a pair's NaN in
+/// both kernels) move P(differ) over every output by at most their share, at most q
+/// (`mc::left_share`). The estimate's interval widens by q, and it stands only while q is
+/// within EST_MAX_REL of its P: its P, Tier 3's included, is over the compared outputs. (MISS
+/// 57's unknown share takes the same rule and refuses the run.) q is one-sided at level 1 - lv:
+/// Tier 3's interval and its bounds share the 5% (`mc::level_share`); until MISS 66's follow-up
+/// each took 5% itself, about 92.5% for the widened interval. Until 2026-11-11 the outputs
+/// left out moved neither, with a note: a slice without an identified real function above 75%
+/// of a kernel database case's outputs left P(differ) 1.66e-5 over the other 25%.
+fn widen_left(e: &mut ptxv_sim::errdist::report::Estimate, q: f64, lv: f64) {
+    let Some((p, lo, hi)) = e.p_differ else {
+        return;
+    };
+    e.p_differ = Some((p, (lo - q).max(0.0), (hi + q).min(1.0)));
+    let ok = q <= EST_MAX_REL * p;
+    e.applicability.push(format!(
+        "outputs left out of P(differ) (no determined or established exact value, or NaN in both kernels; MISS 66): their share at most {q:.2e} ({:.2}% one-sided), the P(differ) interval widened by it (needs <= {:.2e}: {:.0}% of P) {}",
+        100.0 * (1.0 - lv),
+        EST_MAX_REL * p,
+        100.0 * EST_MAX_REL,
         if ok { "ok" } else { "FAILS" }
     ));
     if !ok {
@@ -1946,6 +2172,106 @@ fn flip_inputs(k: u64, n: u64, target: f64, cap: usize) -> Option<u64> {
     }
     Some(hi)
 }
+
+/// Where Tier 3's growth stands after one round (the default input count): `n` inputs taken,
+/// `per` the work of one input, at most `cap` inputs and `budget` seconds of work
+/// (PTXV_XCHECK_SECONDS); Tier 3's P(differ) `p` and its relative half-width `rel`; `compared`:
+/// a finite output was compared; `unknown`: MISS 57's inputs outside the probed decision
+/// patterns (k of n) where the program has such slices; `flips`: the inputs with a branch
+/// flip (k of n) where selections or maxima can flip.
+#[derive(Clone, Copy, Debug)]
+struct GrowAt {
+    n: usize,
+    per: f64,
+    cap: usize,
+    budget: f64,
+    p: f64,
+    rel: f64,
+    compared: bool,
+    unknown: Option<(u64, u64)>,
+    flips: Option<(u64, u64)>,
+}
+
+/// The next round of Tier 3's growth: the inputs to add and whether the flip bound asked for
+/// them, or None to stop. Three targets: the interval's resolution (XCHECK_REL within the
+/// budget, then XCHECK_FINE within XCHECK_FINE_SECONDS), MISS 57's share bound and the flip
+/// bound (each at FLIP_GROW of its gate's margin, within the whole budget, and only when the
+/// whole budget reaches it at the observed share). The largest wins, with its budget.
+fn grow_step(g: &GrowAt) -> Option<(usize, bool)> {
+    let GrowAt {
+        n,
+        per,
+        cap,
+        budget,
+        p,
+        rel,
+        compared,
+        unknown,
+        flips,
+    } = *g;
+    // First to XCHECK_REL within the budget, then on to XCHECK_FINE while cheap. At P 0 no
+    // input differed, and the interval [0, hi] counts inputs (`mc::p_interval`: about 4.38 / n
+    // at 95%), so Tier 3 takes the whole budget. Until MISS 120 it stopped at 300 inputs there
+    // with [0, 3.69 / outputs], which takes an input's outputs as independent: on the review's
+    // probe whose 512 outputs per input differ together (P 2.1e-3) 22 of 40 default runs
+    // reported 0 [0, 2.5e-5]. Where it compared nothing (every output out of domain) more
+    // inputs cannot narrow [0, 1]: kernel_db's all-NaN runs took up to 206 s for it. Such a
+    // Tier 3 is refused (`refuse_no_compared`, MISS 64), and so is one that compared only
+    // NaN / Inf outputs.
+    let (mut want, mut bud) = if p == 0.0 && compared {
+        (f64::INFINITY, budget)
+    } else if p == 0.0 || rel <= XCHECK_FINE {
+        (0.0, 0.0)
+    } else if rel > XCHECK_REL {
+        let w = (n as f64 * ((rel / XCHECK_REL).powi(2) * 1.2 - 1.0)).ceil();
+        (w, budget)
+    } else {
+        let w = (n as f64 * ((rel / XCHECK_FINE).powi(2) * 1.2 - 1.0)).ceil();
+        (w, budget.min(XCHECK_FINE_SECONDS))
+    };
+    // MISS 57: the share of inputs whose exact value is unknown (a slice outside the decision
+    // patterns its identification probed): its bound, at FLIP_GROW of the gate's margin, when
+    // the whole budget reaches it at the observed share.
+    if let (Some((k, m)), true) = (unknown, p > 0.0) {
+        let target = FLIP_GROW * EST_MAX_REL * p;
+        let all = ((budget * T3_WORK_PER_SECOND - n as f64 * per) / per)
+            .floor()
+            .min(cap.saturating_sub(n) as f64);
+        if let Some(t) = flip_inputs(k, m, target, cap) {
+            let need = t.saturating_sub(m) as f64;
+            let w = need.max((0.25 * n as f64).ceil());
+            if need > 0.0 && need <= all && w > want {
+                (want, bud) = (w, budget);
+            }
+        }
+    }
+    // The flip bound, at FLIP_GROW of the gate's margin, when the whole budget reaches it at
+    // the observed share: inputs that cannot rescue the gate are not run.
+    let mut for_flips = false;
+    if let (Some((k, m)), true) = (flips, p > 0.0) {
+        let target = FLIP_GROW * EST_MAX_REL * p;
+        let all = ((budget * T3_WORK_PER_SECOND - n as f64 * per) / per)
+            .floor()
+            .min(cap.saturating_sub(n) as f64);
+        if let Some(t) = flip_inputs(k, m, target, cap) {
+            let need = t.saturating_sub(m) as f64;
+            let w = need.max((0.25 * n as f64).ceil());
+            if need > 0.0 && need <= all && w > want {
+                (want, bud, for_flips) = (w, budget, true);
+            }
+        }
+    }
+    if want <= 0.0 {
+        return None;
+    }
+    let room = ((bud * T3_WORK_PER_SECOND - n as f64 * per) / per).floor();
+    let extra = want.min(room).min(cap.saturating_sub(n) as f64);
+    if extra < 0.25 * n as f64 {
+        return None;
+    }
+    Some((extra as usize, for_flips))
+}
+
 /// Beyond XCHECK_REL, Tier 3 keeps growing toward this resolution while it is cheap (within
 /// XCHECK_FINE_SECONDS): its own noise then no longer hides a few percent of bias.
 const XCHECK_FINE: f64 = 0.02;
@@ -2627,6 +2953,13 @@ fn importance(
     };
     let obs =
         ptxv_sim::errdist::mc::run(st, spec, ls, &cfg).map_err(|e| format!("sample_is: {e}"))?;
+    // MISS 66: likewise over the outputs with a determined outcome.
+    if obs.left() > 0 {
+        return Err(format!(
+            "{} outputs of the importance-sampled inputs are left out of P(differ) (no determined exact value, or NaN in both kernels; MISS 66)",
+            obs.left()
+        ));
+    }
     // MISS 57: an input's weighted fraction over the outputs whose exact value is known is
     // not its own fraction.
     if st.c.is_none() && obs.ident_off_inputs > 0 {
@@ -3388,8 +3721,15 @@ fn validate_gpu(
                 tag,
                 &k.run.variant,
             ))
+            .args([
+                "--image-fnv".to_string(),
+                super::image_fnv(&k.run.cubin)?,
+            ])
             .env("CUDA_VISIBLE_DEVICES", super::gpu_env(&k.run.case, gpu)?)
-            .env("PTXV_PATCHED_PREFIX", k.run.cubin.with_extension(""))
+            .env(
+                "PTXV_CUBIN_IMAGES",
+                super::own_cubin_images(&k.run.case, &k.run.variant, &k.run.cubin.with_extension(""))?,
+            )
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()?;
@@ -3528,6 +3868,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A model compiled under any earlier version is refused, from 13 (versions 13 to 15 were
+    /// compiled by other branches' builds) up to the current one, which is above 25: a model of
+    /// 16 evaluates every maximum as FMNMX (MISS 197, 202), and so does one of 18 (another
+    /// branch's format); 17 and 20 to 25 are retired numbers, and a model of 19 lacks
+    /// upstream's maximum slice form (`ident::Func::Max`).
+    #[test]
+    fn models_of_earlier_versions_are_refused() {
+        let d = std::env::temp_dir().join(format!("ptxv-test-model-vprev-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("m.model.json");
+        // 13 to 25 always: 16 and 18 evaluate every maximum as FMNMX, 17 and 20 to 25 are
+        // retired numbers, and 19 lacks upstream's maximum slice form (`ident::Func::Max`).
+        for v in 13..super::MODEL_VERSION.max(26) {
+            std::fs::write(
+                &p,
+                format!(r#"{{"kind": "ptxv-errdist-model", "programs": {{"version": {v}}}}}"#),
+            )
+            .unwrap();
+            let e = super::Model::load(&p).err().expect("loaded").to_string();
+            let want = format!(
+                "model version {v} (this ptxv reads {})",
+                super::MODEL_VERSION
+            );
+            assert!(e.contains(&want), "{e}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// The model key covers the reading of an unknown launch order: a model compiled under
     /// `PTXV_UNRECORDED_ORDER=ordered` is not served to a run under the strict reading.
     #[test]
@@ -3552,7 +3920,12 @@ mod tests {
             "UNORD",
         );
         let cli =
-            crate::Cli::try_parse_from(std::iter::once("ptxv".to_string()).chain(args)).unwrap();
+            crate::Cli::try_parse_from(
+                std::iter::once("ptxv".to_string())
+                    .chain(args)
+                    .chain(["--image-fnv".to_string(), "0".to_string()]),
+            )
+            .unwrap();
         match cli.cmd {
             crate::Cmd::ErrdistGpuWorker {
                 case,
@@ -3646,6 +4019,40 @@ mod tests {
         assert_eq!(flip_inputs(0, 300, 1e-5, 76800), None);
     }
 
+    /// Tier 3's growth (`grow_step`) at 300 inputs, P 0.057 (the flip bound's target 4.56e-3,
+    /// `need` inputs at 0 flips), no flip seen:
+    /// - Tier 3's interval already fine (1.5%): the flip bound drives the growth, to its need,
+    ///   and says so (fixtures/errdist/flip/wide until MISS 139);
+    /// - the interval at +-35% (wide since MISS 139): its own target, XCHECK_REL, asks for more
+    ///   inputs than the bound needs and wins;
+    /// - work for fewer inputs than the bound needs (an input of 1e6 units, 0.3 s): no growth.
+    #[test]
+    fn the_flip_bound_drives_growth_where_tier3_is_fine() {
+        use super::GrowAt;
+        use super::flip_inputs;
+        use super::grow_step;
+        let at = |rel: f64, per: f64, budget: f64| GrowAt {
+            n: 300,
+            per,
+            cap: 76800,
+            budget,
+            p: 0.057,
+            rel,
+            compared: true,
+            unknown: None,
+            flips: Some((0, 300)),
+        };
+        let need = flip_inputs(0, 300, 0.8 * 0.1 * 0.057, 76800).unwrap() as usize;
+        assert!((800..820).contains(&need), "{need}");
+        assert_eq!(
+            grow_step(&at(0.015, 1000.0, 30.0)),
+            Some((need - 300, true))
+        );
+        let (extra, for_flips) = grow_step(&at(0.35, 1000.0, 30.0)).unwrap();
+        assert!(!for_flips && extra > need - 300, "{extra}");
+        assert_eq!(grow_step(&at(0.015, 1e6, 0.3)), None);
+    }
+
     /// Tier 0 inside Tier 3's 99.9% interval stands; outside it (MISS 44's 0.218 against
     /// [0.0641, 0.0671]) it is refused; other tiers are not touched.
     #[test]
@@ -3678,5 +4085,94 @@ mod tests {
         let mut e = est((0.5, 0.49, 0.51));
         flip_gate(&mut e, Some(&none), 1, 1);
         assert_eq!(e.applicable, Some(false));
+    }
+
+    /// MISS 64 follow-up (the fifth review): a Tier 3 whose compared outputs are all NaN / Inf
+    /// stands where some differ from their reference (a true alarm), and is refused where all
+    /// are equal infinities (a P 0 that rests on them alone).
+    #[test]
+    fn all_nonfinite_tier3_stands_only_with_differing_outputs() {
+        use ptxv_sim::errdist::mc::Obs;
+        let mut o = Obs {
+            inputs: 300,
+            compared: 19200,
+            nonfinite_cmp: 19200,
+            nonfinite_differ: 19200,
+            differ: 19200,
+            ..Default::default()
+        };
+        let mut e = est((1.0, 0.99, 1.0));
+        e.tier = 3;
+        super::refuse_no_compared(&mut e, &o, &[]);
+        assert_eq!(e.applicable, None, "{:?}", e.applicability);
+        // Its validation, on the same criterion: a run whose NaN / Inf outputs differ agrees.
+        let val = |o: &Obs| {
+            let mut v = ptxv_sim::errdist::report::Validation {
+                agree: true,
+                ..Default::default()
+            };
+            super::flag_nonfinite(&mut v, o, o, true, 0.05);
+            v
+        };
+        let v = val(&o);
+        assert!(v.agree, "{:?}", v.notes);
+        (o.nonfinite_differ, o.differ) = (0, 0);
+        super::refuse_no_compared(&mut e, &o, &[]);
+        assert_eq!(e.applicable, Some(false), "{:?}", e.applicability);
+        let v = val(&o);
+        assert!(
+            !v.agree
+                && v.notes
+                    .iter()
+                    .any(|n| n.contains("no finite observed output")),
+            "{:?}",
+            v.notes
+        );
+    }
+
+    /// MISS 66 follow-up (the fifth review's D6): a validation whose observed share of outputs
+    /// left out lies above Tier 3's bound q on it (its 95% interval's lower end above q) does
+    /// not agree; within the bound it does. Until then the share was printed only.
+    #[test]
+    fn validation_tests_the_left_out_share_against_tier3s_bound() {
+        use ptxv_sim::errdist::mc::Obs;
+        use ptxv_sim::errdist::report::Validation;
+        let obs = |n: usize, left: &dyn Fn(usize) -> u64| {
+            let mut o = Obs {
+                inputs: n as u64,
+                seen: n as u64 * 4096,
+                ..Default::default()
+            };
+            o.input_left = (0..n).map(|i| (4096, left(i))).collect();
+            o.unidentified = o.input_left.iter().map(|x| x.1).sum();
+            o.compared = o.seen - o.unidentified;
+            o
+        };
+        // Tier 3: 200 inputs, a pair of outputs left out on 60.
+        let t3 = obs(200, &|i| if i < 60 { 2 } else { 0 });
+        // Observed: 2000 inputs, every output left out on 300.
+        let o = obs(2000, &|i| if i < 300 { 4096 } else { 0 });
+        let mut v = Validation {
+            agree: true,
+            ..Default::default()
+        };
+        super::flag_nonfinite(&mut v, &t3, &o, true, 0.025);
+        assert!(
+            !v.agree && v.notes.iter().any(|n| n.contains("above Tier 3's bound")),
+            "{:?}",
+            v.notes
+        );
+        let mut v = Validation {
+            agree: true,
+            ..Default::default()
+        };
+        super::flag_nonfinite(
+            &mut v,
+            &t3,
+            &obs(2000, &|i| (i % 3 == 0) as u64 * 2),
+            true,
+            0.025,
+        );
+        assert!(v.agree, "{:?}", v.notes);
     }
 }

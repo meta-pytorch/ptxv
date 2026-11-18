@@ -9,10 +9,20 @@ The format is tools/capture.py's (docs/capture.md). The difference is where byte
 here every launch's referenced allocations were copied right before and after it, so a
 buffer's initial bytes are those the first launch of the group that references it saw (its
 snapshot; MISS 173: not the earliest snapshot of the driver allocation, which a copy, a fill
-or a launch outside the group may have changed since), and its expected bytes those after the
-last one. A buffer changed between two launches of the group that reference it, by anything
-outside the group, refuses the case (CaseError): a case cannot express it. A buffer no
-snapshot covers is undefined until written (`init = "undef"`), not zeros.
+or a launch outside the group may have changed since), and its expected bytes those of the
+last one's own snapshot after it (MISS 219: not a later snapshot of the allocation, which may
+hold a change made outside the group after that launch; a launch whose own snapshots show the
+buffer changed counts as reaching it). A launch references a buffer through a parameter, a
+tensor map or a pointer table (read at every snapshot of its allocation in the group; through
+a table that another table points to as well), and a launch recorded under CUDA graph capture
+runs at the graph launch that follows it.
+A buffer changed between two launches of the group that reference it, by anything outside the
+group, refuses the case (CaseError): a case cannot express it. A buffer no snapshot covers is
+undefined until written (`init = "undef"`), not zeros. When the last launch that references a
+buffer has no snapshot covering it, the latest snapshot of its allocation is an earlier
+launch's, from before that launch's writes, and is never used as expected bytes (MISS 185): a
+buffer the group writes (allocated in the region, or changed by an earlier launch) then
+refuses the case; any other buffer is left uncompared, with a warning.
 
 Buffers: intervals are named tensors' storages, torch caching-allocator blocks (live before
 the region, or allocated in it), and whole driver allocations no block covers; overlapping
@@ -36,6 +46,8 @@ import struct
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
+
+import numpy as np
 
 from . import _cupti, _ptxsrc
 from ._cubin import (
@@ -89,6 +101,67 @@ def _ragged_shift(raw: bytes, off: int, v: int, comp_of):
 def _read(path: Path) -> bytes:
     with open(path, "rb") as f:
         return f.read()
+
+
+def _read_at(path: Path, off: int, n: int) -> bytes:
+    """n bytes of a file from byte off (fewer at its end)."""
+    with open(path, "rb") as f:
+        f.seek(off)
+        return f.read(n)
+
+
+def _ptr_words(data: bytes, lo: np.ndarray, hi: np.ndarray) -> list[int]:
+    """The distinct 8-byte words of `data` (little-endian, at multiples of 8) that may point
+    into the components [lo[i], hi[i]) (sorted by start, disjoint), in the order of their first
+    occurrence: at least 0x10000, below 2^52, and inside a component or equal to one's end
+    (the words comp_of resolves). The vectorized form of a loop over every word."""
+    a = np.frombuffer(data, dtype="<u8", count=len(data) // 8)
+    a = a[(a >= 0x10000) & ((a >> np.uint64(52)) == 0)]
+    if not a.size or not lo.size:
+        return []
+    u, first = np.unique(a, return_index=True)
+    u = u[np.argsort(first, kind="stable")]
+    i = np.searchsorted(lo, u, side="right").astype(np.int64) - 1
+    inside = (i >= 0) & (u < hi[np.maximum(i, 0)])
+    k = np.searchsorted(hi, u, side="left")
+    at_end = (k < hi.size) & (hi[np.minimum(k, hi.size - 1)] == u)
+    return u[inside | at_end].tolist()
+
+
+def _launch_cluster(la) -> bool:
+    """Whether a launch is a cluster launch: a shape other than 1 x 1 x 1, or `cluster_attr` of
+    its record (python/ptxv/_native/ptxvcap.c): the launch gave the cluster dimension attribute
+    (MISS 259), or the kernel requires a cluster shape (the RequiredCluster function attributes,
+    MISS 281). A cluster launch even at 1 x 1 x 1, where st.async runs. Until those fixes such a
+    launch was written without `cluster`: its case faulted where the application ran (MISS 209),
+    or was checked without the cluster that ran."""
+    return la.cluster != (1, 1, 1) or bool(la.record.get("cluster_attr"))
+
+
+def _cluster_toml(la) -> str:
+    """A launch's `cluster` and `preferred_cluster` lines. `cluster` for a cluster launch
+    (_launch_cluster) and where it has a preferred cluster (which needs the explicit regular one,
+    even 1 x 1 x 1: S-CGA-SHAPE)."""
+    s = ""
+    rec = la.record
+    if _launch_cluster(la) or rec.get("preferred_cluster"):
+        s += f"cluster = {list(la.cluster)}\n"
+    # cudaLaunchAttributePreferredClusterDimension (S-CGA-SHAPE).
+    if rec.get("preferred_cluster"):
+        s += f"preferred_cluster = {rec['preferred_cluster']}\n"
+    return s
+
+
+def _cluster_note(la) -> str:
+    """A launch's cluster in the case description: its shape for a cluster launch
+    (_launch_cluster), and the kernel's required cluster shape where the launch attribute gave
+    another one (`required_cluster`: the capture takes the attribute's, so the case does; MISS
+    281)."""
+    rec = la.record
+    s = f" cluster {list(la.cluster)}" if _launch_cluster(la) else ""
+    if rec.get("required_cluster"):
+        s += f" (the kernel requires {rec['required_cluster']}; the launch attribute is taken)"
+    return s
 
 
 def write_case(
@@ -160,7 +233,6 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     first_pre_idx: dict[
         int, int
     ] = {}  # base -> region index of the launch it was taken at
-    last_post: dict[int, Path] = {}
     seen_post: dict[int, tuple[int, Path]] = {}  # base -> (launch index, post file)
     # Per launch of the group (position in it): {base: file} of its pre / post snapshot.
     pre_at: dict[int, dict[int, Path]] = {}
@@ -189,7 +261,6 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 )
             post = snapdir / f"s{la.snap}_post_{base:x}.bin"
             if post.exists():
-                last_post[base] = post
                 seen_post[base] = (la.index, post)
 
     def alloc_of(a: int) -> int | None:
@@ -243,9 +314,12 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         ivs.append((t.ptr, t.ptr + t.nbytes, "named", n))
     for bi, (a, z, kind) in enumerate(cap.blocks):
         lt = life.get(bi)
-        if lt and lt[0] is not None and all(t_l):
+        # A block live before the region (no alloc time) and freed in it counts until the free.
+        if lt and (lt[0] is not None or lt[1] is not None) and all(t_l):
             t0, t1 = lt
-            if not any(t0 <= t and (t1 is None or t < t1) for t in t_l):
+            if not any(
+                (t0 is None or t0 <= t) and (t1 is None or t < t1) for t in t_l
+            ):
                 continue
         ivs.append((a, a + z, kind, None))
     for b, z in allocs.items():
@@ -288,7 +362,10 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     refs: dict[int, list] = {}
     tmap_refs: dict[int, set] = {}
     unresolved: list[dict] = []
-    users_of: dict[int, set] = {}  # component -> launches of the group (positions) pointing into it
+
+    # component -> positions in the group of the launches that point into it (directly, or
+    # through a pointer table: the launches that point to the table reach its targets)
+    users_of: dict[int, set] = {}
     cur_li = [None]
 
     def note_ref(ci, off, n=1):
@@ -365,38 +442,85 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         plaunches.append((la, params))
     cur_li[0] = None
 
-    # ------------------------------------------------- pointer tables (one level)
+    # ------------------------------------------------------------------ pointer tables
     # A small, non-float buffer a parameter points to may hold addresses of other allocations
-    # (a multi-tensor kernel's pointer array). Such words become `ptrs` (filled with the
-    # target buffer's address in the simulator and on hardware), and their targets buffers.
-    ptr_words: list[
-        tuple[int, int, int, int]
-    ] = []  # (ci, offset in comp, cj, offset in cj)
-    for ci in sorted(refs):
+    # (a multi-tensor kernel's pointer array). The words of its initial bytes become `ptrs`
+    # (filled with the target buffer's address in the simulator and on hardware; below, once
+    # the initial bytes are known), and their targets buffers. The launches that point to the
+    # table reach its targets (the capture's snapshots copy one level of them). MISS 185: the
+    # table is read at every snapshot of its allocation in the group, before and after each
+    # launch, not only the earliest: a launch of the group or a host copy may fill it after
+    # that one, and the launches that then write through it reach the targets as well.
+    # MISS 185, two-level tables: a launch that reaches a table through another one reaches its
+    # targets too, to any depth (users are carried to a fixpoint, not in one pass in address
+    # order); in a group of several launches a table the group reaches only through another
+    # table is read as well. The capture snapshots one level, so a launch that writes through
+    # a second level has no snapshot of the target: as its last reacher, it refuses the case.
+    def slice_at(start: int, size: int, which: dict[int, Path]) -> bytes | None:
+        """bytes_at, read from the snapshot file without keeping its image."""
+        b = alloc_of(start)
+        if b is None or b not in which:
+            return None
+        p = which[b]
+        if p in img_cache:
+            chunk = img_cache[p][start - b : start - b + size]
+        else:
+            with open(p, "rb") as f:
+                f.seek(start - b)
+                chunk = f.read(size)
+        return chunk if len(chunk) == size else None
+
+    # Component bounds for _ptr_words: of each snapshot of a table only the distinct words
+    # comp_of may resolve are visited, and a snapshot equal to the previous one is skipped
+    # (its words were all seen).
+    c_lo = np.array([c[0] for c in comps], dtype=np.uint64)
+    c_hi = np.array([c[1] for c in comps], dtype=np.uint64)
+    tables: list[int] = []
+    targets: dict[int, set[int]] = {}  # table -> the components its words point into
+    deep = len(launches) > 1  # one launch: its own snapshots are the only ones
+    todo = sorted(refs)
+    queued = set(todo)
+    while todo:
+        ci = todo.pop(0)
         s0, e0, members = comps[ci]
         if e0 - s0 > PTR_SCAN_MAX or any(
             m[2] == "named" and cap.names[m[3]].dtype in FLOAT_DT for m in members
         ):
             continue
-        data = bytes_at(s0, e0 - s0, first_pre)
-        if data is None:
-            continue
-        for o in range(0, len(data) - 7, 8):
-            v = u64(data, o)
-            if v < 0x10000 or v >> 52:
+        tables.append(ci)
+        tg = targets[ci] = set()
+        seen_words: set[int] = set()
+        last_data = None
+        for j in range(len(launches)):
+            for which in (pre_at.get(j, {}), post_at.get(j, {})):
+                data = slice_at(s0, e0 - s0, which)
+                if data is None or data == last_data:
+                    continue
+                last_data = data
+                for v in _ptr_words(data, c_lo, c_hi):
+                    if v in seen_words:
+                        continue
+                    seen_words.add(v)
+                    loc = comp_of(v)
+                    if loc is None or loc[0] == ci:
+                        continue
+                    note_ref(*loc)
+                    tg.add(loc[0])
+                    if deep and loc[0] not in queued:
+                        queued.add(loc[0])
+                        todo.append(loc[0])
+    grew = True
+    while grew:
+        grew = False
+        for ci in tables:
+            u = users_of.get(ci)
+            if not u:
                 continue
-            loc = comp_of(v)
-            if loc is None or loc[0] == ci:
-                continue
-            ptr_words.append((ci, o, loc[0], loc[1]))
-            note_ref(*loc)
-            # The launches that point to the table reach its targets (their snapshots copy
-            # them too).
-            users_of.setdefault(loc[0], set()).update(users_of.get(ci, ()))
-    if ptr_words:
-        warnings.append(
-            f"{len(ptr_words)} pointer words inside buffers resolved to captured allocations (`ptrs`)"
-        )
+            for t in targets[ci]:
+                have = users_of.setdefault(t, set())
+                if not u <= have:
+                    have |= u
+                    grew = True
 
     # Components an earlier launch of the region (not in this group) points into: an
     # allocation made in the region but written before the group starts is an input of the
@@ -414,16 +538,51 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 if loc:
                     earlier.add(loc[0])
 
-    # ---------------------------------------------------------------- buffers
-    buffers: list[dict] = []
-    comp_buf: dict[int, tuple[int, int]] = {}
-    nws = 0
-    for ci in sorted(refs):
+    # Execution order of the group's launches (MISS 185). A launch runs at its place in issue
+    # order ("oseq"), except one recorded under CUDA graph capture, which runs when its graph is
+    # launched: it is placed at the graph launch that follows it in the region when there is
+    # exactly one. With none it did not run in the region, with several it may have run more
+    # than once, and records without issue order cannot place it: such a launch is unplaced
+    # (last), and a buffer it reaches has no known bytes after the group.
+    have_oseq = all(la.record.get("oseq") is not None for la in launches)
+    glaunch = sorted(
+        e["oseq"]
+        for e in getattr(cap, "events", None) or []
+        if e.get("ev") == "graph_launch" and e.get("oseq") is not None
+    )
+    xpos: list[tuple] = []
+    unplaced: dict[int, str] = {}
+    for j, la in enumerate(launches):
+        if not getattr(la, "capturing", False):
+            xpos.append((la.record["oseq"] if have_oseq else j, 0))
+            continue
+        later = [g for g in glaunch if g > la.record["oseq"]] if have_oseq else None
+        if later is not None and len(later) == 1:
+            xpos.append((later[0], 0))
+            continue
+        xpos.append((float("inf"), j))
+        if later is None:
+            unplaced[j] = "the records give no issue order to place its graph launch"
+        elif not later:
+            unplaced[j] = "no graph launch follows it in the region, so it did not run there"
+        else:
+            unplaced[j] = (
+                f"{len(later)} graph launches follow it in the region, so it may have run "
+                "more than once"
+            )
+
+    def xkey(j: int) -> tuple:
+        return xpos[j]
+
+    def solo_of(ci: int) -> tuple[Any, list[str]]:
+        """The named tensor a component's buffer is (None: the whole component), and the
+        warnings for named tensors passed over."""
         s, e, members = comps[ci]
-        nm = [m for m in members if m[2] == "named"]
         rs = refs[ci]
-        solo = None
-        for m in nm:
+        notes = []
+        for m in members:
+            if m[2] != "named":
+                continue
             if (
                 # A pointer equal to the tensor's end is inside it only when nothing follows
                 # in the component (otherwise it is the start of the next tensor).
@@ -446,14 +605,65 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                     and x[1] - x[0] > -(-(m[1] - m[0]) // 512) * 512
                 ]
                 if big:
-                    warnings.append(
+                    notes.append(
                         f"{m[3]}: the named tensor ({m[1] - m[0]} B) is smaller than the allocator "
                         f"block at its address ({max(x[1] - x[0] for x in big)} B); the buffer "
                         "takes the block's extent"
                     )
                     continue
-                solo = m
-                break
+                return m, notes
+        return None, notes
+
+    def span_of(ci: int) -> tuple[int, int]:
+        """(start, size) of a component's buffer."""
+        solo, _ = solo_of(ci)
+        if solo:
+            return cap.names[solo[3]].ptr, cap.names[solo[3]].nbytes
+        return comps[ci][0], comps[ci][1] - comps[ci][0]
+
+    # MISS 219: a launch whose own snapshots, before and after it, differ in a buffer wrote
+    # it, whatever reach the writer resolved (an address it cannot follow): the buffers loop
+    # counts it as a reacher. Found here once per launch and snapshotted allocation: one read
+    # of the snapshots before and after it for each run of buffers in the allocation (buffers
+    # less than 1 MiB apart), for the buffers the launch does not reach.
+    span = {ci: span_of(ci) for ci in sorted(refs)}
+    in_alloc: dict[int, list[int]] = {}
+    for ci in sorted(span, key=lambda c: span[c][0]):
+        a = alloc_of(span[ci][0])
+        if a is not None:
+            in_alloc.setdefault(a, []).append(ci)
+    changed_at: dict[int, set[int]] = {}
+    for j in range(len(launches)):
+        pa, qa = pre_at.get(j, {}), post_at.get(j, {})
+        for a in sorted(pa.keys() & qa.keys()):
+            runs: list[list] = []  # [buffers, start, end]
+            for ci in in_alloc.get(a, ()):
+                if j in users_of.get(ci, ()):
+                    continue
+                st, end = span[ci][0], span[ci][0] + span[ci][1]
+                if runs and st - runs[-1][2] < (1 << 20):
+                    runs[-1][0].append(ci)
+                    runs[-1][2] = max(runs[-1][2], end)
+                else:
+                    runs.append([[ci], st, end])
+            for run, lo, hi in runs:
+                x = _read_at(pa[a], lo - a, hi - lo)
+                y = _read_at(qa[a], lo - a, hi - lo)
+                for ci in run:
+                    o, n = span[ci][0] - lo, span[ci][1]
+                    p_, q_ = x[o : o + n], y[o : o + n]
+                    if len(p_) == n and len(q_) == n and p_ != q_:
+                        changed_at.setdefault(ci, set()).add(j)
+
+    # ---------------------------------------------------------------- buffers
+    buffers: list[dict] = []
+    comp_buf: dict[int, tuple[int, int]] = {}
+    nws = 0
+    for ci in sorted(refs):
+        s, e, members = comps[ci]
+        nm = [m for m in members if m[2] == "named"]
+        solo, notes = solo_of(ci)
+        warnings.extend(notes)
         if solo:
             ti = cap.names[solo[3]]
             start, size, bname = ti.ptr, ti.nbytes, solo[3]
@@ -494,8 +704,11 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         )
         # MISS 173: the bytes the first launch of the group that references it saw (its
         # snapshot), not the earliest snapshot of its driver allocation: a copy, a fill or a
-        # launch outside the group may have written it in between.
-        users = sorted(users_of.get(ci, ()))
+        # launch outside the group may have written it in between. "First" and "last" are in
+        # execution order (xpos).
+        users = sorted(users_of.get(ci, ()), key=xkey)
+        # MISS 219: the launches whose own snapshots show it changed (above) reach it too.
+        users = sorted(set(users) | changed_at.get(ci, set()), key=xkey)
         # init_at: launches of the region before it are in the initial bytes.
         init, init_from, init_at = None, None, None
         if users:
@@ -515,7 +728,11 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 # Live before the region, and that launch has no snapshot covering it: the
                 # latest snapshot of an earlier launch of the group that does (its bytes after
                 # that launch; never a later one, which may hold that launch's writes).
-                for j in range(users[0] - 1, -1, -1):
+                for j in sorted(
+                    (j for j in range(len(launches)) if xkey(j) < xkey(users[0])),
+                    key=xkey,
+                    reverse=True,
+                ):
                     init = bytes_at(start, size, post_at.get(j, {}))
                     if init is not None:
                         init_from = f"snapshot after launch {launches[j].index}"
@@ -545,12 +762,104 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                     "it (MISS 173): a case cannot express it. Include the writer in the group, or "
                     "start the group after it."
                 )
-        final = bytes_at(start, size, last_post)
         if init is None and not (users and fresh):
             warnings.append(
                 f"{bname}: no snapshot covers it; undefined until written (a read of it is "
                 "reported)"
             )
+        # Expected bytes: the last reacher's own snapshot after it (MISS 219), never a later
+        # snapshot of the allocation, which may hold a change made outside the group after
+        # that launch. stale: {"last": that launch's index, "why": the reason as a clause,
+        # "miss": the id}: the buffer's bytes after the group are unknown.
+        # - MISS 185: the last reacher has no snapshot covering it (snapshots="first", the
+        #   budget, a pointer path the snapshot did not follow), or it was recorded under CUDA
+        #   graph capture and runs at a later graph launch (or unplaced, above).
+        # - MISS 219: a later snapshot shows the buffer changed after the last reacher, and a
+        #   launch of the group in between has no snapshot covering it (it may have written
+        #   the buffer). With every launch in between snapshotted, the change happened between
+        #   launches, outside the group: a warning, and the bytes after the last reacher stay;
+        #   the later snapshots are then compared with the bytes that change left, so a later
+        #   change behind a launch without a snapshot is still refused.
+        a0 = alloc_of(start)
+        snapped = [j for j in range(len(launches)) if a0 in post_at.get(j, {})]
+        latest = max(snapped, key=xkey) if snapped else None
+        # The latest snapshot's bytes: whether the group changed it when they are unknown.
+        seen = bytes_at(start, size, post_at[latest]) if latest is not None else None
+        final, stale = (None, None) if users else (seen, None)
+        if users and seen is not None:
+            last = users[-1]
+            lx = launches[last].index
+            if last in unplaced:
+                stale = {
+                    "last": lx,
+                    "miss": 185,
+                    "why": f"launch {lx}, the last of the group to reach it, was recorded under "
+                    f"CUDA graph capture, and {unplaced[last]}",
+                }
+            elif (final := bytes_at(start, size, post_at.get(last, {}))) is None:
+                prior = [j for j in snapped if xkey(j) < xkey(last)]
+                k = max(prior, key=xkey) if prior else None
+                since = f"taken after launch {launches[k].index}" if k is not None else None
+                if getattr(launches[last], "capturing", False):
+                    why = (
+                        f"launch {lx}, the last of the group to reach it, was recorded under CUDA "
+                        "graph capture and runs at the graph launch that follows it"
+                        + (f", after the latest snapshot covering it ({since})" if since else "")
+                    )
+                else:
+                    why = (
+                        f"launch {lx}, the last of the group to reach it, has no snapshot "
+                        "covering it" + (f" (the latest one before it was {since})" if since else "")
+                    )
+                    if launches[last].snap is not None:
+                        # It took one that does not cover the buffer: reach through a table
+                        # another table points to, or a word past the window the capture scans.
+                        why += (
+                            ": its snapshot copies what its parameters point to and, one level "
+                            "deep, the targets of the pointer words in the first MiB from each"
+                        )
+                stale = {
+                    "last": lx,
+                    "miss": 185,
+                    "why": why,
+                    "snapped": launches[last].snap is not None,
+                }
+            else:
+                # ref: the bytes a later snapshot holds if nothing changed the buffer since the
+                # point `after` names (the last reacher, then a change outside the group).
+                ref, after = final, f"launch {lx}, the last of the group to reach it,"
+                gap: list[int] = []  # launches since the last matching snapshot without one
+                for j in sorted(
+                    (j for j in range(len(launches)) if xkey(j) > xkey(last)), key=xkey
+                ):
+                    p_ = slice_at(start, size, pre_at.get(j, {}))
+                    if p_ is None:
+                        gap.append(launches[j].index)
+                        continue
+                    if p_ == ref:
+                        gap = []
+                        continue
+                    jx = launches[j].index
+                    if gap:
+                        many = len(gap) > 1
+                        stale = {
+                            "last": lx,
+                            "miss": 219,
+                            "why": f"it changed after {after} and before launch {jx}, and "
+                            f"launch{'es' if many else ''} {', '.join(map(str, gap))} of the "
+                            f"group in between {'have' if many else 'has'} no snapshot covering "
+                            f"it, so {'one of them' if many else 'it'} may have written it",
+                        }
+                        final = None
+                        break
+                    warnings.append(
+                        f"{bname}: changed after {after} and before launch {jx}, by a copy, a "
+                        "fill or a launch outside the group: its expected bytes are those after "
+                        f"launch {lx} (MISS 219)"
+                    )
+                    # A later launch of the group may still write it: compare from these bytes.
+                    ref, after = p_, f"the change outside the group before launch {jx},"
+        cur = final if final is not None else seen
         buffers.append(
             {
                 "name": bname,
@@ -559,10 +868,13 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
                 "start": start,
                 "size": size,
                 "init": init,
-                "final": final,
+                "final": None if stale else final,
+                "stale": stale,
                 "fresh": fresh,
                 "named": bool(nm),
-                "changed": init is not None and final is not None and init != final,
+                # changed by the group (by its latest snapshot when the expected bytes are
+                # unknown)
+                "changed": init is not None and cur is not None and init != cur,
                 "first_ref": first_ref.get(ci, 0),
                 "init_from": init_from,
                 "init_at": init_at,
@@ -585,14 +897,30 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             f"rename makes buffer names collide: {[b['name'] for b in buffers]}"
         )
 
-    for ci, o, cj, oj in ptr_words:
-        bi, delta = comp_buf[ci]
-        bo = o - delta
-        if 0 <= bo <= buffers[bi]["size"] - 8:
-            tb, tdelta = comp_buf[cj]
+    # A table's `ptrs`: the pointer words of its initial bytes (the snapshot they come from,
+    # which a host upload in the region may make later than the allocation's earliest one).
+    nptr = 0
+    for ci in tables:
+        if ci not in comp_buf:
+            continue
+        bi, _ = comp_buf[ci]
+        ini = buffers[bi]["init"]
+        for bo in range(0, len(ini or b"") - 7, 8):
+            v = u64(ini, bo)
+            if v < 0x10000 or v >> 52:
+                continue
+            loc = comp_of(v)
+            if loc is None or loc[0] == ci or loc[0] not in comp_buf:
+                continue
+            tb, tdelta = comp_buf[loc[0]]
             buffers[bi].setdefault("ptrs", []).append(
-                (bo, buffers[tb]["name"], oj - tdelta)
+                (bo, buffers[tb]["name"], loc[1] - tdelta)
             )
+            nptr += 1
+    if nptr:
+        warnings.append(
+            f"{nptr} pointer words inside buffers resolved to captured allocations (`ptrs`)"
+        )
 
     # Outputs.
     if outputs is not None:
@@ -606,7 +934,8 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         outs = [
             b
             for b in buffers
-            if b["changed"] or (b["fresh"] and b["final"] is not None)
+            if b["changed"]
+            or (b["fresh"] and (b["final"] is not None or b["stale"] is not None))
         ]
         outs.sort(key=lambda b: (not b["changed"], not b["named"], -b["first_ref"]))
     # Declared scratch (dead workspace): undefined until written, never compared.
@@ -620,6 +949,40 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
             f"buffers {sorted(set(scratch) & set(outputs))} are both outputs and scratch"
         )
     outs = [b for b in outs if b["name"] not in scratch]
+    for b in outs:
+        if b["stale"] is not None:
+            n_, st = b["name"], b["stale"]
+            keep = (
+                f"With this capture, only case(outputs=[...]) without {n_} keeps this group's "
+                f"case ({n_} is then not compared)"
+            )
+            if not st.get("snapped"):
+                keep += (
+                    "; otherwise capture with a snapshot of every launch (snapshots='all', a "
+                    "larger budget, outside a graph capture)"
+                )
+            if st["miss"] == 219:
+                raise CaseError(
+                    f"{n_}: {st['why']}: its bytes after the group are unknown (MISS 219). "
+                    f"{keep}."
+                )
+            raise CaseError(
+                f"{n_}: {st['why']}: if that launch writes it, its bytes after the group are "
+                "unknown (MISS 185). The writer cannot tell a read from a write, so it refuses "
+                f"even when that launch only reads {n_}. {keep}, or end the group before that "
+                "launch."
+            )
+    out_ids = {id(b) for b in outs}
+    for b in buffers:
+        if b["stale"] is not None and id(b) not in out_ids and b["name"] not in scratch:
+            st = b["stale"]
+            warnings.append(
+                f"{b['name']}: {st['why']}: its bytes after the group are unknown, so it is "
+                "not compared (MISS 219)"
+                if st["miss"] == 219
+                else f"{b['name']}: {st['why']}: a write of it by that launch is not compared "
+                "(MISS 185)"
+            )
     if not outs and getattr(cap, "unchanged_outputs", False):
         # A launch that changed nothing on this input (a bounds check that found every index
         # in range, a backward pass with no long segments): every snapshotted buffer is an
@@ -903,8 +1266,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
 
     l0 = plaunches[0][0]
     kern_lines = "\n".join(
-        f"  {i}: {la.name[:110]} grid {list(la.grid)} block {list(la.block)}"
-        + (f" cluster {list(la.cluster)}" if la.cluster != (1, 1, 1) else "")
+        f"  {i}: {la.name[:110]} grid {list(la.grid)} block {list(la.block)}" + _cluster_note(la)
         for i, (la, _) in enumerate(plaunches)
     )
     desc = (
@@ -929,18 +1291,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
         + (f"ptxas_toolkit = {q(ptxas_toolkit)}\n" if ptxas_toolkit else "")
         + (f"ptxas_args = {q(ptxas_args)}\n" if ptxas_args is not None else "")
         + f"entry = {q(l0.name)}\ngrid = {list(l0.grid)}\nblock = {list(l0.block)}\n"
-        # S-CGA-SHAPE: a preferred cluster needs the explicit regular one, even 1 x 1 x 1.
-        + (
-            f"cluster = {list(l0.cluster)}\n"
-            if l0.cluster != (1, 1, 1) or l0.record.get("preferred_cluster")
-            else ""
-        )
-        # cudaLaunchAttributePreferredClusterDimension (S-CGA-SHAPE).
-        + (
-            f"preferred_cluster = {l0.record['preferred_cluster']}\n"
-            if l0.record.get("preferred_cluster")
-            else ""
-        )
+        + _cluster_toml(l0)
         + f"dynamic_smem = {l0.smem}\noutputs = {json.dumps(out_names)}\n"
         + (toml_top(lorder) if multi else "")
     ]
@@ -981,10 +1332,7 @@ def _write(  # noqa: C901 (case writer: one linear pass over shared capture stat
     toml += toml_params(plaunches[0][1], "params")
     for i, (la, params) in enumerate(plaunches[1:], 1):
         s = f"[[launches]]\nentry = {q(la.name)}\ngrid = {list(la.grid)}\nblock = {list(la.block)}\n"
-        if la.cluster != (1, 1, 1) or la.record.get("preferred_cluster"):
-            s += f"cluster = {list(la.cluster)}\n"
-        if la.record.get("preferred_cluster"):
-            s += f"preferred_cluster = {la.record['preferred_cluster']}\n"
+        s += _cluster_toml(la)
         s += f"dynamic_smem = {la.smem}\n"
         s += toml_launch(lorder, i, la.pdl)
         if not use_ptx and cubin_files[i] != cubin_files[0]:

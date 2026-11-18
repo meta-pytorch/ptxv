@@ -64,6 +64,8 @@ const ATTR_MEM_SYNC_DOMAIN_MAP: u32 = 9;
 const ATTR_MEM_SYNC_DOMAIN: u32 = 10;
 /// CU_FUNC_ATTRIBUTE_REQUIRED_CLUSTER_WIDTH: nonzero when the cubin fixes the cluster shape.
 const FUNC_REQUIRED_CLUSTER_WIDTH: i32 = 11;
+/// CU_FUNC_ATTRIBUTE_CLUSTER_SIZE_MUST_BE_SET: nonzero when the kernel needs a cluster launch.
+const FUNC_CLUSTER_SIZE_MUST_BE_SET: i32 = 10;
 
 #[repr(C, align(128))]
 #[derive(Clone, Copy)]
@@ -440,12 +442,31 @@ pub fn run_with(
             if let Some(c) = l.cubin {
                 let key = (c.to_string(), l.device);
                 if !own.contains_key(&key) {
-                    // A mutant's patched copy (`{variant}.{cubin}`, cli `load_with`).
-                    let patched = std::env::var("PTXV_PATCHED_PREFIX")
-                        .ok()
-                        .map(|p| std::path::PathBuf::from(format!("{p}.{c}")))
-                        .filter(|p| p.exists());
-                    let img = std::fs::read(patched.unwrap_or_else(|| case.dir.join(c)))?;
+                    // The image the parent chose (a mutant's patched copy `{variant}.{cubin}`,
+                    // cli `own_cubin_images`), checked by its FNV-1a: no silent fallback to the
+                    // unpatched file (RVS2 L2).
+                    let list = std::env::var("PTXV_CUBIN_IMAGES").map_err(|_| {
+                        anyhow::anyhow!("launch cubin {c}: PTXV_CUBIN_IMAGES not set (the parent names the images to load)")
+                    })?;
+                    let (path, want) = list
+                        .split(';')
+                        .filter_map(|e| {
+                            let mut it = e.splitn(3, '=');
+                            match (it.next(), it.next(), it.next()) {
+                                (Some(n), Some(p), Some(h)) if n == c => Some((p, h)),
+                                _ => None,
+                            }
+                        })
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("launch cubin {c}: not in PTXV_CUBIN_IMAGES"))?;
+                    let img = std::fs::read(path)?;
+                    let mut h = 0xcbf29ce484222325u64;
+                    for x in &img {
+                        h = (h ^ *x as u64).wrapping_mul(0x100000001b3);
+                    }
+                    if format!("{h:016x}") != want {
+                        anyhow::bail!("launch cubin {c}: {path} is not the image the run built");
+                    }
                     let mut md = std::ptr::null_mut();
                     ck(
                         cuModuleLoadData(&mut md, img.as_ptr() as *const c_void),
@@ -469,13 +490,20 @@ pub fn run_with(
                 )?;
             }
             // A cluster shape the cubin does not fix (cuBLAS: set at launch) goes in a launch
-            // attribute.
-            let mut req = 0;
+            // attribute, 1 x 1 x 1 included: the simulator takes a case's `cluster` as a
+            // cluster launch (`%is_explicit_cluster` 1; without one GB300 traps on st.async,
+            // MISS 209), and a kernel compiled with `.explicitcluster` alone as 1 x 1 x 1
+            // (`ClusterDecl::resolve`), which must name one (CLUSTER_SIZE_MUST_BE_SET).
+            let (mut req, mut must) = (0, 0);
             ck(
                 cuFuncGetAttribute(&mut req, FUNC_REQUIRED_CLUSTER_WIDTH, f),
                 "cluster attribute",
             )?;
-            cluster_attr.push(req == 0 && l.cluster.is_some_and(|c| c != [1, 1, 1]));
+            ck(
+                cuFuncGetAttribute(&mut must, FUNC_CLUSTER_SIZE_MUST_BE_SET, f),
+                "cluster attribute",
+            )?;
+            cluster_attr.push(req == 0 && (l.cluster.is_some() || must != 0));
             fs.push(f);
         }
 
@@ -819,7 +847,7 @@ pub fn run_with(
                     });
                 }
                 if cluster_attr[i] {
-                    let [x, y, z] = l.cluster.unwrap();
+                    let [x, y, z] = l.cluster.unwrap_or([1, 1, 1]);
                     attrs.push(CUlaunchAttribute {
                         id: ATTR_CLUSTER_DIMENSION,
                         pad: [0; 4],

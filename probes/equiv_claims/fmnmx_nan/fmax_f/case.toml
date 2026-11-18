@@ -1,0 +1,56 @@
+name = "equiv_claims_fmnmx_nan_fmax_f"
+description = "max.f32(a, b) (set f: finite inputs, zeros of both signs); expected/: GB300's output (ptxas 13.0)"
+ptx = "kernel.ptx"
+entry = "k"
+grid = [4, 1, 1]
+block = [256, 1, 1]
+outputs = ["out"]
+
+[[buffers]]
+name = "a"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/a_f.bin"
+
+[[buffers]]
+name = "b"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/b_f.bin"
+
+[[buffers]]
+name = "c"
+dtype = "f32"
+shape = [1024]
+init = "file"
+file = "../data/c_f.bin"
+
+[[buffers]]
+name = "out"
+dtype = "f32"
+shape = [1024]
+init = "zeros"
+expect = "expected/out.bin"
+
+[[params]]
+kind = "ptr"
+buffer = "a"
+
+[[params]]
+kind = "ptr"
+buffer = "b"
+
+[[params]]
+kind = "ptr"
+buffer = "c"
+
+[[params]]
+kind = "ptr"
+buffer = "out"
+
+[[variants]]
+id = "good"
+summary = "as written"
+expect = ["clean"]
