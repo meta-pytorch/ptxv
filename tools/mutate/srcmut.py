@@ -5053,16 +5053,326 @@ MUTANTS += [
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_fails_closed")],
     ),
+    # export_records.py `stale_case`: a listed case is hashed without walking it first, so a case
+    # directory, or a directory in it, this host cannot list (Path.rglob passes over it) hashes
+    # as what is left, which reads as a re-capture: the record grades from its check alone.
+    SrcMutant(
+        "kdb-export-stale-unlistable-open",
+        "fb/kernel_db/export_records.py",
+        "                readable_tree(d)\n",
+        "                pass\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_fails_closed")],
+    ),
+    # export_records.py `readable_tree`: a link to a directory in a listed case passes, so the
+    # case hash (Path.rglob does not enter it) of what is left reads as a re-capture and the
+    # record grades by its check alone (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-dir-link-passes",
+        "fb/kernel_db/export_records.py",
+        "            if os.path.islink(os.path.join(dp, n)):\n",
+        "            if False:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_fails_closed")],
+    ),
+    # export_records.py `readable_tree`: a FIFO (socket, device) in place of a file passes, so
+    # the case hash, which reads regular files only, reads as a re-capture (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-fifo-passes",
+        "fb/kernel_db/export_records.py",
+        "            if not os.path.isfile(x):\n",
+        "            if False:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_fails_closed")],
+    ),
+    # export_records.py `case_dirs`: only the launch's case paths are read again, so a PTX-only
+    # record whose case is listed (check_ptx.case_dir, sass_case_dir) grades by its check alone.
+    SrcMutant(
+        "kdb-export-stale-launch-only",
+        "fb/kernel_db/export_records.py",
+        '        (r, ("sass_case_dir",)),\n'
+        '        (r.get("check_ptx"), ("case_dir", "sass_case_dir", "fresh_capture")),\n',
+        "",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_case_named_anywhere_in_the_record")],
+    ),
+    # export_records.py `case_dirs`: check_ptx.fresh_capture is not read, so a PTX-only record
+    # whose fresh capture (the case its check_ptx.case_dir is built from) is listed grades by its
+    # check alone (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-no-fresh-capture",
+        "fb/kernel_db/export_records.py",
+        '        (r.get("check_ptx"), ("case_dir", "sass_case_dir", "fresh_capture")),\n',
+        '        (r.get("check_ptx"), ("case_dir", "sass_case_dir")),\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_case_named_anywhere_in_the_record")],
+    ),
+    # export_records.py `FAMILIES`: hammer left out again, so its records are never exported or
+    # graded (MISS 280).
+    SrcMutant(
+        "kdb-export-families-hammer-left-out",
+        "fb/kernel_db/export_records.py",
+        '    "hammer,generative_recommenders,moduler,sequence_learning,sll,aten,ads_inference,fbr,"\n',
+        '    "generative_recommenders,moduler,sequence_learning,sll,aten,ads_inference,fbr,"\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_every_family_of_the_records_is_exported")],
+    ),
+    # export_records.py `main`: no stale_list.stamp beside the exported records, so kdb_summary
+    # cannot tell an export graded without the list (or with another one) from any other.
+    SrcMutant(
+        "kdb-export-stale-stamp-unwritten",
+        "fb/kernel_db/export_records.py",
+        '            with open(os.path.join(d, STAMP), "w") as fh:\n'
+        '                fh.write(json.dumps(stamp, sort_keys=True) + "\\n")\n',
+        "",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summary_says_how_the_export_graded")],
+    ),
+    # kdb_summary.py `main`: the export's grades are shown without saying how they were made.
+    SrcMutant(
+        "kdb-summary-stale-stamp-ignored",
+        "fb/kernel_db/kdb_summary.py",
+        "        if not a.recompute:\n            notes = export_notes(a.records, recs, a)\n",
+        "",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summary_says_how_the_export_graded")],
+    ),
+    # export_records.py `main`: a family's old stamp stays until the new one is written, so an
+    # export that stops after the records change keeps the stamp of the records it replaced, and
+    # kdb_summary says they were graded with the list (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-stamp-outlives",
+        "fb/kernel_db/export_records.py",
+        "            try:\n                os.remove(os.path.join(d, STAMP))\n"
+        "            except FileNotFoundError:\n                pass\n",
+        "",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_export_stamp_never_outlives_its_records")],
+    ),
+    # kdb_summary.py `export_notes`: any JSON is a stamp, so one holding [] (or a string) stops
+    # the summary on an AttributeError (MISS 280).
+    SrcMutant(
+        "kdb-summary-stale-stamp-any-json",
+        "fb/kernel_db/kdb_summary.py",
+        "            if not isinstance(s, dict):\n",
+        "            if False:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_export_stamp_never_outlives_its_records")],
+    ),
+    # kdb_summary.py `export_notes`: a stamp it cannot read is said to be missing (exported
+    # before the export recorded its list), not unreadable (MISS 280).
+    SrcMutant(
+        "kdb-summary-stale-stamp-unreadable-as-missing",
+        "fb/kernel_db/kdb_summary.py",
+        "        if bad is not None:\n",
+        "        if False:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_export_stamp_never_outlives_its_records")],
+    ),
     # export_records.py `load_stale`: a missing list reads as an empty one, so the export grades
     # every record from its check alone without saying so.
     SrcMutant(
         "kdb-export-stale-missing-list-open",
         "fb/kernel_db/export_records.py",
-        '    with open(path, newline="") as fh:\n        for row in csv.DictReader(fh):\n',
-        '    if not os.path.isfile(path):\n        return stale\n'
-        '    with open(path, newline="") as fh:\n        for row in csv.DictReader(fh):\n',
+        '    with open(path, "rb") as fh:\n        raw = fh.read()\n',
+        '    if not os.path.isfile(path):\n        return {}, "none"\n'
+        '    with open(path, "rb") as fh:\n        raw = fh.read()\n',
         [],
         py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_fails_closed")],
+    ),
+    # export_records.py `load_stale`: fields are kept as written, so a hash with a space after
+    # it or in upper case, or a path with spaces around it, never matches its case.
+    SrcMutant(
+        "kdb-export-stale-list-unstripped",
+        "fb/kernel_db/export_records.py",
+        '            row = {k: (v or "").strip() for k, v in row.items() if k is not None}\n'
+        '            row["case_hash"] = row["case_hash"].lower()\n',
+        '            row = {k: v or "" for k, v in row.items() if k is not None}\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_read_strictly")],
+    ),
+    # export_records.py `load_stale`: a list without data rows (empty, or a header only) is
+    # read as an empty list, so the export grades every record by its check alone.
+    SrcMutant(
+        "kdb-export-stale-list-empty-ok",
+        "fb/kernel_db/export_records.py",
+        '    if not stale:\n        raise ValueError("no data rows")\n',
+        "",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_read_strictly")],
+    ),
+    # export_records.py `load_stale`: a UTF-8 BOM stays on the first column's name, so a list
+    # saved with one has no "case" column.
+    SrcMutant(
+        "kdb-export-stale-list-bom",
+        "fb/kernel_db/export_records.py",
+        '    rd = csv.DictReader(io.StringIO(raw.decode("utf-8-sig"), newline=""), strict=True)\n',
+        '    rd = csv.DictReader(io.StringIO(raw.decode("utf-8"), newline=""), strict=True)\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_read_strictly")],
+    ),
+    # export_records.py `load_stale`: the list read without the csv module's strict reading, so
+    # a closing quote followed by more of its field takes the rest into the field, and a quote
+    # still open at the end of the list ends with it: the row loads (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-list-lax-quotes",
+        "fb/kernel_db/export_records.py",
+        '    rd = csv.DictReader(io.StringIO(raw.decode("utf-8-sig"), newline=""), strict=True)\n',
+        '    rd = csv.DictReader(io.StringIO(raw.decode("utf-8-sig"), newline=""))\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_rows_parse_strictly")],
+    ),
+    # export_records.py `load_stale`: the strict reading's csv.Error is not caught, so the export
+    # dies on a traceback instead of saying the list is malformed (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-list-csv-error-raw",
+        "fb/kernel_db/export_records.py",
+        "    except csv.Error as e:\n",
+        "    except ZeroDivisionError as e:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_rows_parse_strictly")],
+    ),
+    # export_records.py `load_stale`: a field holding a line break reads as any other, so a quote
+    # left open that a stray quote in a later row closes before a line end swallows the rows in
+    # between, and the strict reading raises nothing (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-list-line-break",
+        "fb/kernel_db/export_records.py",
+        '            if any(v and ("\\n" in v or "\\r" in v) for v in held):\n',
+        "            if False:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_rows_parse_strictly")],
+    ),
+    # export_records.py `load_stale`: any case path is a key, so a listed case written relative
+    # to the store, under a root without /ptxv-kdb/, or with a quote kept in it loads and matches
+    # no record (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-list-any-key",
+        "fb/kernel_db/export_records.py",
+        "            if not STALE_KEY.fullmatch(key):\n",
+        "            if not key:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_rows_parse_strictly")],
+    ),
+    # export_records.py `STALE_KEY`: a part of a key may hold any character, so a case path in
+    # typographic quotes loads and matches no record (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-key-any-chars",
+        "fb/kernel_db/export_records.py",
+        '_KEY_PART = r"[A-Za-z0-9+_-][A-Za-z0-9+._-]*"\n',
+        '_KEY_PART = r"[^/]+"\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_rows_parse_strictly")],
+    ),
+    # export_records.py `STALE_KEY`: one part below cases* is enough, so a family directory
+    # (cases/<family>) loads as a listed case and matches no record (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-key-shallow",
+        "fb/kernel_db/export_records.py",
+        "(?:/{_KEY_PART}){{2,}}",
+        "(?:/{_KEY_PART})+",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_rows_parse_strictly")],
+    ),
+    # export_records.py `STALE_KEY`: a key must start at cases*, so a list with a row for a fresh
+    # capture under work/PX/mslk_root/cases/... stops the export (MISS 280).
+    SrcMutant(
+        "kdb-export-stale-key-no-work",
+        "fb/kernel_db/export_records.py",
+        'rf"(?:work(?:/{_KEY_PART})*/)?cases',
+        'rf"cases',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_stale_list_rows_parse_strictly")],
+    ),
+    # kdb_summary.py: every grade counts in the rows of a status that claims no finding, so a
+    # record graded stale, unconfirmed or unknown shows as certified clean again (MISS 280, E6).
+    SrcMutant(
+        "kdb-summary-counted-any-grade",
+        "fb/kernel_db/kdb_summary.py",
+        'COUNTED = ("clean-ptxv", "provisional")\n',
+        "COUNTED = soundness.GRADES\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summary_counts_clean_by_grade")],
+    ),
+    # kdb_summary.py `uncounted`: the rows for the other grades stay empty, so the records left
+    # out of the clean rows are counted nowhere in the first table.
+    SrcMutant(
+        "kdb-summary-uncounted-rows-empty",
+        "fb/kernel_db/kdb_summary.py",
+        '    return lambda r: r.get("status") in ("clean", "contract_only") and grade(r) == g\n',
+        "    return lambda r: False\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summary_counts_clean_by_grade")],
+    ),
+    # kdb_summary.py `ROWS`: no catch-all status row, so a record with no grade, a grade
+    # soundness.py does not give, or a status without a row (inconclusive) counts in no status
+    # row (MISS 280).
+    SrcMutant(
+        "kdb-summary-no-other-row",
+        "fb/kernel_db/kdb_summary.py",
+        "    + [OTHER]\n",
+        "",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_every_record_counts_in_one_status_row")],
+    ),
+    # kdb_summary.py `main`: the grade table has no row for the records whose grade is not one of
+    # soundness.GRADES, so its columns leave them out (MISS 280).
+    SrcMutant(
+        "kdb-summary-no-other-grade-row",
+        "fb/kernel_db/kdb_summary.py",
+        "        sum(1 for r in allr if p(r) and grade(r) not in soundness.GRADES)\n",
+        "        0\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_every_record_counts_in_one_status_row")],
+    ),
+    # summarize.py `status_column`: no catch-all column, so a record with no grade, a grade
+    # soundness.py does not give, or a status without a column counts in no column (MISS 280).
+    SrcMutant(
+        "kdb-summarize-no-other-column",
+        "fb/kernel_db/summarize.py",
+        "    return s if s in ORDER or s in GRADED else OTHER\n",
+        "    return s\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_every_record_counts_in_one_status_row")],
+    ),
+    # summarize.py `status_column`: a clean or contract_only record counts in its status column
+    # whatever its grade, so SUMMARY.md shows one graded stale as clean again (MISS 280).
+    SrcMutant(
+        "kdb-summarize-status-by-status",
+        "fb/kernel_db/summarize.py",
+        '    if s in ("clean", "contract_only") and kdb_summary.grade(r) not in kdb_summary.COUNTED:\n',
+        "    if False:\n",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summarize_counts_clean_by_grade")],
+    ),
+    # summarize.py `summary`: a record's line no longer gives its grade.
+    SrcMutant(
+        "kdb-summarize-grade-unshown",
+        "fb/kernel_db/summarize.py",
+        "{kdb_summary.grade(r) or '-'}",
+        "-",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summarize_counts_clean_by_grade")],
+    ),
+    # summarize.py `main`: the families held only one file per record are not named, so
+    # SUMMARY.md leaves them out without a word again.
+    SrcMutant(
+        "kdb-summarize-json-only-unnamed",
+        "fb/kernel_db/summarize.py",
+        '    (out / "SUMMARY.md").write_text(summary(recs, note, notes, json_only(a)))\n',
+        '    (out / "SUMMARY.md").write_text(summary(recs, note, notes))\n',
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summarize_names_json_only_families")],
+    ),
+    # summarize.py `json_only`: a family with an export file is named as not exported too (its
+    # leftover one-file-per-record copies).
+    SrcMutant(
+        "kdb-summarize-json-only-exported",
+        "fb/kernel_db/summarize.py",
+        '        if glob.glob(os.path.join(d, "*.jsonl")):\n            continue\n',
+        "",
+        [],
+        py=[("fb/kernel_db", "test_soundness.py", "test_summarize_names_json_only_families")],
     ),
     # audit_ptxv_rev.py `resolve`: check_ptx's rev is taken from the runner's logs of the check
     # task (a run of the check is no evidence of check_ptx's binary).
