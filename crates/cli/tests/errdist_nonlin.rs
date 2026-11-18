@@ -318,5 +318,19 @@ fn model_compile_and_query() {
     .unwrap();
     assert!(j.to_string().contains("loaded"), "{j}");
     agrees(&j, find(&j, 2, "linearized"));
+    let mut old_model: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&m).unwrap()).unwrap();
+    old_model["programs"]["version"] = 2.into();
+    std::fs::write(&m, serde_json::to_string(&old_model).unwrap()).unwrap();
+    let error = errdist(
+        "fixtures/r4_softmax_torch",
+        "fixtures/errdist/normal.json",
+        &["--model", ms],
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("model version 2") && error.contains("recompile"),
+        "{error}"
+    );
     let _ = std::fs::remove_file(&m);
 }

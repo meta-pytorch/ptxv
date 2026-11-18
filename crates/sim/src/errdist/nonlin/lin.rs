@@ -811,6 +811,21 @@ impl<'a> KModel<'a> {
                     }
                     NlOp::Seg { prog, args, real } => match real {
                         None => (f64::NAN, i32::MIN, None, Law::Missing, 0.5),
+                        Some(f) if f.func == Func::Max => {
+                            let (x, y) = (args[0] as usize, args[1] as usize);
+                            if s.v[x].is_nan() || s.v[y].is_nan() {
+                                (f64::NAN, i32::MIN, None, Law::Missing, 0.5)
+                            } else {
+                                let pick = [x, y][f.maximum_arg(s.v[x], s.v[y])];
+                                (
+                                    s.v[pick],
+                                    s.lat[pick],
+                                    s.rlat[pick],
+                                    Law::Zero,
+                                    s.podd[pick],
+                                )
+                            }
+                        }
                         Some(f) => {
                             let a: Vec<f64> = args.iter().map(|&j| s.v[j as usize]).collect();
                             let v = f.eval(&a);
@@ -1003,6 +1018,13 @@ impl<'a> KModel<'a> {
         let mut i = o;
         loop {
             match &self.p.ops[i as usize] {
+                Op::Nl(NlOp::Seg {
+                    args,
+                    real: Some(f),
+                    ..
+                }) if f.func == Func::Max => {
+                    i = args[f.maximum_arg(s.v[args[0] as usize], s.v[args[1] as usize])];
+                }
                 Op::Nl(NlOp::Max { a, b, min }) => {
                     let (x, y) = (*a as usize, *b as usize);
                     i = if (s.v[x] >= s.v[y]) != *min { *a } else { *b };

@@ -25,7 +25,11 @@
 //! the slow path) is one opaque operation (`DivRn`), whose result PTX defines as the
 //! correctly rounded quotient. ASSUME(N-SEG): see ASSUMPTIONS.md
 
+pub mod binding;
+pub mod bound;
+pub mod hardware;
 mod helpers;
+pub mod program;
 
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -83,6 +87,159 @@ pub struct SProg {
     pub out: SVal,
     /// Instructions of div.rn sequences the slice stands for.
     pub extra_pcs: BTreeSet<u32>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ComparisonContext {
+    pub plan: ptxv_ir::comparison_select::Plan,
+    pub left: u32,
+    pub right: u32,
+    pub comparison_pc: u32,
+    pub selection_pc: u32,
+}
+
+#[allow(
+    clippy::vec_init_then_push,
+    reason = "Aeneas requires explicit vector construction"
+)]
+pub fn comparison_program_parts(context: ComparisonContext) -> (Vec<u32>, Vec<SOp>, SVal) {
+    let ComparisonContext {
+        plan,
+        left: x,
+        right: y,
+        comparison_pc,
+        selection_pc: pc,
+    } = context;
+    let (comparison, selection) = ptxv_ir::comparison_select::operations(plan);
+    let xreg = Reg {
+        file: File::R,
+        idx: 0,
+    };
+    let yreg = Reg {
+        file: File::R,
+        idx: 1,
+    };
+    let predicate = Reg {
+        file: File::P,
+        idx: 0,
+    };
+    let destination = Reg {
+        file: File::R,
+        idx: 2,
+    };
+    let mut args = Vec::with_capacity(2);
+    args.push(x);
+    args.push(y);
+    let mut comparison_regs = Vec::with_capacity(2);
+    comparison_regs.push((xreg, SVal::Arg(0)));
+    comparison_regs.push((yreg, SVal::Arg(1)));
+    let mut selection_regs = Vec::with_capacity(3);
+    selection_regs.push((xreg, SVal::Arg(0)));
+    selection_regs.push((yreg, SVal::Arg(1)));
+    selection_regs.push((predicate, SVal::Op(0)));
+    let mut ops = Vec::with_capacity(2);
+    ops.push(SOp {
+        pc: comparison_pc,
+        kind: SKind::Inst {
+            op: comparison,
+            dst: predicate,
+            regs: comparison_regs,
+            cvals: Vec::new(),
+        },
+    });
+    ops.push(SOp {
+        pc,
+        kind: SKind::Inst {
+            op: selection,
+            dst: destination,
+            regs: selection_regs,
+            cvals: Vec::new(),
+        },
+    });
+    (args, ops, SVal::Op(1))
+}
+
+/// A source-constructed comparison/selection maximum in a non-NaN real abstraction.
+/// The exact slice remains authoritative for hardware bits, including signed zero.
+pub(crate) fn real_maximum(p: &SProg) -> Option<(u32, u32)> {
+    let [left, right] = p.args.as_slice() else {
+        return None;
+    };
+    let [compare, select] = p.ops.as_slice() else {
+        return None;
+    };
+    if p.out != SVal::Op(1) || !p.extra_pcs.is_empty() {
+        return None;
+    }
+    let x = Reg {
+        file: File::R,
+        idx: 0,
+    };
+    let y = Reg {
+        file: File::R,
+        idx: 1,
+    };
+    let predicate = Reg {
+        file: File::P,
+        idx: 0,
+    };
+    let destination = Reg {
+        file: File::R,
+        idx: 2,
+    };
+    let SKind::Inst {
+        op: comparison,
+        dst: comparison_dst,
+        regs: comparison_regs,
+        cvals: comparison_constants,
+    } = &compare.kind
+    else {
+        return None;
+    };
+    let SKind::Inst {
+        op: selection,
+        dst: selection_dst,
+        regs: selection_regs,
+        cvals: selection_constants,
+    } = &select.kind
+    else {
+        return None;
+    };
+    if *comparison_dst != predicate
+        || *selection_dst != destination
+        || !comparison_constants.is_empty()
+        || !selection_constants.is_empty()
+        || comparison_regs.as_slice() != [(x, SVal::Arg(0)), (y, SVal::Arg(1))]
+        || selection_regs.as_slice()
+            != [
+                (x, SVal::Arg(0)),
+                (y, SVal::Arg(1)),
+                (predicate, SVal::Op(0)),
+            ]
+    {
+        return None;
+    }
+    let Op::Fsetp { d, a, b, .. } = comparison else {
+        return None;
+    };
+    if *d != predicate || *a != Val::Reg(x, 1) || *b != Val::Reg(y, 1) {
+        return None;
+    }
+    let Op::Sel { d, a, b, p } = selection else {
+        return None;
+    };
+    if *d != destination || p.reg != Some(predicate) {
+        return None;
+    }
+    let swap = if *a == Val::Reg(x, 1) && *b == Val::Reg(y, 1) {
+        false
+    } else if *a == Val::Reg(y, 1) && *b == Val::Reg(x, 1) {
+        true
+    } else {
+        return None;
+    };
+    let plan = ptxv_ir::comparison_select::from_operation(comparison, p.neg, swap)?;
+    ptxv_ir::comparison_select::real_max(plan).then_some((*left, *right))
 }
 
 impl SProg {
@@ -146,7 +303,7 @@ impl SProg {
                         let reg = |r: &Reg| regs.iter().find(|(x, _)| x == r).map(|x| x.1);
                         let on = match p.reg {
                             None => true,
-                            Some(r) => reg(&r).is_none_or(|s| get(s) != 0),
+                            Some(r) => reg(&r).is_none_or(|s| r.pred_bit(get(s))),
                         } != p.neg;
                         let Val::Reg(r, _) = (if on { a } else { b }) else {
                             return None;
@@ -219,67 +376,71 @@ impl SProg {
 
     /// `eval` with a scratch buffer (sweeps).
     pub fn eval_with(&self, args: &[u32], vals: &mut Vec<u64>) -> Result<u32, String> {
-        vals.clear();
-        let get = |v: SVal, vals: &[u64]| -> u64 {
-            match v {
-                SVal::Arg(i) => args[i as usize] as u64,
-                SVal::Const(c) => c,
-                SVal::Op(i) => vals[i as usize],
+        program::execute(
+            program::Program {
+                args,
+                ops: &self.ops,
+                out: self.out,
+            },
+            vals,
+            &mut bound::Evaluator {
+                comparison: bound::IeeeComparison,
+                fallback: NativeFallbackEvaluator,
+            },
+        )
+    }
+}
+
+struct NativeFallbackEvaluator;
+
+impl bound::FallbackEvaluator for NativeFallbackEvaluator {
+    fn evaluate(&mut self, o: &SOp, inputs: binding::Inputs<'_>) -> Result<u64, String> {
+        let args = inputs.args;
+        let vals = inputs.prior;
+        let get = |v: SVal, vals: &[u64]| binding::read_sval(v, args, vals);
+        let result = match &o.kind {
+            SKind::Guard {
+                pred,
+                neg,
+                new,
+                old,
+            } => {
+                if (get(*pred, vals) != 0) != *neg {
+                    get(*new, vals)
+                } else {
+                    get(*old, vals)
+                }
+            }
+            SKind::DivRn { a, b } => {
+                let (a, b) = (get(*a, vals) as u32, get(*b, vals) as u32);
+                div_rn(a, b) as u64
+            }
+            SKind::Inst {
+                op,
+                dst,
+                regs,
+                cvals,
+            } => {
+                let rv = |v: &Val| -> u64 {
+                    match v {
+                        Val::Reg(r, _) => {
+                            binding::register_bits(*r, regs, binding::Inputs { args, prior: vals })
+                        }
+                        Val::Imm(c) => *c,
+                        v => cvals.iter().find(|(x, _)| x == v).map_or(0, |(_, c)| *c),
+                    }
+                };
+                let rp = |p: &Pred| -> bool {
+                    binding::read_predicate(p, regs, binding::Inputs { args, prior: vals })
+                };
+                eval_inst(op, *dst, &rv, &rp)?
             }
         };
-        for o in &self.ops {
-            let r = match &o.kind {
-                SKind::Guard {
-                    pred,
-                    neg,
-                    new,
-                    old,
-                } => {
-                    if (get(*pred, vals) != 0) != *neg {
-                        get(*new, vals)
-                    } else {
-                        get(*old, vals)
-                    }
-                }
-                SKind::DivRn { a, b } => {
-                    let (a, b) = (get(*a, vals) as u32, get(*b, vals) as u32);
-                    div_rn(a, b) as u64
-                }
-                SKind::Inst {
-                    op,
-                    dst,
-                    regs,
-                    cvals,
-                } => {
-                    let rv = |v: &Val| -> u64 {
-                        match v {
-                            Val::Reg(r, _) => regs
-                                .iter()
-                                .find(|(x, _)| x == r)
-                                .map_or(0, |(_, s)| get(*s, vals)),
-                            Val::Imm(c) => *c,
-                            v => cvals.iter().find(|(x, _)| x == v).map_or(0, |(_, c)| *c),
-                        }
-                    };
-                    // A `.SIGN` register (PLOP3 input) reads its bit 31 (`Reg::pred_bit`).
-                    let rp = |p: &Pred| -> bool {
-                        let v = match p.reg {
-                            None => true,
-                            Some(r) => regs
-                                .iter()
-                                .find(|(x, _)| *x == r)
-                                .is_none_or(|(_, s)| r.pred_bit(get(*s, vals))),
-                        };
-                        v != p.neg
-                    };
-                    eval_inst(op, *dst, &rv, &rp)?
-                }
-            };
-            vals.push(r);
-        }
-        Ok(get(self.out, vals) as u32)
+        Ok(result)
     }
+}
 
+impl SProg {
     /// The data-dependent decisions the slice takes at argument bits `args` (MISS 57): the
     /// value of every predicate it reads that depends on its arguments, each `Guard`'s and each
     /// predicate operand of an instruction (a select's condition, a carry, a chained compare),
@@ -430,7 +591,7 @@ impl SProg {
                             Some(r) => regs
                                 .iter()
                                 .find(|(x, _)| *x == r)
-                                .is_none_or(|(_, s)| get(*s) != 0),
+                                .is_none_or(|(_, s)| r.pred_bit(get(*s))),
                         };
                         v != p.neg
                     };
@@ -1231,12 +1392,92 @@ fn cut_pieces(ops: &[(u32, bool)], low_cut: &[bool], r: u32, f: &mut dyn FnMut(b
 /// even, subnormals kept; NaN results are the canonical NaN, N-FALU).
 pub fn div_rn(a: u32, b: u32) -> u32 {
     let q = f32::from_bits(a) / f32::from_bits(b);
-    if q.is_nan() { 0x7fff_ffff } else { q.to_bits() }
+    if q.is_nan() {
+        0x7fff_ffff
+    } else {
+        q.to_bits()
+    }
 }
 
 fn fmod(u: u32, neg: bool, abs: bool) -> u32 {
     let u = if abs { u & 0x7fff_ffff } else { u };
-    if neg { u ^ 0x8000_0000 } else { u }
+    if neg {
+        u ^ 0x8000_0000
+    } else {
+        u
+    }
+}
+
+pub struct ComparisonRequest {
+    pub comparison: FCmp,
+    pub left: u32,
+    pub right: u32,
+    pub ftz: bool,
+}
+
+pub trait ComparisonEvaluator {
+    fn read(&mut self, value: &Val) -> u32;
+    fn predicate(&mut self, predicate: &Pred) -> bool;
+    fn compare(&mut self, request: ComparisonRequest) -> bool;
+}
+
+pub fn comparison_instruction<E: ComparisonEvaluator>(op: &Op, evaluator: &mut E) -> Option<u32> {
+    match op {
+        Op::Fsetp {
+            cmp,
+            a,
+            b,
+            neg,
+            abs,
+            c,
+            bop,
+            ftz,
+            ..
+        } => {
+            let x = fmod(evaluator.read(a), neg[0], abs[0]);
+            let y = fmod(evaluator.read(b), neg[1], abs[1]);
+            let result = evaluator.compare(ComparisonRequest {
+                comparison: *cmp,
+                left: x,
+                right: y,
+                ftz: *ftz,
+            });
+            let predicate = evaluator.predicate(c);
+            Some(match bop {
+                BoolOp::And => result && predicate,
+                BoolOp::Or => result || predicate,
+                BoolOp::Xor => result != predicate,
+            } as u32)
+        }
+        Op::Sel { a, b, p, .. } => {
+            let value = if evaluator.predicate(p) {
+                evaluator.read(a)
+            } else {
+                evaluator.read(b)
+            };
+            Some(value)
+        }
+        _ => None,
+    }
+}
+
+struct NativeComparisonEvaluator<'a> {
+    value: &'a dyn Fn(&Val) -> u64,
+    predicate: &'a dyn Fn(&Pred) -> bool,
+}
+
+impl ComparisonEvaluator for NativeComparisonEvaluator<'_> {
+    fn read(&mut self, value: &Val) -> u32 {
+        (self.value)(value) as u32
+    }
+
+    fn predicate(&mut self, predicate: &Pred) -> bool {
+        (self.predicate)(predicate)
+    }
+
+    fn compare(&mut self, request: ComparisonRequest) -> bool {
+        bound::ComparisonPrimitive::compare(&bound::IeeeComparison, request)
+    }
 }
 
 /// One instruction's result (`dst`; a predicate is 0 / 1), for the operations slices use.
@@ -1302,27 +1543,15 @@ pub(crate) fn eval_inst(
             }
             .ok_or_else(|| format!("{func:?} not modeled"))? as u64
         }
-        Op::Fsetp {
-            cmp,
-            a,
-            b,
-            neg,
-            abs,
-            c,
-            bop,
-            ftz,
-            ..
-        } => {
-            let x = fmod(w(a), neg[0], abs[0]);
-            let y = fmod(w(b), neg[1], abs[1]);
-            let r = fp::f32_cmp(x, y, *cmp, *ftz);
-            let q = rp(c);
-            (match bop {
-                BoolOp::And => r && q,
-                BoolOp::Or => r || q,
-                BoolOp::Xor => r != q,
-            }) as u64
-        }
+        Op::Fsetp { .. } | Op::Sel { .. } => comparison_instruction(
+            op,
+            &mut NativeComparisonEvaluator {
+                value: rv,
+                predicate: rp,
+            },
+        )
+        .expect("comparison or selection instruction")
+            as u64,
         Op::Hsetp2Bf16 {
             q: qd,
             cmp,
@@ -1358,7 +1587,6 @@ pub(crate) fn eval_inst(
             };
             ((lut >> i) & 1) as u64
         }
-        Op::Sel { a, b, p, .. } => (if rp(p) { w(a) } else { w(b) }) as u64,
         Op::Fsel {
             a, b, p, neg, abs, ..
         } => {
@@ -1466,7 +1694,11 @@ pub(crate) fn eval_inst(
             } else {
                 v << s
             };
-            if *high { r >> 32 } else { r & 0xffff_ffff }
+            if *high {
+                r >> 32
+            } else {
+                r & 0xffff_ffff
+            }
         }
         Op::Lop3 {
             a,
@@ -1723,7 +1955,11 @@ pub(crate) fn eval_inst(
                 let n = (s >> (4 * i)) & 0xf;
                 let byte = (x >> (8 * (n & 7))) & 0xff;
                 let v = if n & 8 != 0 {
-                    if byte & 0x80 != 0 { 0xff } else { 0 }
+                    if byte & 0x80 != 0 {
+                        0xff
+                    } else {
+                        0
+                    }
                 } else {
                     byte
                 };
@@ -2577,33 +2813,31 @@ pub fn rcp_fast_ok() -> bool {
         let bad = std::sync::atomic::AtomicU64::new(0);
         std::thread::scope(|sc| {
             for _ in 0..threads {
-                sc.spawn(|| {
-                    loop {
-                        let c = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if c >= 1 << 12 {
-                            break;
+                sc.spawn(|| loop {
+                    let c = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if c >= 1 << 12 {
+                        break;
+                    }
+                    for i in 0..1u64 << 20 {
+                        let b = ((c << 20) | i) as u32;
+                        if (b.wrapping_add(0x180_0000) & 0x7f80_0000) <= 0x1ff_ffff {
+                            continue;
                         }
-                        for i in 0..1u64 << 20 {
-                            let b = ((c << 20) | i) as u32;
-                            if (b.wrapping_add(0x180_0000) & 0x7f80_0000) <= 0x1ff_ffff {
-                                continue;
-                            }
-                            let r = crate::mufu::mufu(MufuFunc::Rcp, MufuFmt::F32, false, b)
-                                .unwrap_or(0);
-                            let t = fp::f32_fma(b, r, Some(0xbf80_0000), Rnd::Rn, false);
-                            let t = fp::f32_fma(
-                                t ^ 0x8000_0000,
-                                0x3f80_0000,
-                                Some(0x8000_0000),
-                                Rnd::Rn,
-                                true,
-                            );
-                            let q = fp::f32_fma(r, t, Some(r), Rnd::Rn, false);
-                            let want = div_rn(0x3f80_0000, b);
-                            let nan = |x: u32| f32::from_bits(x).is_nan();
-                            if q != want && !(nan(q) && nan(want)) {
-                                bad.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            }
+                        let r =
+                            crate::mufu::mufu(MufuFunc::Rcp, MufuFmt::F32, false, b).unwrap_or(0);
+                        let t = fp::f32_fma(b, r, Some(0xbf80_0000), Rnd::Rn, false);
+                        let t = fp::f32_fma(
+                            t ^ 0x8000_0000,
+                            0x3f80_0000,
+                            Some(0x8000_0000),
+                            Rnd::Rn,
+                            true,
+                        );
+                        let q = fp::f32_fma(r, t, Some(r), Rnd::Rn, false);
+                        let want = div_rn(0x3f80_0000, b);
+                        let nan = |x: u32| f32::from_bits(x).is_nan();
+                        if q != want && !(nan(q) && nan(want)) {
+                            bad.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                 });
@@ -3036,5 +3270,354 @@ mod divrn_const_tests {
         assert_eq!(divrn_const_tail(&k.code, r(44), six, 2, 8), None);
         let k = kernel(&good.replace("FFMA R45, R44, R22, RZ", "FFMA R45, R43, R22, RZ"));
         assert_eq!(divrn_const_tail(&k.code, r(44), six, 2, 8), None);
+    }
+}
+
+#[cfg(test)]
+mod comparison_evaluator_tests {
+    use std::cell::RefCell;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Event {
+        Read(Val),
+        Predicate(Pred),
+        Compare(FCmp, u32, u32, bool),
+    }
+
+    struct Observer {
+        events: Vec<Event>,
+        comparison: bool,
+        predicate: bool,
+        fail_at: Option<usize>,
+    }
+
+    impl Observer {
+        fn event(&mut self, event: Event) {
+            self.events.push(event);
+            assert_ne!(self.fail_at, Some(self.events.len()), "callback failure");
+        }
+    }
+
+    impl ComparisonEvaluator for Observer {
+        fn read(&mut self, value: &Val) -> u32 {
+            self.event(Event::Read(value.clone()));
+            match value {
+                Val::Imm(bits) => *bits as u32,
+                _ => panic!("unexpected operand"),
+            }
+        }
+
+        fn predicate(&mut self, predicate: &Pred) -> bool {
+            self.event(Event::Predicate(*predicate));
+            self.predicate
+        }
+
+        fn compare(&mut self, request: ComparisonRequest) -> bool {
+            self.event(Event::Compare(
+                request.comparison,
+                request.left,
+                request.right,
+                request.ftz,
+            ));
+            self.comparison
+        }
+    }
+
+    fn observer(comparison: bool, predicate: bool) -> Observer {
+        Observer {
+            events: Vec::new(),
+            comparison,
+            predicate,
+            fail_at: None,
+        }
+    }
+
+    fn register(file: File, idx: u16) -> Reg {
+        Reg { file, idx }
+    }
+
+    fn modified(bits: u32, negative: bool, absolute: bool) -> u32 {
+        let magnitude = bits & 0x7fff_ffff;
+        let sign = if absolute { false } else { bits >> 31 != 0 };
+        magnitude | (((sign != negative) as u32) << 31)
+    }
+
+    #[test]
+    fn actual_comparison_fields_and_callback_order() {
+        let modes = [
+            FCmp::F,
+            FCmp::Lt,
+            FCmp::Eq,
+            FCmp::Le,
+            FCmp::Gt,
+            FCmp::Ne,
+            FCmp::Ge,
+            FCmp::Num,
+            FCmp::Nan,
+            FCmp::Ltu,
+            FCmp::Equ,
+            FCmp::Leu,
+            FCmp::Gtu,
+            FCmp::Neu,
+            FCmp::Geu,
+            FCmp::T,
+        ];
+        let a = Val::Imm(0xffc0_1234);
+        let b = Val::Imm(0x8000_0001);
+        let p = Pred {
+            reg: Some(register(File::P, 3)),
+            neg: true,
+        };
+        for mode in modes {
+            for flags in 0..32 {
+                let neg = [flags & 1 != 0, flags & 2 != 0];
+                let abs = [flags & 4 != 0, flags & 8 != 0];
+                let ftz = flags & 16 != 0;
+                for bop in [BoolOp::And, BoolOp::Or, BoolOp::Xor] {
+                    let op = Op::Fsetp {
+                        d: register(File::P, 0),
+                        cmp: mode,
+                        a: a.clone(),
+                        b: b.clone(),
+                        neg,
+                        abs,
+                        c: p,
+                        bop,
+                        ftz,
+                    };
+                    for result in [false, true] {
+                        for predicate in [false, true] {
+                            let mut source = observer(result, predicate);
+                            let expected = match bop {
+                                BoolOp::And => result & predicate,
+                                BoolOp::Or => result | predicate,
+                                BoolOp::Xor => result ^ predicate,
+                            };
+                            assert_eq!(
+                                comparison_instruction(&op, &mut source),
+                                Some(expected as u32)
+                            );
+                            assert_eq!(
+                                source.events,
+                                vec![
+                                    Event::Read(a.clone()),
+                                    Event::Read(b.clone()),
+                                    Event::Compare(
+                                        mode,
+                                        modified(0xffc0_1234, neg[0], abs[0]),
+                                        modified(0x8000_0001, neg[1], abs[1]),
+                                        ftz
+                                    ),
+                                    Event::Predicate(p)
+                                ]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selection_reads_only_selected_value_after_predicate() {
+        let p = Pred {
+            reg: Some(register(File::UP, 2)),
+            neg: true,
+        };
+        let op = Op::Sel {
+            d: register(File::R, 5),
+            a: Val::Imm(0x8000_0000),
+            b: Val::Imm(0x7fc0_9876),
+            p,
+        };
+        for selected in [false, true] {
+            let mut source = observer(false, selected);
+            let value = if selected { 0x8000_0000 } else { 0x7fc0_9876 };
+            assert_eq!(comparison_instruction(&op, &mut source), Some(value));
+            assert_eq!(
+                source.events,
+                vec![Event::Predicate(p), Event::Read(Val::Imm(value as u64))]
+            );
+        }
+        let mut source = observer(false, false);
+        assert_eq!(comparison_instruction(&Op::Nop, &mut source), None);
+        assert!(source.events.is_empty());
+    }
+
+    #[test]
+    fn callback_failures_preserve_exact_observed_prefix() {
+        let p = Pred {
+            reg: None,
+            neg: false,
+        };
+        let comparison = Op::Fsetp {
+            d: register(File::P, 0),
+            cmp: FCmp::Gt,
+            a: Val::Imm(1),
+            b: Val::Imm(2),
+            neg: [false; 2],
+            abs: [false; 2],
+            c: p,
+            bop: BoolOp::And,
+            ftz: false,
+        };
+        let selection = Op::Sel {
+            d: register(File::R, 0),
+            a: Val::Imm(1),
+            b: Val::Imm(2),
+            p,
+        };
+        for op in [comparison, selection] {
+            let mut baseline = observer(false, false);
+            comparison_instruction(&op, &mut baseline);
+            for failed in 1..=baseline.events.len() {
+                let mut source = observer(false, false);
+                source.fail_at = Some(failed);
+                assert!(catch_unwind(AssertUnwindSafe(|| comparison_instruction(
+                    &op,
+                    &mut source
+                )))
+                .is_err());
+                assert_eq!(source.events, baseline.events[..failed]);
+            }
+        }
+    }
+
+    #[test]
+    fn native_comparison_matches_direct_semantics_for_all_fields() {
+        let modes = [
+            FCmp::F,
+            FCmp::Lt,
+            FCmp::Eq,
+            FCmp::Le,
+            FCmp::Gt,
+            FCmp::Ne,
+            FCmp::Ge,
+            FCmp::Num,
+            FCmp::Nan,
+            FCmp::Ltu,
+            FCmp::Equ,
+            FCmp::Leu,
+            FCmp::Gtu,
+            FCmp::Neu,
+            FCmp::Geu,
+            FCmp::T,
+        ];
+        let inputs = [
+            0,
+            0x8000_0000,
+            1,
+            0x8000_0001,
+            0x3f80_0000,
+            0xbf80_0000,
+            0x7f80_0000,
+            0xff80_0000,
+            0x7fc0_1234,
+            0xff80_0001,
+        ];
+        let rv = |value: &Val| match value {
+            Val::Imm(bits) => *bits,
+            _ => panic!("unexpected operand"),
+        };
+        for mode in modes {
+            for flags in 0..32 {
+                let neg = [flags & 1 != 0, flags & 2 != 0];
+                let abs = [flags & 4 != 0, flags & 8 != 0];
+                let ftz = flags & 16 != 0;
+                for left in inputs {
+                    for right in inputs {
+                        let compared = fp::f32_cmp(
+                            modified(left, neg[0], abs[0]),
+                            modified(right, neg[1], abs[1]),
+                            mode,
+                            ftz,
+                        );
+                        for bop in [BoolOp::And, BoolOp::Or, BoolOp::Xor] {
+                            for condition in [false, true] {
+                                let expected = match bop {
+                                    BoolOp::And => compared & condition,
+                                    BoolOp::Or => compared | condition,
+                                    BoolOp::Xor => compared ^ condition,
+                                };
+                                let op = Op::Fsetp {
+                                    d: register(File::P, 0),
+                                    cmp: mode,
+                                    a: Val::Imm(left as u64),
+                                    b: Val::Imm(right as u64),
+                                    neg,
+                                    abs,
+                                    c: Pred::TRUE,
+                                    bop,
+                                    ftz,
+                                };
+                                assert_eq!(
+                                    eval_inst(&op, register(File::P, 0), &rv, &|_| condition)
+                                        .unwrap(),
+                                    expected as u64
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_evaluator_uses_source_plan_and_selected_read_order() {
+        let events = RefCell::new(Vec::new());
+        let a = Val::Imm(0);
+        let b = Val::Imm(0x8000_0000);
+        let p = Pred {
+            reg: None,
+            neg: false,
+        };
+        let rv = |v: &Val| {
+            events.borrow_mut().push(Event::Read(v.clone()));
+            match v {
+                Val::Imm(bits) => *bits,
+                _ => panic!("unexpected operand"),
+            }
+        };
+        let rp = |v: &Pred| {
+            events.borrow_mut().push(Event::Predicate(*v));
+            true
+        };
+        let op = Op::Fsetp {
+            d: register(File::P, 0),
+            cmp: FCmp::Gt,
+            a: a.clone(),
+            b: b.clone(),
+            neg: [false; 2],
+            abs: [false; 2],
+            c: p,
+            bop: BoolOp::And,
+            ftz: false,
+        };
+        assert_eq!(eval_inst(&op, register(File::P, 0), &rv, &rp).unwrap(), 0);
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                Event::Read(a.clone()),
+                Event::Read(b.clone()),
+                Event::Predicate(p)
+            ]
+        );
+        events.borrow_mut().clear();
+        let op = Op::Sel {
+            d: register(File::R, 0),
+            a: a.clone(),
+            b,
+            p,
+        };
+        assert_eq!(eval_inst(&op, register(File::R, 0), &rv, &rp).unwrap(), 0);
+        assert_eq!(
+            *events.borrow(),
+            vec![Event::Predicate(p), Event::Read(a.clone())]
+        );
     }
 }

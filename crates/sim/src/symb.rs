@@ -1683,6 +1683,17 @@ enum Pend {
     AtomAdd { bytes: u8 },
 }
 
+#[derive(Clone, Debug)]
+struct AtomicIssue {
+    pending: HashMap<usize, Pend>,
+    gold: HashMap<usize, (E, Vec<(Reg, E)>)>,
+    sguard: HashMap<u32, E>,
+    wdata: HashMap<u32, Vec<Src>>,
+    wreason: String,
+    first: usize,
+    uset: HashSet<(u32, u8, u16)>,
+}
+
 /// `ProvState::sym`: a clone (a trial execution's scratch machine) has none.
 #[derive(Debug, Default)]
 pub struct SymSlot(pub Option<Box<SymState>>);
@@ -1707,6 +1718,7 @@ pub struct SymState {
     /// The bytes each actor's store of the current instruction writes.
     wdata: HashMap<u32, Vec<Src>>,
     pending: Vec<(usize, Pend)>,
+    atomic: HashMap<(u32, u32), AtomicIssue>,
     nth: usize,
     /// What the current instruction is, for opaque bytes it writes (`OPQ_MARK`).
     wreason: String,
@@ -2332,7 +2344,13 @@ fn store_bytes(s: &mut SymState, m: &Machine, t: usize, op: &Op) -> Option<Vec<S
 }
 
 /// Before `pc` runs for `members` (coverage.rs `pre`); `active`: the members whose guard holds.
-pub(crate) fn pre(s: &mut SymState, m: &Machine, members: &[usize], active: &[usize], pc: u32) {
+pub(crate) fn pre(
+    s: &mut SymState,
+    m: &Machine,
+    members: &[usize],
+    active: &[usize],
+    pc: u32,
+) {
     let k = m.k.clone();
     let inst = &k.code[pc as usize];
     s.ar.pc = pc;
@@ -2467,6 +2485,96 @@ pub(crate) fn pre(s: &mut SymState, m: &Machine, members: &[usize], active: &[us
         };
         s.ghost.push((t, pend));
     }
+}
+
+pub(crate) fn capture_atomic_issue(
+    s: &mut SymState,
+    m: &Machine,
+    members: &[usize],
+    pc: u32,
+    clean: &dyn Fn(usize, Reg) -> bool,
+) {
+    let Some(&thread) = members.first() else {
+        return;
+    };
+    let issue = AtomicIssue {
+        pending: std::mem::take(&mut s.pending).into_iter().collect(),
+        gold: std::mem::take(&mut s.gold),
+        sguard: std::mem::take(&mut s.sguard),
+        wdata: std::mem::take(&mut s.wdata),
+        wreason: s.wreason.clone(),
+        first: s.first,
+        uset: std::mem::take(&mut s.uset),
+    };
+    // Guard-false lanes have no component to retire them; model them once at issue.
+    for &(thread, _) in &s.ghost {
+        if let Some(gold) = issue.gold.get(&thread) {
+            s.gold.insert(thread, gold.clone());
+        }
+    }
+    post(s, m, pc, clean);
+    s.gold.clear();
+    let warp = m.threads[thread].warp;
+    assert!(
+        s.atomic.insert((warp, pc), issue).is_none(),
+        "duplicate symbolic atomic issue for warp {warp} at pc {pc}"
+    );
+}
+
+pub(crate) fn begin_atomic_component(
+    s: &mut SymState,
+    m: &Machine,
+    thread: usize,
+    pc: u32,
+    returning: bool,
+) {
+    s.pending.clear();
+    s.ghost.clear();
+    s.gold.clear();
+    s.sguard.clear();
+    s.wdata.clear();
+    s.uset.clear();
+    s.acc.remove(&(thread as u32));
+    s.ar.pc = pc;
+    let warp = m.threads[thread].warp;
+    let issue = s.atomic.get(&(warp, pc)).unwrap_or_else(|| {
+        panic!("symbolic atomic component for thread {thread}, warp {warp}, pc {pc} has no issue snapshot")
+    });
+    s.wreason.clone_from(&issue.wreason);
+    s.first = issue.first;
+    s.uset.clone_from(&issue.uset);
+    if let Some(guard) = issue.sguard.get(&(thread as u32)) {
+        s.sguard.insert(thread as u32, *guard);
+    }
+    if let Some(data) = issue.wdata.get(&(thread as u32)) {
+        s.wdata.insert(thread as u32, data.clone());
+    }
+    if returning {
+        let pending = issue
+            .pending
+            .get(&thread)
+            .expect("returning atomic thread must have a frozen symbolic plan");
+        s.pending.push((thread, pending.clone()));
+        if let Some((guard, old)) = issue.gold.get(&thread) {
+            let destinations = m.k.code[pc as usize].op.dst_regs();
+            let old = old
+                .iter()
+                .copied()
+                .filter(|(reg, _)| destinations.contains(reg))
+                .collect();
+            s.gold.insert(thread, (*guard, old));
+        }
+    }
+}
+
+pub(crate) fn finish_atomic_component(s: &mut SymState, m: &Machine, thread: usize, pc: u32) {
+    if let Some(issue) = s.atomic.get_mut(&(m.threads[thread].warp, pc)) {
+        issue.uset.clone_from(&s.uset);
+    }
+}
+
+pub(crate) fn retire_atomic_components(s: &mut SymState, warp: u32, pc: u32) {
+    s.atomic.remove(&(warp, pc));
 }
 
 /// What `post` does for active thread `t` (`pre`).
@@ -2654,7 +2762,12 @@ fn local_opaque(s: &mut SymState) -> u32 {
 
 /// After `pc` ran (coverage.rs `post`, after the provenance update): `clean(t, r)` says
 /// whether the provenance of destination `r` is free of input data.
-pub(crate) fn post(s: &mut SymState, m: &Machine, pc: u32, clean: &dyn Fn(usize, Reg) -> bool) {
+pub(crate) fn post(
+    s: &mut SymState,
+    m: &Machine,
+    pc: u32,
+    clean: &dyn Fn(usize, Reg) -> bool,
+) {
     let k = m.k.clone();
     let inst = &k.code[pc as usize];
     s.ar.pc = pc;

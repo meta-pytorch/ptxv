@@ -19,6 +19,7 @@
 
 use crate::explore::DetSched;
 use crate::explore::FaultLoop;
+use crate::explore::FindingDelivery;
 use crate::explore::Verdict;
 use crate::machine::Finding;
 use crate::machine::Machine;
@@ -69,21 +70,17 @@ pub fn apply_fill(m: &mut Machine, f: Fill) {
     m.fill = Some(f);
     for t in 0..m.threads.len() {
         let th = m.threads[t].make_mut();
-        let written = th.written.clone();
-        for (i, r) in th.regs.iter_mut().enumerate() {
-            if written.get(i / 64).is_none_or(|w| w >> (i % 64) & 1 == 0) {
-                let k = (t as u64) << 20 | i as u64;
-                *r = f.word(k << 1) as u64 | (f.word(k << 1 | 1) as u64) << 32;
-            }
+        for i in 0..th.regs.len() {
+            let k = (t as u64) << 20 | i as u64;
+            let value = f.word(k << 1) as u64 | (f.word(k << 1 | 1) as u64) << 32;
+            th.fill_scalar_if_unwritten(i, value);
         }
     }
     for w in 0..m.warps.len() {
         let wp = m.warps[w].make_mut();
-        let written = wp.ur_written;
-        for (i, r) in wp.ur.iter_mut().enumerate() {
-            if written.get(i / 64).is_none_or(|x| x >> (i % 64) & 1 == 0) {
-                *r = f.word(1 << 40 | (w as u64) << 20 | i as u64) as u64;
-            }
+        for i in 0..wp.ur.len() {
+            let value = f.word(1 << 40 | (w as u64) << 20 | i as u64) as u64;
+            wp.fill_uniform_if_unwritten(i, value);
         }
     }
     for c in 0..m.smem.len() {
@@ -123,20 +120,21 @@ pub fn apply_fill(m: &mut Machine, f: Fill) {
 /// One deterministic run of `m` to its end: (output bytes, findings), or why not.
 fn run(mut m: Machine) -> Result<(Vec<u8>, Vec<Finding>), String> {
     let mut fs = Vec::new();
+    let mut delivery = FindingDelivery::default();
     let mut sched = DetSched::default();
     let mut faults = FaultLoop::default();
     while let Some(a) = sched.pick(&m) {
         m.apply(&a);
-        if let Some(why) = faults.repeats(&m.findings) {
+        if let Some(why) = faults.repeats(delivery.fresh(&m)) {
             return Err(why);
         }
-        fs.append(&mut m.findings);
+        delivery.collect(&mut m, &mut fs);
     }
     if !m.terminal() {
         return Err("the deterministic run does not reach the end of the launch".into());
     }
     m.exit_checks();
-    fs.append(&mut m.findings);
+    delivery.finish(&mut m, &mut fs);
     Ok((m.outputs(), fs))
 }
 

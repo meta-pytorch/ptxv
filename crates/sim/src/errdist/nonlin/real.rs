@@ -208,7 +208,16 @@ pub fn eval_table(p: &Prog, w: &[crate::mma_lp::Operand]) -> Table {
                                 .is_some_and(|d| o.covers(&d));
                         }
                         let a: Vec<f64> = args.iter().map(|&j| r[j as usize].0.v()).collect();
-                        if f.func == Func::Div {
+                        if f.func == Func::Max {
+                            let (x, y) = (r[args[0] as usize], r[args[1] as usize]);
+                            if x.0.hi.is_nan() || y.0.hi.is_nan() {
+                                nan
+                            } else if x.0.gt(y.0) || (!y.0.gt(x.0) && f.parg == 0) {
+                                x
+                            } else {
+                                y
+                            }
+                        } else if f.func == Func::Div {
                             // The quotient in double-double: q + (a - q b) / b.
                             let (n, d) = (r[args[0] as usize], r[args[1] as usize]);
                             let q = n.0.v() / d.0.v();

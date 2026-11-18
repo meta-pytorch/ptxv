@@ -202,7 +202,7 @@ fn is_tmem_op(op: &Op) -> bool {
 /// One deterministic run (`run_once`'s policy) recording every TMEM allocator event.
 fn record(m0: &Machine) -> (Vec<Ev>, Machine, bool) {
     let mut m = m0.clone();
-    m.fp = None;
+    m.set_footprint(None);
     let mut evs = Vec::new();
     loop {
         let acts = m.actions();
@@ -467,7 +467,7 @@ fn residency_certified(m: &Machine) -> bool {
 /// One run with every allocation at its lowest (`high` false) or highest free column run.
 fn run_placed(m0: &Machine, high: bool) -> (Machine, Vec<Finding>, bool) {
     let mut m = with_tenant(m0.clone(), vec![]);
-    m.fp = None;
+    m.set_footprint(None);
     let mut fs = Vec::new();
     loop {
         let acts = m.actions();

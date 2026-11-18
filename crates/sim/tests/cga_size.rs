@@ -78,7 +78,8 @@ fn cga_size_matches_gb300() {
         let model: Vec<Vec<u32>> = shapes
             .into_iter()
             .map(|l| {
-                let (m, fs, ok) = ptxv_sim::explore::run_once(Machine::new(k.clone(), Arc::new(l)));
+                let (m, fs, ok) =
+                    ptxv_sim::explore::run_once(Machine::new(k.clone(), Arc::new(l)));
                 assert!(ok && fs.is_empty(), "{name}: {fs:#?}");
                 words(&m.outputs())
             })

@@ -1,0 +1,14 @@
+name = "mbar_wait_uninitialized"
+description = "A retry loop on an uninitialized mbarrier must report the error before parking."
+ptx = "kernel.ptx"
+arch = "sm_100a"
+entry = "k"
+grid = [1, 1, 1]
+block = [32, 1, 1]
+outputs = []
+buffers = []
+params = []
+
+[[variants]]
+id = "bad"
+expect = ["deadlock", "violation"]

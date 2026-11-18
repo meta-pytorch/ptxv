@@ -1485,7 +1485,16 @@ non-chain programs is now the elementwise law's f32 quadrature only.
     For example, inductor's `addmm` copies its input with a device-to-device memcpy, which
     the capture does not record (`fixtures/errdist/c_mm2_addmm`). Recording memcpys in
     captures is open.
-- **Slice identification** (`ident.rs`, N-ERRDIST-IDENT). Each slice is fitted to a real
+- **Slice identification** (`ident.rs`, N-ERRDIST-IDENT). A structurally checked
+  comparison/select maximum is identified directly as `max(a0, a1)`. Bit-exact evaluation
+  still executes the slice; the real interpretation records its tie choice and compares
+  double-double values before deciding a tie. The maximum adds no rounding or sampled
+  slice table: the linearized model follows the selected operand's existing rounding site.
+  Arbitrary selections and slices with additional instructions are not accepted by this
+  recognizer. Softmax recognition also accepts these checked maxima inside maximum trees,
+  under its existing finite-input requirements.
+
+  Other slices are fitted to a real
   function on the captured input plus 24 perturbed inputs:
   - f(c0 + Σ c_i a_i) with f in {exp2, 1/x, 1/sqrt, sqrt, tanh, identity};
   - multiplier and divisor forms;

@@ -4976,10 +4976,7 @@ fn lower_line(
         }
         // With or without `.TRYWAIT` (the plain form is a non-suspending test_wait; the model
         // treats both alike, E-SPIN).
-        // A test whose result is discarded (`TRYWAIT PT, ...`: trtllm-gen polls the next
-        // stage's mbarrier ahead of time) changes nothing the model tracks; dropping its
-        // acquire only removes happens-before edges. ASSUME(E-SPIN)
-        "SYNCS" if has("PHASECHK") && has("TRANS64") && lw.op(0)? == "PT" => Op::Nop,
+        // Discarding the predicate still queries the barrier and can diagnose invalid state.
         "SYNCS" if has("PHASECHK") && has("TRANS64") => Op::MbarTryWait {
             d: lw.pdst(lw.op(0)?)?,
             addr: lw.addr(lw.op(1)?)?,

@@ -1442,6 +1442,147 @@ pub(crate) fn pre(m: &mut Machine, members: &[usize], pc: u32) {
     m.prov = Some(ps);
 }
 
+pub(crate) fn capture_atomic_issue(
+    m: &mut Machine,
+    members: &[usize],
+    pc: u32,
+) -> BTreeMap<usize, u64> {
+    if m.prov
+        .as_ref()
+        .is_none_or(|state| state.inert || state.detached.is_some())
+    {
+        return BTreeMap::new();
+    }
+    pre(m, members, pc);
+    let state = m.prov.as_mut().expect("coverage state checked above");
+    if state.inert || state.detached.is_some() {
+        return BTreeMap::new();
+    }
+    let masks = members
+        .iter()
+        .map(|&thread| {
+            (
+                thread,
+                state
+                    .wd
+                    .get(thread)
+                    .filter(|data| data.0 == state.gen)
+                    .map_or(0, |data| data.2.mask()),
+            )
+        })
+        .collect();
+    state.pending.clear();
+    let mut state = m.prov.take().expect("coverage state checked above");
+    if let Some(mut sym) = state.sym.0.take() {
+        crate::symb::capture_atomic_issue(&mut sym, m, members, pc, &|thread, reg| {
+            state.reg(m, thread, reg).mask() == 0
+        });
+        state.sym.0 = Some(sym);
+    }
+    m.prov = Some(state);
+    masks
+}
+
+pub(crate) fn begin_atomic_component(
+    m: &mut Machine,
+    thread: usize,
+    source_mask: u64,
+    pc: u32,
+    returning: bool,
+) {
+    let Some(state) = m.prov.as_mut() else { return };
+    if state.inert || state.detached.is_some() {
+        return;
+    }
+    state.pending.clear();
+    state.gen = state.gen.wrapping_add(1);
+    if state.gen == 0 {
+        for data in &mut state.wd {
+            data.0 = 0;
+        }
+        state.gen = 1;
+    }
+    state.grow(thread + 1);
+    state.acc[thread].clear();
+    state.racc[thread] = 0;
+    state.wd[thread] = (state.gen, true, WData::One(MByte::Mask(source_mask)));
+    state.pending.push((
+        thread,
+        Plan::Load {
+            addr: 0,
+            sext: false,
+            bytes: 4,
+            atomic: true,
+            extra: source_mask,
+        },
+    ));
+    let mut state = m.prov.take().expect("coverage state checked above");
+    if let Some(sym) = state.sym.0.as_mut() {
+        crate::symb::begin_atomic_component(sym, m, thread, pc, returning);
+    }
+    m.prov = Some(state);
+}
+
+pub(crate) fn finish_atomic_component(m: &mut Machine, thread: usize, pc: u32) {
+    let Some(mut state) = m.prov.take() else {
+        return;
+    };
+    if !state.inert && state.detached.is_none() {
+        if let Some(sym) = state.sym.0.as_mut() {
+            crate::symb::finish_atomic_component(sym, m, thread, pc);
+        }
+    }
+    m.prov = Some(state);
+}
+
+pub(crate) fn retire_atomic_components(m: &mut Machine, warp: u32, pc: u32) {
+    if let Some(sym) = m.prov.as_mut().and_then(|state| state.sym.0.as_mut()) {
+        crate::symb::retire_atomic_components(sym, warp, pc);
+    }
+}
+
+pub(crate) fn capture_atomic_component_return(
+    m: &mut Machine,
+    thread: usize,
+    source_mask: u64,
+) -> u64 {
+    let Some(state) = m.prov.as_mut() else {
+        return 0;
+    };
+    if state.inert || state.detached.is_some() {
+        return 0;
+    }
+    let mask = state.acc.get(thread).map_or(0, |bytes| {
+        bytes.iter().fold(0, |mask, byte| mask | byte.mask())
+    });
+    state.pending.clear();
+    source_mask | mask
+}
+
+pub(crate) fn retire_atomic_packed_return(
+    m: &mut Machine,
+    thread: usize,
+    destination: Reg,
+    mask: u64,
+    pc: u32,
+) {
+    let Some(mut state) = m.prov.take() else {
+        return;
+    };
+    if !state.inert && state.detached.is_none() {
+        state.set_reg(m, thread, destination, Prov::of_mask(mask));
+        if let Some(mut sym) = state.sym.0.take() {
+            crate::symb::begin_atomic_component(&mut sym, m, thread, pc, true);
+            crate::symb::post(&mut sym, m, pc, &|thread, reg| {
+                state.reg(m, thread, reg).mask() == 0
+            });
+            crate::symb::finish_atomic_component(&mut sym, m, thread, pc);
+            state.sym.0 = Some(sym);
+        }
+    }
+    m.prov = Some(state);
+}
+
 /// The operation's name (`Op` variant), for refusal reasons.
 fn op_name(op: &Op) -> String {
     let d = format!("{op:?}");
@@ -1989,7 +2130,10 @@ pub fn analyze_budget(m0: &Machine, b: Budget) -> Coverage {
 pub fn analyze_with(
     m0: &Machine,
     sym: Option<crate::symb::Config>,
-) -> (Coverage, Option<(Box<crate::symb::SymState>, Machine)>) {
+) -> (
+    Coverage,
+    Option<(Box<crate::symb::SymState>, Machine)>,
+) {
     analyze_sym(m0, Budget::default(), sym)
 }
 
@@ -1998,7 +2142,10 @@ pub fn analyze_sym(
     m0: &Machine,
     b: Budget,
     sym: Option<crate::symb::Config>,
-) -> (Coverage, Option<(Box<crate::symb::SymState>, Machine)>) {
+) -> (
+    Coverage,
+    Option<(Box<crate::symb::SymState>, Machine)>,
+) {
     let t0 = std::time::Instant::now();
     let mut m = m0.clone();
     let nth = m.threads.len();

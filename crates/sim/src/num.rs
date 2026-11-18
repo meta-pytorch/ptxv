@@ -10,8 +10,8 @@
 //! Along one (deterministic) execution, every fp32 value that carries rounding history gets
 //! a node in a dataflow DAG. A node stores the hardware result, the *exact* value the same
 //! algorithm would have produced in real arithmetic, and its own exact local rounding error
-//! e_v = fl(a_v) - a_v. Values without a node are exact by construction (inputs, exact
-//! conversions such as bf16 -> f32, integer bit manipulation of exact values).
+//! e_v = fl(a_v) - a_v. Missing history retains input dependence: an input-derived
+//! value becomes opaque, while an input-independent value can be a constant leaf.
 //!
 //! This is front-end independent: SASS converts bf16 to f32 with `SHF.L.U32 R, R, 0x10`,
 //! PTX with `cvt.f32.bf16`; both are exact, so neither creates a node.
@@ -20,7 +20,18 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 
+use ptxv_ir::metadata_delivery::Action as MemoryMetadataAction;
 use ptxv_ir::*;
+use ptxv_memory_write::Cell;
+use ptxv_memory_write::Key;
+use ptxv_memory_write::WordHistory;
+use ptxv_memory_write::atomic::atomic_footprint;
+use ptxv_memory_write::engine::Engine;
+use ptxv_memory_write::store::materialize_opaque;
+use ptxv_memory_write::symbolic::Metadata;
+use ptxv_memory_write::symbolic::MissingHistory;
+use ptxv_memory_write::symbolic::RegisterKey;
+use ptxv_memory_write::symbolic::{self};
 use serde::Serialize;
 
 use crate::exact::Expansion;
@@ -103,8 +114,7 @@ pub enum NodeKind {
         neg_ab: bool,
         neg_c: bool,
     },
-    /// Segment mode: the maximum (or minimum) of two tracked values, exact (`FMNMX`, or an
-    /// `FSETP` + `SEL` pair choosing between its own operands).
+    /// Segment mode: the exact FMNMX maximum or minimum of two tracked values.
     Max {
         a: u32,
         b: u32,
@@ -131,11 +141,16 @@ pub enum NodeKind {
 }
 
 /// What a 16-bit bf16 operand half holds for the numerics (`Machine::bf16_half`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Bf16Half {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Bf16Half {
     Node(u32),
     Const(u16),
     Unknown,
+}
+
+pub(crate) struct AtomicBf16Input {
+    pub(crate) old: Vec<Option<crate::halfin::Src>>,
+    source: [Bf16Half; 2],
 }
 
 /// Which TF32 part of an f32 value x (its node's hw value) a `Tf32` node is.
@@ -295,7 +310,7 @@ pub struct NumState {
     touched: Vec<(u32, u8, u16)>,
     /// Segment mode: per (thread, predicate), the FSETP that wrote it: (trace position,
     /// comparison, operand nodes).
-    pred_src: HashMap<(u32, Reg), (usize, FCmp, u32, u32)>,
+    pred_src: HashMap<RegisterKey, (usize, FCmp, u32, u32)>,
     /// Instructions covered by materialized slices (their data-dependent guards are part of
     /// the slices), and why some value could not be materialized.
     pub seg_pcs: BTreeSet<u32>,
@@ -612,7 +627,11 @@ pub(crate) fn lop3_taint(lut: u8, vals: [u32; 4], masks: [u32; 4], keep: bool) -
 /// Bits of an f32 operand after its `|x|` and `-x` modifiers.
 fn fmod_bits(u: u32, neg: bool, abs: bool) -> u32 {
     let u = if abs { u & 0x7fff_ffff } else { u };
-    if neg { u ^ 0x8000_0000 } else { u }
+    if neg {
+        u ^ 0x8000_0000
+    } else {
+        u
+    }
 }
 
 /// CUTLASS's float atomic max (`atomicMaxFloat`, N-FMAX): `ISETP.GE P, v, RZ` (or `.GT P, v,
@@ -848,7 +867,11 @@ pub fn fmax_branch(code: &[Inst], bra: usize) -> Option<(usize, usize)> {
 
 /// Bits of an operand before its `-x` modifier (`vals` hold them after).
 fn fmod_sign(u: u32, neg: bool) -> u32 {
-    if neg { u ^ 0x8000_0000 } else { u }
+    if neg {
+        u ^ 0x8000_0000
+    } else {
+        u
+    }
 }
 
 fn file_tag(f: File) -> u8 {
@@ -927,6 +950,116 @@ fn mem_key(loc: Loc) -> (u8, u64, u64) {
     }
 }
 
+struct MemoryMetadataWriter<'a> {
+    state: &'a mut NumState,
+    active: &'a [usize],
+    source_any: bool,
+    per_thread: Option<Vec<(usize, bool)>>,
+    load_reads: Vec<(usize, Reg, bool)>,
+}
+
+impl metadata_delivery::MetadataWriter for MemoryMetadataWriter<'_> {
+    fn apply(&mut self, action: metadata_delivery::Action) {
+        let ns = &mut self.state;
+        match action {
+            MemoryMetadataAction::History {
+                thread,
+                destination,
+                active,
+                guarded,
+            } => {
+                let k = ns.taint.reg_key(thread, destination);
+                let plan =
+                    symbolic::destination_plan(active, guarded, ns.touched.contains(&k), false);
+                if plan.forget_half {
+                    ns.half.forget_register(thread, destination);
+                    ns.forget_predicate_comparison(thread, destination);
+                }
+                if plan.clear_history {
+                    ns.reg.remove(&k);
+                }
+                if destination.file == File::V {
+                    let h = (
+                        thread as u32,
+                        file_tag(destination.file),
+                        destination.idx | V_HI,
+                    );
+                    let plan =
+                        symbolic::destination_plan(active, guarded, ns.touched.contains(&h), false);
+                    if plan.clear_history {
+                        ns.reg.remove(&h);
+                    }
+                }
+            }
+            MemoryMetadataAction::PrepareSources { is_load } => {
+                let tn = &mut ns.taint;
+                self.source_any = tn.cur_src || tn.cur_read;
+                self.per_thread = tn.cur_pure.take();
+                self.load_reads = if self.per_thread.is_none() && is_load {
+                    std::mem::take(&mut tn.ld_read)
+                } else {
+                    vec![]
+                };
+            }
+            MemoryMetadataAction::ClearBits {
+                thread,
+                destination,
+                active,
+                guarded,
+            } => {
+                let plan = symbolic::destination_plan(active, guarded, false, false);
+                if plan.clear_bits {
+                    ns.taint.bits.remove(&ns.taint.reg_key(thread, destination));
+                }
+            }
+            MemoryMetadataAction::SetActiveTaint {
+                thread,
+                destination,
+                guarded,
+                source_tainted,
+            } => {
+                let plan = symbolic::destination_plan(true, guarded, false, source_tainted);
+                if let Some(tainted) = plan.active_taint {
+                    let k = ns.taint.reg_key(thread, destination);
+                    if tainted {
+                        ns.taint.reg.insert(k);
+                    } else {
+                        ns.taint.reg.remove(&k);
+                    }
+                }
+            }
+            MemoryMetadataAction::ForceGuardTaint {
+                thread,
+                destination,
+                active,
+            } => {
+                let plan = symbolic::destination_plan(active, true, false, false);
+                if plan.force_taint {
+                    ns.taint.reg.insert(ns.taint.reg_key(thread, destination));
+                }
+            }
+        }
+    }
+
+    fn source_tainted(&self, thread: usize, destination: Reg) -> bool {
+        let lane_tainted = |thread| match &self.per_thread {
+            Some(per) => per
+                .iter()
+                .any(|&(other, tainted)| other == thread && tainted),
+            None => self
+                .load_reads
+                .iter()
+                .find(|entry| entry.0 == thread && entry.1 == destination)
+                .map_or(self.source_any, |entry| entry.2),
+        };
+        if matches!(destination.file, File::UR | File::UP) {
+            self.active.iter().any(|&thread| lane_tainted(thread))
+        } else {
+            lane_tainted(thread)
+        }
+    }
+}
+
 impl NumState {
     /// Note atomic add `id` on location `k`, issued by `actor` at vector clock `vc` (MISS 84
     /// follow-up): its epoch, and whether the location's previous value `prev` is an add on
@@ -940,6 +1073,92 @@ impl NumState {
             .is_some_and(|&(pk, pa, pc)| pk == k && pa != actor && pc > vc_get(vc, pa));
         self.atom_epoch.insert(id, (k, actor, vc_get(vc, actor)));
         self.atom_free.insert(id, free);
+    }
+
+    pub(crate) fn effect_cell(&self, key: Key, value: u8, defined: bool, written: bool) -> Cell {
+        let word = self
+            .mem
+            .get(&(key.space, key.allocation, key.offset))
+            .map(|&id| {
+                if matches!(self.nodes[id as usize].kind, NodeKind::Opaque) {
+                    WordHistory::Opaque(id)
+                } else {
+                    WordHistory::Known(id)
+                }
+            });
+        Cell {
+            key,
+            value,
+            origin: self.half.effect_origin(key),
+            tainted: self.taint.mem_has((key.space, key.allocation, key.offset)),
+            defined,
+            written,
+            word,
+        }
+    }
+
+    pub(crate) fn effect_markers(&self, state: &mut Engine) {
+        for cell in &state.cells {
+            let key = cell.key;
+            if key.space != 1 {
+                continue;
+            }
+            let aligned = key.offset / 4 * 4;
+            if self.written.contains(&(key.allocation, aligned)) {
+                state.numeric_written.push(Key {
+                    offset: aligned,
+                    ..key
+                });
+            }
+            if self.half.effect_written(key) {
+                state.half_written.push(key);
+            }
+        }
+    }
+
+    pub(crate) fn apply_effect_state(
+        &mut self,
+        state: &Engine,
+        destination: Key,
+        captured: u32,
+        pc: u32,
+    ) {
+        if destination.space == 0 {
+            self.forget_orig(destination.allocation as u16, destination.offset as u32, 4);
+        }
+        for cell in &state.cells {
+            let mut cell = *cell;
+            if cell.key == destination && cell.word.is_none() && cell.tainted {
+                let id = self.leaf_with_origin(captured, pc, true);
+                cell = materialize_opaque(cell, id);
+            }
+            let key = (cell.key.space, cell.key.allocation, cell.key.offset);
+            match cell.word {
+                Some(WordHistory::Known(id) | WordHistory::Opaque(id)) => {
+                    self.mem.insert(key, id);
+                }
+                None => {
+                    self.mem.remove(&key);
+                }
+            }
+            if cell.key.space == destination.space
+                && cell.key.allocation == destination.allocation
+                && cell
+                    .key
+                    .offset
+                    .checked_sub(destination.offset)
+                    .is_some_and(|offset| offset < 4)
+            {
+                self.taint.mem_set(key, cell.tainted);
+            }
+        }
+        self.written.extend(
+            state
+                .numeric_written
+                .iter()
+                .map(|key| (key.allocation, key.offset)),
+        );
+        self.half.apply_effect_state(state, destination);
     }
 
     /// A readable rendering of node `n`'s DAG (debugging: `PTXV_EQUIV_DUMP`), `depth` levels.
@@ -1146,6 +1365,29 @@ impl NumState {
     pub(crate) fn set_reg_node(&mut self, t: usize, d: Reg, n: Option<u32>) {
         self.set(t, d, n);
     }
+    fn forget_predicate_comparison(&mut self, thread: usize, register: Reg) {
+        if register.file == File::P {
+            self.pred_src.remove(&symbolic::register_key(
+                thread as u32,
+                file_tag(register.file),
+                register.idx,
+            ));
+            return;
+        }
+        if register.file != File::UP {
+            return;
+        }
+        let owners = &self.taint.uniform_owners;
+        self.pred_src.retain(|record, _| {
+            !ptxv_ir::register_owner::record_aliases(
+                thread,
+                owners,
+                register,
+                (record.thread, record.file, record.index),
+            )
+        });
+    }
+
     fn set(&mut self, t: usize, d: Reg, n: Option<u32>) {
         let k = self.taint.reg_key(t, d);
         self.touched.push(k);
@@ -1173,7 +1415,7 @@ impl NumState {
             err: vec![],
             pc,
         });
-        (self.nodes.len() - 1) as u32
+        symbolic::checked_node_id(self.nodes.len() - 1).expect("numeric node IDs exhausted")
     }
     /// A `Tf32` node of `arg` with hardware value `hw`: hi(x) has x's exact value (its own
     /// error is the truncation), the low parts are errors (exact value 0).
@@ -1196,7 +1438,7 @@ impl NumState {
             err,
             pc,
         });
-        (self.nodes.len() - 1) as u32
+        symbolic::checked_node_id(self.nodes.len() - 1).expect("numeric node IDs exhausted")
     }
     /// An exact max / min node of two nodes.
     fn max_node(&mut self, a: u32, b: u32, min: bool, pc: u32) -> u32 {
@@ -1229,8 +1471,39 @@ impl NumState {
             err: vec![],
             pc,
         });
-        (self.nodes.len() - 1) as u32
+        symbolic::checked_node_id(self.nodes.len() - 1).expect("numeric node IDs exhausted")
     }
+    fn comparison_selection_node(&mut self, context: crate::seg::ComparisonContext) -> u32 {
+        let crate::seg::ComparisonContext {
+            plan,
+            left: x,
+            right: y,
+            selection_pc: pc,
+            ..
+        } = context;
+        let hw = crate::seg::hardware::evaluate(
+            plan,
+            self.nodes[x as usize].hw,
+            self.nodes[y as usize].hw,
+        );
+        let (args, ops, out) = crate::seg::comparison_program_parts(context);
+        let prog = crate::seg::SProg {
+            args,
+            ops,
+            out,
+            extra_pcs: Default::default(),
+        };
+        self.seg_pcs.extend(prog.pcs());
+        self.nodes.push(Node {
+            kind: NodeKind::Seg(SegRef(std::sync::Arc::new(prog))),
+            hw,
+            exact: exact::from(f32::from_bits(hw) as f64),
+            err: vec![],
+            pc,
+        });
+        symbolic::checked_node_id(self.nodes.len() - 1).expect("numeric node IDs exhausted")
+    }
+
     /// An `Mma` node: acc + products (`ops`: their factors' provenance; zero products are
     /// left out), result `r`, the model's contract for the terms it can add.
     #[allow(clippy::too_many_arguments)]
@@ -1320,17 +1593,15 @@ impl NumState {
             err,
             pc,
         });
-        (self.nodes.len() - 1) as u32
+        symbolic::checked_node_id(self.nodes.len() - 1).expect("numeric node IDs exhausted")
     }
     fn leaf_with_origin(&mut self, bits: u32, pc: u32, input_derived: bool) -> u32 {
         let n = self.leaf(bits, pc);
-        self.nodes[n as usize].kind = if input_derived {
-            NodeKind::Opaque
-        } else {
-            NodeKind::Leaf
-        };
-        if !input_derived {
-            self.const_leaves.insert(n);
+        match symbolic::classify_missing(input_derived) {
+            MissingHistory::Opaque => self.nodes[n as usize].kind = NodeKind::Opaque,
+            MissingHistory::Constant => {
+                self.const_leaves.insert(n);
+            }
         }
         n
     }
@@ -1494,6 +1765,7 @@ pub(crate) struct StoreOrigins {
 pub(crate) struct AtomNum {
     pub op: AtomOp,
     pub bytes: u8,
+    pub did_write: bool,
     /// The operand: the value combined with the old one, the exchanged value, or a
     /// compare-and-swap's compare value.
     pub x: Val,
@@ -1508,6 +1780,8 @@ pub(crate) struct AtomNum {
     pub old_rounded: bool,
     /// The bytes read were tainted as input data.
     pub old_input_derived: bool,
+    pub previous: Metadata,
+    pub operand: Option<Metadata>,
     /// fp32 add: old, added and new bits.
     pub fadd: Option<(u32, u32, u32)>,
     pub d: Option<Reg>,
@@ -1893,27 +2167,46 @@ impl Machine {
         }
     }
 
-    /// Segment mode: FSETP `P = a cmp b` (combined with PT, no modifiers): remembered, so a
-    /// following SEL choosing between a and b by P is a `Max`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn num_fsetp(&mut self, t: usize, d: Reg, cmp: FCmp, a: &Val, b: &Val, plain: bool) {
+    /// Remember a plain FSETP so a later SEL can retain the exact comparison and selection.
+    pub(crate) fn num_fsetp(&mut self, t: usize, d: Reg, operation: &Op) {
         let Some(ns) = self.num.as_mut() else { return };
         if !ns.segments {
             return;
         }
-        let key = (t as u32, d);
+        let invalidation = ptxv_ir::register_owner::comparison_plan(t, self.k.front, d, false);
+        let key =
+            symbolic::register_key(invalidation.key.0, invalidation.key.1, invalidation.key.2);
         ns.pred_src.remove(&key);
-        if !plain {
-            return;
+        struct Sources<'a> {
+            state: &'a NumState,
+            thread: usize,
         }
-        let (Some(na), Some(nb)) = (ns.node_of(t, a), ns.node_of(t, b)) else {
+        impl ptxv_ir::comparison_select::NodeReader for Sources<'_> {
+            fn node_of(&self, value: &Val) -> Option<u32> {
+                self.state.node_of(self.thread, value)
+            }
+        }
+        let Some(evidence) = ptxv_ir::comparison_select::capture(
+            self.k.front,
+            operation,
+            &Sources {
+                state: ns,
+                thread: t,
+            },
+        ) else {
             return;
         };
+        if evidence.destination != d {
+            return;
+        }
         let pos = ns
             .trace
             .get(&(t as u32))
             .map_or(0, |v| v.len().saturating_sub(1));
-        ns.pred_src.insert(key, (pos, cmp, na, nb));
+        ns.pred_src.insert(
+            key,
+            (pos, evidence.comparison, evidence.left, evidence.right),
+        );
     }
 
     pub(crate) fn num_mov(&mut self, t: usize, d: Reg, a: &Val) {
@@ -2433,18 +2726,17 @@ impl Machine {
         self.num_sel2(t, d, v, None, p, pc)
     }
 
-    /// SEL with both operands known (`other`: the one not chosen): in segment mode a
-    /// data-dependent choice between the two operands of the FSETP that wrote the predicate is
-    /// their max or min.
+    /// Retain the FSETP and SEL when the comparison still names these two operand nodes.
     pub(crate) fn num_sel2(
         &mut self,
         t: usize,
         d: Reg,
         v: &Val,
-        other: Option<(&Val, bool)>,
+        selection: Option<&Op>,
         p: Pred,
         pc: u32,
     ) {
+        let p = ptxv_ir::register_owner::normalize_predicate(self.k.front, p);
         let Some(ns) = self.num.as_mut() else { return };
         let data_dep = p.reg.is_some_and(|r| ns.taint.reg_t(t, r));
         if !data_dep {
@@ -2452,13 +2744,11 @@ impl Machine {
             ns.set(t, d, n);
             return;
         }
-        // other = (the operand not chosen, whether `v` is the SEL's first operand).
-        if let (true, Some(r), Some((o, v_first))) = (ns.segments, p.reg, other) {
-            if let (Some(&(pos, cmp, x, y)), Some(nv), Some(no)) = (
-                ns.pred_src.get(&(t as u32, r)),
-                ns.node_of(t, v),
-                ns.node_of(t, o),
-            ) {
+        if let (true, Some(r), Some(selection)) = (ns.segments, p.reg, selection) {
+            if let Some(&(pos, cmp, x, y)) =
+                ns.pred_src
+                    .get(&symbolic::register_key(t as u32, file_tag(r.file), r.idx))
+            {
                 // The predicate still holds that FSETP's result (nothing wrote it since).
                 let tr = &ns.trace[&(t as u32)];
                 let code = &self.k.code;
@@ -2468,41 +2758,141 @@ impl Machine {
                         .dst_regs()
                         .contains(&r)
                 });
-                // SEL d, a, b, P: d = P ? a : b, P = (x cmp y) ^ neg.
-                let (a, b) = if v_first { (nv, no) } else { (no, nv) };
-                use FCmp::*;
-                let gt = matches!(cmp, Gt | Ge | Gtu | Geu);
-                let lt = matches!(cmp, Lt | Le | Ltu | Leu);
-                // "P true when x is the larger" after the negation.
-                let big = if p.neg { lt } else { gt };
-                let small = if p.neg { gt } else { lt };
-                let kind = if (a, b) == (x, y) {
-                    if big {
-                        Some(false)
-                    } else if small {
-                        Some(true)
-                    } else {
-                        None
+                if fresh {
+                    struct Sources<'a> {
+                        state: &'a NumState,
+                        thread: usize,
                     }
-                } else if (a, b) == (y, x) {
-                    if big {
-                        Some(true)
-                    } else if small {
-                        Some(false)
-                    } else {
-                        None
+                    impl ptxv_ir::comparison_select::NodeReader for Sources<'_> {
+                        fn node_of(&self, value: &Val) -> Option<u32> {
+                            self.state.node_of(self.thread, value)
+                        }
                     }
-                } else {
-                    None
-                };
-                if let (true, Some(min)) = (fresh, kind) {
-                    let n = ns.max_node(x, y, min, pc);
-                    ns.set(t, d, Some(n));
-                    return;
+                    let comparison_pc = tr[pos] & !crate::seg::GUARD_FALSE;
+                    if let Some(plan) = ptxv_ir::comparison_select::from_pair(
+                        self.k.front,
+                        &code[comparison_pc as usize].op,
+                        selection,
+                        x,
+                        y,
+                        &Sources {
+                            state: ns,
+                            thread: t,
+                        },
+                    ) {
+                        if plan.comparison == cmp {
+                            let n = ns.comparison_selection_node(crate::seg::ComparisonContext {
+                                plan,
+                                left: x,
+                                right: y,
+                                comparison_pc,
+                                selection_pc: pc,
+                            });
+                            ns.set(t, d, Some(n));
+                            return;
+                        }
+                    }
                 }
             }
         }
         self.num_clobber(t, d, &[v], pc);
+    }
+
+    pub(crate) fn num_capture_memory(&self, loc: Loc, bits: u32) -> Metadata {
+        let Some(ns) = self.num.as_ref() else {
+            return symbolic::prepare(bits, None, false, false);
+        };
+        symbolic::prepare(
+            bits,
+            ns.mem.get(&mem_key(loc)).copied(),
+            ns.taint.last_read,
+            false,
+        )
+    }
+
+    pub(crate) fn store_source_metadata(&mut self, t: usize, value: &Val, bits: u32) -> Metadata {
+        self.num_node_mat(t, value);
+        let ns = self
+            .num
+            .as_ref()
+            .expect("store effect requires numeric state");
+        let history = ns
+            .node_of(t, value)
+            .filter(|&id| !matches!(ns.nodes[id as usize].kind, NodeKind::Opaque));
+        let tainted = matches!(value, Val::Reg(reg, _) if ns.taint.reg_t(t, *reg));
+        symbolic::prepare(bits, history, tainted, true)
+    }
+
+    pub(crate) fn capture_atomic_source(&mut self, t: usize, value: &Val, bits: u32) -> Metadata {
+        self.num_node_mat(t, value);
+        match self.num.as_ref() {
+            Some(ns) => symbolic::prepare(
+                bits,
+                ns.node_of(t, value),
+                matches!(value, Val::Reg(r, _) if ns.taint.reg_t(t, *r)),
+                true,
+            ),
+            None => symbolic::prepare(bits, None, false, true),
+        }
+    }
+
+    pub(crate) fn atomic_guard_tainted(&self, members: &[usize], pc: u32) -> bool {
+        self.num.as_ref().is_some_and(|ns| {
+            self.k.code[pc as usize]
+                .guard
+                .reg
+                .is_some_and(|guard| members.iter().any(|&t| ns.taint.reg_t(t, guard)))
+        })
+    }
+
+    pub(crate) fn atomic_taint_context(&self) -> (bool, bool) {
+        self.num.as_ref().map_or((false, false), |ns| {
+            (ns.taint.cur_src, ns.taint.cur_gen_addr)
+        })
+    }
+
+    pub(crate) fn begin_atomic_component_taint(&mut self, context: (bool, bool)) {
+        if let Some(ns) = self.num.as_mut() {
+            ns.touched.clear();
+            ns.taint.cur_src = context.0;
+            ns.taint.cur_gen_addr = context.1;
+            ns.taint.cur_read = false;
+            ns.taint.cur_pure = None;
+            ns.taint.ld_read.clear();
+        }
+    }
+
+    pub(crate) fn finish_atomic_component_taint(&mut self, t: usize, destination: Option<Reg>) {
+        let rounded_return = matches!(
+            self.k.code[self.threads[t].pc as usize].op,
+            Op::Atom {
+                op: AtomOp::FAddFtz | AtomOp::FAdd64 | AtomOp::AddBf16x2 | AtomOp::AddBf16,
+                ..
+            }
+        );
+        let Some(ns) = self.num.as_mut() else { return };
+        if let Some(d) = destination {
+            ns.set(t, d, None);
+            ns.half.forget_register(t, d);
+            ns.forget_predicate_comparison(t, d);
+            let tainted =
+                ns.taint.cur_src || ns.taint.cur_read || ns.rounding_taint && rounded_return;
+            ns.taint.set_mask(t, d, if tainted { u32::MAX } else { 0 });
+        }
+    }
+
+    pub(crate) fn finish_atomic_packed_taint(
+        &mut self,
+        t: usize,
+        destination: Reg,
+        read_tainted: bool,
+        provenance: crate::halfin::Bytes,
+    ) {
+        if let Some(ns) = self.num.as_mut() {
+            ns.taint.cur_read = read_tainted;
+        }
+        self.finish_atomic_component_taint(t, Some(destination));
+        self.half_set_reg(t, destination, Some(provenance));
     }
 
     /// An atomic on memory at `loc` (`a`: what it did). fp32 adds (`a.fadd`: old, added and
@@ -2510,9 +2900,12 @@ impl Machine {
     /// value (`ptxv num`: `num_atom_rounding`). The returned old value depends on the
     /// schedule: it has no node.
     pub(crate) fn num_atom(&mut self, t: usize, a: &AtomNum, loc: Loc, pc: u32) {
-        let (v, fadd, d, old_input_derived) = (&a.x, a.fadd, a.d, a.old_input_derived);
+        let (v, fadd, d, old) = (&a.x, a.fadd, a.d, a.previous);
+        let frozen = a.operand;
         if fadd.is_some() {
-            self.num_node_mat(t, v);
+            if frozen.is_none() {
+                self.num_node_mat(t, v);
+            }
         } else if self.num.as_ref().is_some_and(|ns| ns.rounding_taint) {
             self.num_atom_rounding(t, a, loc, pc);
             return;
@@ -2523,18 +2916,28 @@ impl Machine {
         };
         let Some(ns) = self.num.as_mut() else { return };
         let k = mem_key(loc);
-        ns.note_write(k);
+        let footprint = atomic_footprint(k.2, a.bytes, a.did_write);
+        if k.0 == 1 {
+            for off in (footprint.marker_start as u128..footprint.marker_end)
+                .step_by(footprint.marker_stride as usize)
+            {
+                ns.written.insert((k.1, off as u64));
+            }
+        }
         if fadd.is_none() || d.is_some() {
             ns.other_atomics += 1;
         }
         match fadd {
             Some((o, x, r)) => {
-                let no = ns
-                    .mem
-                    .get(&k)
-                    .copied()
-                    .unwrap_or_else(|| ns.leaf_with_origin(o, pc, old_input_derived));
-                let nx = ns.node_of(t, v).unwrap_or_else(|| ns.leaf_for(t, v, x, pc));
+                let no = old
+                    .history
+                    .unwrap_or_else(|| ns.leaf_with_origin(o, pc, old.tainted));
+                let nx = match frozen {
+                    Some(source) => source
+                        .history
+                        .unwrap_or_else(|| ns.leaf_with_origin(x, pc, source.tainted)),
+                    None => ns.node_of(t, v).unwrap_or_else(|| ns.leaf_for(t, v, x, pc)),
+                };
                 let ex = exact::add(&ns.nodes[no as usize].exact, &ns.nodes[nx as usize].exact);
                 let a_v = exact::add(
                     &exact::from(f32::from_bits(o) as f64),
@@ -2555,7 +2958,9 @@ impl Machine {
                 ns.mem.insert(k, id);
             }
             None => {
-                ns.mem.remove(&k);
+                for off in footprint.history_start as u128..footprint.history_end {
+                    ns.mem.remove(&(k.0, k.1, off as u64));
+                }
                 // ASSUME(N-EQUIV): a compare-and-swap whose compare or old value is input data
                 // has an input-dependent outcome: another input may swap where this run did not,
                 // or the reverse, so its words are input data either way. One that fails writes
@@ -2564,7 +2969,7 @@ impl Machine {
                     let cmp = operand_regs(std::slice::from_ref(&a.x))
                         .iter()
                         .any(|&r| ns.taint.reg_t(t, r));
-                    if cmp || old_input_derived {
+                    if cmp || a.old_input_derived {
                         let end = (k.2 + a.bytes as u64).next_multiple_of(4);
                         for b in (k.2 & !3)..end {
                             ns.taint.mem_set((k.0, k.1, b), true);
@@ -2592,7 +2997,15 @@ impl Machine {
     // ASSUME(N-NUM-TRACK): see ASSUMPTIONS.md
     fn num_atom_rounding(&mut self, t: usize, a: &AtomNum, loc: Loc, pc: u32) {
         let cas = matches!(a.op, AtomOp::Cas | AtomOp::CasSpin);
-        let x_inexact = self.num_val_inexact(t, &a.x, a.bytes);
+        let x_inexact = match a.operand {
+            Some(source) => {
+                source.tainted
+                    || source
+                        .history
+                        .is_some_and(|n| self.num.as_mut().is_some_and(|ns| ns.rounded(n)))
+            }
+            None => self.num_val_inexact(t, &a.x, a.bytes),
+        };
         let decided = cas && (a.old_rounded || a.old_input_derived || x_inexact);
         let moved = match a.op {
             AtomOp::Exch => Some(a.x.clone()),
@@ -2606,7 +3019,11 @@ impl Machine {
             _ => a.old_rounded || x_inexact,
         };
         let k = mem_key(loc);
-        if let Some(v) = &moved {
+        let frozen_move = moved.as_ref().and(a.operand);
+        if frozen_move.is_some() {
+            // Component execution replaces the source register with its captured immediate.
+            self.half_mem_set(k, &vec![None; a.bytes as usize]);
+        } else if let Some(v) = &moved {
             let origins = self.num_store_origins(t, v, a.bytes, a.guard);
             let data: Vec<u8> = (0..a.bytes).map(|i| (a.written >> (8 * i)) as u8).collect();
             self.num_st(t, v, loc, &data, &origins, pc);
@@ -2614,6 +3031,25 @@ impl Machine {
             self.half_mem_set(k, &vec![None; a.bytes as usize]);
         }
         let Some(ns) = self.num.as_mut() else { return };
+        if let Some(source) = frozen_move {
+            assert_eq!(a.bytes, 4, "frozen scalar atomic payload is one word");
+            ns.note_write(k);
+            let history = source.history.or_else(|| {
+                source
+                    .tainted
+                    .then(|| ns.leaf_with_origin(source.captured, pc, true))
+            });
+            match history {
+                Some(id) => {
+                    ns.mem.insert(k, id);
+                }
+                None => {
+                    ns.mem.remove(&k);
+                }
+            }
+            ns.taint
+                .assign_memory(k.0, k.1, k.2, k.2 + 4, source.tainted);
+        }
         ns.other_atomics += 1;
         let end = k.2 + a.bytes as u64;
         let words: Vec<(u8, u64, u64)> = ((k.2 & !3)..end)
@@ -3307,7 +3743,7 @@ impl Machine {
 
     /// tcgen05.mma scale-input-d reads accumulator cell (`lane`, `col`) as D * 2^-s
     /// (`scaled`). The numerics do not model the scaling: the cell becomes a new leaf of the
-    /// scaled value (segment mode: `Opaque`), with a warning when its node carried rounding
+    /// scaled value (opaque when input-derived), with a warning when its node carried rounding
     /// error, which is then no longer tracked.
     pub(crate) fn num_tmem_rescale(
         &mut self,
@@ -3335,15 +3771,13 @@ impl Machine {
             .mem
             .get(&key)
             .is_some_and(|n| !ns.const_leaves.contains(n));
-        let leaf = ns.leaf(scaled.to_bits(), pc);
-        if ns.segments || had_history {
-            ns.nodes[leaf as usize].kind = NodeKind::Opaque;
-        }
+        let input_derived = ns.taint.mem_has(key) || ns.segments || had_history;
+        let leaf = ns.leaf_with_origin(scaled.to_bits(), pc, input_derived);
         ns.mem.insert(key, leaf);
     }
 
     /// The node of an accumulator operand `v` (bits `bits`): its node (segment mode:
-    /// materialized), else a leaf (`Opaque` when input-derived in segment mode).
+    /// materialized), else a leaf (`Opaque` when input-derived).
     pub(crate) fn num_acc_node(&mut self, t: usize, v: &Val, bits: u32, pc: u32) -> Option<u32> {
         self.num.as_ref()?;
         if let Some(n) = self.num_node_mat(t, v) {
@@ -3477,6 +3911,7 @@ impl Machine {
         v: &Val,
         loc: Loc,
         (old, x, new): (u32, u32, u32),
+        previous: Metadata,
         pc: u32,
     ) -> bool {
         let Some(ns) = self.num.as_ref() else {
@@ -3499,9 +3934,9 @@ impl Machine {
         ns.note_write(k);
         ns.other_atomics += 1;
         // Whether this thread's read found input-derived bytes.
-        let loc_tainted = ns.taint.last_read;
+        let loc_tainted = previous.tainted;
         let nan = |b: u32| f32::from_bits(b).is_nan();
-        let on = match ns.mem.get(&k).copied() {
+        let on = match previous.history {
             Some(n) => Some(n),
             None if !loc_tainted && !nan(old) => Some(ns.const_leaf(old, pc)),
             None => None,
@@ -4010,6 +4445,46 @@ impl Machine {
         ns.set(t, d, Some(id));
     }
 
+    pub(crate) fn capture_atomic_bf16_source(
+        &mut self,
+        t: usize,
+        value: &Val,
+        half: u32,
+    ) -> Bf16Half {
+        self.bf16_half(t, value, half)
+    }
+
+    pub(crate) fn atomic_component_read_tainted(&self) -> bool {
+        self.num.as_ref().is_some_and(|ns| ns.taint.cur_read)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_num_atom_bf16(
+        &mut self,
+        t: usize,
+        value: &Val,
+        loc: Loc,
+        bytes: u8,
+        data: &[u8],
+        frozen: Option<Bf16Half>,
+    ) -> Option<AtomicBf16Input> {
+        self.num.as_ref()?;
+        let old = self.half_mem(loc, bytes as usize, Some(data));
+        let low = match frozen {
+            Some(source) => source,
+            None => self.bf16_half(t, value, 0),
+        };
+        let high = if bytes == 4 {
+            self.bf16_half(t, value, 1)
+        } else {
+            Bf16Half::Unknown
+        };
+        Some(AtomicBf16Input {
+            old,
+            source: [low, high],
+        })
+    }
+
     /// A bf16 atomic add (`AtomOp::AddBf16x2` / `AddBf16`, `bytes` 4 / 2) at `loc` of operand
     /// `v` (bits `x`) to the old value `o`, leaving `n`: each lane a `bf16_lane_node` of the
     /// location's old bytes and the operand's half, written as the location's byte provenance
@@ -4019,19 +4494,20 @@ impl Machine {
     pub(crate) fn num_atom_bf16(
         &mut self,
         t: usize,
-        v: &Val,
         loc: Loc,
         bytes: u8,
         n: u32,
         d: Option<Reg>,
         pc: u32,
+        input: Option<AtomicBf16Input>,
     ) {
+        let Some(input) = input else { return };
         let Some(ns) = self.num.as_mut() else { return };
         let k = mem_key(loc);
         ns.note_write(k);
         ns.other_atomics += 1;
         ns.mem.remove(&k);
-        let old = self.half_mem(loc, bytes as usize, None);
+        let old = input.old;
         let mut out: Vec<Option<crate::halfin::Src>> = vec![None; bytes as usize];
         for lane in 0..(bytes as u32 / 2) {
             let i = 2 * lane as usize;
@@ -4040,7 +4516,7 @@ impl Machine {
                 crate::halfin::HalfOp::Node(n) => Bf16Half::Node(n),
                 crate::halfin::HalfOp::Unknown => Bf16Half::Unknown,
             };
-            let c = self.bf16_half(t, v, lane);
+            let c = input.source[lane as usize];
             let node = self.bf16_lane_node(
                 [a, Bf16Half::Const(0x3f80), c],
                 [false; 3],
@@ -5474,6 +5950,9 @@ fn operand_regs(values: &[Val]) -> Vec<Reg> {
 }
 
 pub(crate) fn value_regs(op: &Op) -> Vec<Reg> {
+    if let Some(registers) = ptxv_ir::register_effect::memory_data_reads(op) {
+        return registers;
+    }
     let mut out = operand_regs(&value_vals(op));
     if let Some((r, k)) = op.vector_src() {
         if !matches!(op, Op::ClcQuery { .. }) {
@@ -5487,6 +5966,9 @@ pub(crate) fn value_regs(op: &Op) -> Vec<Reg> {
 }
 
 pub(crate) fn control_regs(op: &Op) -> Vec<Reg> {
+    if let Some(registers) = ptxv_ir::register_effect::memory_control_reads(op) {
+        return registers;
+    }
     let mut operands = op.src_vals();
     for value in value_vals(op) {
         if let Some(index) = operands.iter().position(|operand| *operand == value) {
@@ -6228,12 +6710,7 @@ impl Taint {
         }
     }
     fn reg_key(&self, t: usize, r: Reg) -> (u32, u8, u16) {
-        let owner = if matches!(r.file, File::UR | File::UP) {
-            self.uniform_owners.get(t).copied().unwrap_or(t as u32)
-        } else {
-            t as u32
-        };
-        (owner, r.file as u8, r.idx)
+        ptxv_ir::register_owner::canonical_key(t, &self.uniform_owners, r)
     }
     fn reg_t(&self, t: usize, r: Reg) -> bool {
         // A PTX register's high half (V_HI) has the whole register's taint.
@@ -6315,6 +6792,30 @@ impl Taint {
 }
 
 impl Machine {
+    fn ensure_register_owners(&mut self) {
+        let Some(state) = self.num.as_ref() else {
+            return;
+        };
+        if state.taint.uniform_owners.len() == self.threads.len() {
+            return;
+        }
+        let warp_ids: Vec<u32> = self.threads.iter().map(|thread| thread.warp).collect();
+        let owners = ptxv_ir::register_owner::uniform_owners(&warp_ids, self.warps.len())
+            .expect("invalid warp topology for numeric register ownership");
+        self.num
+            .as_mut()
+            .expect("numeric state checked above")
+            .taint
+            .uniform_owners = owners;
+    }
+
+    pub(crate) fn num_predicate_write(&mut self, thread: usize, register: Reg) {
+        self.ensure_register_owners();
+        if let Some(state) = self.num.as_mut() {
+            state.forget_predicate_comparison(thread, register);
+        }
+    }
+
     /// Before an instruction of `members` (active: guard true): check its control and address
     /// operands, and note whether it moves tainted data.
     /// N-NUM-UDIV (`ptxv num`, SASS front), before instruction `pc`. A value of a matched
@@ -6475,16 +6976,7 @@ impl Machine {
         if self.num.is_none() {
             return;
         }
-        if self.num.as_ref().unwrap().taint.uniform_owners.len() != self.threads.len() {
-            let mut owners = BTreeMap::new();
-            let by_thread = self
-                .threads
-                .iter()
-                .enumerate()
-                .map(|(t, th)| *owners.entry(th.warp).or_insert(t as u32))
-                .collect();
-            self.num.as_mut().unwrap().taint.uniform_owners = by_thread;
-        }
+        self.ensure_register_owners();
         let half_only = self.eff_active(active, pc);
         let active = half_only.as_deref().unwrap_or(active);
         if self.num.as_ref().unwrap().rounding_taint {
@@ -6888,66 +7380,113 @@ impl Machine {
         };
         let mut touched_ts: Vec<usize> = active.to_vec();
         touched_ts.extend(dg.iter().copied().filter(|t| !active.contains(t)));
-        for r in inst.op.dst_regs() {
-            for &t in &touched_ts {
-                let k = ns.taint.reg_key(t, r);
-                if dg.contains(&t) {
-                    ns.half.forget_register(t, r);
+        let handled = metadata_delivery::execute(
+            &inst.op,
+            active,
+            &dg,
+            &mut MemoryMetadataWriter {
+                state: ns,
+                active,
+                source_any: false,
+                per_thread: None,
+                load_reads: Vec::new(),
+            },
+        );
+        if !handled {
+            for r in inst.op.dst_regs() {
+                for &t in &touched_ts {
+                    let k = ns.taint.reg_key(t, r);
+                    let plan = symbolic::destination_plan(
+                        active.contains(&t),
+                        dg.contains(&t),
+                        ns.touched.contains(&k),
+                        false,
+                    );
+                    if plan.forget_half {
+                        ns.half.forget_register(t, r);
+                        ns.forget_predicate_comparison(t, r);
+                    }
+                    if plan.clear_history {
+                        ns.reg.remove(&k);
+                    }
+                    // The high half of a PTX register (V_HI) too.
+                    if r.file == File::V {
+                        let h = (t as u32, file_tag(r.file), r.idx | V_HI);
+                        let plan = symbolic::destination_plan(
+                            active.contains(&t),
+                            dg.contains(&t),
+                            ns.touched.contains(&h),
+                            false,
+                        );
+                        if plan.clear_history {
+                            ns.reg.remove(&h);
+                        }
+                    }
                 }
-                if dg.contains(&t) || !ns.touched.contains(&k) {
-                    ns.reg.remove(&k);
+            }
+            let tn = &mut ns.taint;
+            let t_any = tn.cur_src || tn.cur_read;
+            let mut per = tn.cur_pure.take();
+            // ASSUME(N-EQUIV): a shuffle: each destination carries the taint of the lane it read.
+            if matches!(inst.op, Op::Shfl { .. }) && !tn.shfl_src.is_empty() {
+                per = Some(std::mem::take(&mut tn.shfl_src));
+            }
+            // ASSUME(N-EQUIV): a load: each thread's destination register carries the taint of the bytes it got.
+            let ld_read = if per.is_none() && matches!(inst.op, Op::Ld { .. }) {
+                std::mem::take(&mut tn.ld_read)
+            } else {
+                vec![]
+            };
+            for r in inst.op.dst_regs() {
+                for &t in &touched_ts {
+                    let plan = symbolic::destination_plan(
+                        active.contains(&t),
+                        dg.contains(&t),
+                        false,
+                        false,
+                    );
+                    if plan.clear_bits {
+                        tn.bits.remove(&tn.reg_key(t, r));
+                    }
                 }
-                // The high half of a PTX register (V_HI) too.
-                if r.file == File::V {
-                    let h = (t as u32, file_tag(r.file), r.idx | V_HI);
-                    if dg.contains(&t) || !ns.touched.contains(&h) {
-                        ns.reg.remove(&h);
+                let lane_t = |t: usize| match &per {
+                    Some(p) => p.iter().any(|&(u, x)| u == t && x),
+                    None => ld_read
+                        .iter()
+                        .find(|x| x.0 == t && x.1 == r)
+                        .map_or(t_any, |x| x.2),
+                };
+                // ASSUME(N-EQUIV): a uniform register (UR / UP) is one value for the warp: it is
+                // input data if any executing lane's result is (each lane's write would otherwise
+                // leave the last lane's taint).
+                let uniform_t =
+                    matches!(r.file, File::UR | File::UP) && active.iter().any(|&t| lane_t(t));
+                for &t in active {
+                    let k = tn.reg_key(t, r);
+                    let plan = symbolic::destination_plan(
+                        true,
+                        dg.contains(&t),
+                        false,
+                        uniform_t || lane_t(t),
+                    );
+                    if let Some(tainted) = plan.active_taint {
+                        if tainted {
+                            tn.reg.insert(k);
+                        } else {
+                            tn.reg.remove(&k);
+                        }
+                    }
+                }
+                // Under a data-dependent guard the member's destination depends on input data.
+                for &t in &dg {
+                    let plan = symbolic::destination_plan(active.contains(&t), true, false, false);
+                    if plan.force_taint {
+                        tn.reg.insert(tn.reg_key(t, r));
                     }
                 }
             }
         }
         let tn = &mut ns.taint;
-        let t_any = tn.cur_src || tn.cur_read;
-        let mut per = tn.cur_pure.take();
-        // ASSUME(N-EQUIV): a shuffle: each destination carries the taint of the lane it read.
-        if matches!(inst.op, Op::Shfl { .. }) && !tn.shfl_src.is_empty() {
-            per = Some(std::mem::take(&mut tn.shfl_src));
-        }
-        // ASSUME(N-EQUIV): a load: each thread's destination register carries the taint of the bytes it got.
-        let ld_read = if per.is_none() && matches!(inst.op, Op::Ld { .. }) {
-            std::mem::take(&mut tn.ld_read)
-        } else {
-            vec![]
-        };
-        for r in inst.op.dst_regs() {
-            for &t in &touched_ts {
-                tn.bits.remove(&tn.reg_key(t, r));
-            }
-            let lane_t = |t: usize| match &per {
-                Some(p) => p.iter().any(|&(u, x)| u == t && x),
-                None => ld_read
-                    .iter()
-                    .find(|x| x.0 == t && x.1 == r)
-                    .map_or(t_any, |x| x.2),
-            };
-            // ASSUME(N-EQUIV): a uniform register (UR / UP) is one value for the warp: it is
-            // input data if any executing lane's result is (each lane's write would otherwise
-            // leave the last lane's taint).
-            let uniform_t =
-                matches!(r.file, File::UR | File::UP) && active.iter().any(|&t| lane_t(t));
-            for &t in active {
-                let k = tn.reg_key(t, r);
-                if uniform_t || lane_t(t) {
-                    tn.reg.insert(k);
-                } else {
-                    tn.reg.remove(&k);
-                }
-            }
-            // Under a data-dependent guard the member's destination depends on input data.
-            for &t in &dg {
-                tn.reg.insert(tn.reg_key(t, r));
-            }
-        }
         // ASSUME(N-NUM-TRACK): `ptxv num`: a rounding instruction's destination without a node
         // holds a rounding the DAG does not record. It is input data whatever its operands
         // (kernel parameters, special registers, constants), so a later read is an `Opaque`
@@ -7607,18 +8146,58 @@ mod untracked_producer_tests {
     }
 
     #[test]
+    fn rescaled_missing_tmem_history_keeps_input_dependency() {
+        for segments in [false, true] {
+            let mut machine = run_machine_body_finish_ir(
+                "mov.b32 %f0, %r0;",
+                0.0,
+                false,
+                "st.global.f32 [%p1], %f0;",
+                false,
+            );
+            let key = (3, 0, crate::machine::tmem_idx(0, 0) as u64);
+            let state = machine.num.as_mut().unwrap();
+            state.segments = segments;
+            state.taint.mem.insert(key);
+            machine.num_tmem_rescale(0, 0, 0, 0.0, 0);
+            let state = machine.num.as_mut().unwrap();
+            let node = state.mem[&key];
+            assert!(matches!(state.nodes[node as usize].kind, NodeKind::Opaque));
+            state.taint.mem.remove(&key);
+            machine.num_tmem_rescale(0, 0, 0, 0.0, 0);
+            let state = machine.num.as_ref().unwrap();
+            let node = state.mem[&key];
+            assert!(matches!(state.nodes[node as usize].kind, NodeKind::Opaque));
+            assert!(!state.const_leaves.contains(&node));
+        }
+        let mut constant = run_machine_body_finish_ir(
+            "mov.b32 %f0, %r0;",
+            0.0,
+            false,
+            "st.global.f32 [%p1], %f0;",
+            false,
+        );
+        let key = (3, 0, crate::machine::tmem_idx(0, 0) as u64);
+        for _ in 0..2 {
+            constant.num_tmem_rescale(0, 0, 0, 0.0, 0);
+            let state = constant.num.as_ref().unwrap();
+            let node = state.mem[&key];
+            assert!(matches!(state.nodes[node as usize].kind, NodeKind::Leaf));
+            assert!(state.const_leaves.contains(&node));
+        }
+    }
+
+    #[test]
     fn distinct_input_computations_at_zero_stay_untracked() {
         let (reference, routput) = shifted_input(1, 0.0);
         let (candidate, coutput) = shifted_input(2, 0.0);
         assert_eq!(routput.0, 0);
         assert_eq!(coutput.0, 0);
         for state in [&reference, &candidate] {
-            assert!(
-                state
-                    .nodes
-                    .iter()
-                    .any(|node| matches!(node.kind, NodeKind::Opaque))
-            );
+            assert!(state
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Opaque)));
         }
         let report = compare(
             &Side {
@@ -7716,12 +8295,10 @@ mod untracked_producer_tests {
             .unwrap();
         assert!(matches!(state.nodes[base as usize].kind, NodeKind::Leaf));
         assert_eq!(state.nodes[base as usize].hw, 0);
-        assert!(
-            !state
-                .nodes
-                .iter()
-                .any(|node| matches!(node.kind, NodeKind::Opaque))
-        );
+        assert!(!state
+            .nodes
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::Opaque)));
     }
 
     #[test]
@@ -7780,12 +8357,10 @@ mod untracked_producer_tests {
             mov.b32 %r1, 0; @%q mov.b32 %r1, 0x3f800000; mov.b32 %f0, %r1;";
         let (state, output) = run_body(body, 0.0);
         assert_eq!(output.0, 0);
-        assert!(
-            state
-                .nodes
-                .iter()
-                .any(|node| matches!(node.kind, NodeKind::Opaque))
-        );
+        assert!(state
+            .nodes
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::Opaque)));
         assert!(!state.taint.violations.is_empty());
         let (_, witness) = run_body(body, 1.0);
         assert_eq!(witness.0, 1.0f32.to_bits());
@@ -7796,12 +8371,10 @@ mod untracked_producer_tests {
         let body = "mov.b32 %f0, %r0; add.rn.f32 %f1, %f0, 0f3f800000; div.full.f32 %f0, %f0, %f1;";
         let (state, output) = run_body(body, 0.0);
         assert_eq!(output.0, 0);
-        assert!(
-            state
-                .nodes
-                .iter()
-                .any(|node| matches!(node.kind, NodeKind::Opaque))
-        );
+        assert!(state
+            .nodes
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::Opaque)));
         assert!(!state.taint.violations.is_empty());
         let (_, witness) = run_body(body, 1.0);
         assert_eq!(witness.0, 0.5f32.to_bits());
@@ -7814,12 +8387,10 @@ mod untracked_producer_tests {
             shr.u64 %w, %w, 32; mov.b32 %f0, %w;";
         for use_lop3_ir in [false, true] {
             let (state, retained) = run_body_ir(body, 0.0, use_lop3_ir);
-            assert!(
-                state
-                    .nodes
-                    .iter()
-                    .any(|node| matches!(node.kind, NodeKind::Opaque))
-            );
+            assert!(state
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Opaque)));
             assert!(!state.taint.violations.is_empty());
             let (_, replaced) = run_body_ir(body, 1.0, use_lop3_ir);
             assert_ne!(retained.0, replaced.0);
@@ -7860,7 +8431,7 @@ mod untracked_producer_tests {
             None,
         );
         assert!(!report.levels[0].holds && !report.levels[1].holds);
-        assert_ne!(direct(1, 1.0).1.0, direct(2, 1.0).1.0);
+        assert_ne!(direct(1, 1.0).1 .0, direct(2, 1.0).1 .0);
     }
 
     #[test]
@@ -7874,7 +8445,7 @@ mod untracked_producer_tests {
         ));
         assert!(state.taint.memory_unit_input_derived((1, 1, 0)));
         assert_eq!(
-            run_body_finish_ir(body, 1.0, false, "").1.0,
+            run_body_finish_ir(body, 1.0, false, "").1 .0,
             1.0f32.to_bits()
         );
     }
@@ -7891,7 +8462,7 @@ mod untracked_producer_tests {
                 state.nodes[output.1.unwrap() as usize].kind,
                 NodeKind::Opaque
             ));
-            assert_ne!(run_body_finish_ir(&body, 1.0, false, "").1.0, 0);
+            assert_ne!(run_body_finish_ir(&body, 1.0, false, "").1 .0, 0);
         }
     }
 
@@ -7903,7 +8474,7 @@ mod untracked_producer_tests {
         assert_eq!(
             run_body_finish_ir(body, 1.0, false, "st.global.f32 [%p1], %f0;")
                 .1
-                .0,
+                 .0,
             1.0f32.to_bits()
         );
         assert!(
@@ -7917,7 +8488,7 @@ mod untracked_producer_tests {
         assert_eq!(
             run_body_finish_ir(body, 1.0, false, "st.global.f32 [%p1], %f0;")
                 .1
-                .0,
+                 .0,
             1.0f32.to_bits()
         );
     }
@@ -7950,14 +8521,12 @@ mod untracked_producer_tests {
             );
         }
         let (space, allocation, off) = mem_key(location);
-        assert!(
-            machine
-                .num
-                .as_ref()
-                .unwrap()
-                .taint
-                .memory_unit_input_derived((space, allocation, off))
-        );
+        assert!(machine
+            .num
+            .as_ref()
+            .unwrap()
+            .taint
+            .memory_unit_input_derived((space, allocation, off)));
     }
 
     #[test]
@@ -8000,14 +8569,12 @@ mod untracked_producer_tests {
             waited.half_mem(location, 4, None)
         );
         let key = mem_key(location);
-        assert!(
-            machine
-                .num
-                .as_ref()
-                .unwrap()
-                .taint
-                .memory_unit_input_derived(key)
-        );
+        assert!(machine
+            .num
+            .as_ref()
+            .unwrap()
+            .taint
+            .memory_unit_input_derived(key));
     }
 
     #[test]
@@ -8078,10 +8645,7 @@ mod untracked_producer_tests {
             "P0 and UP0 must keep distinct comparison histories"
         );
         assert!(
-            matches!(
-                state.nodes[node as usize].kind,
-                NodeKind::Max { min: true, .. }
-            ),
+            matches!(state.nodes[node as usize].kind, NodeKind::Seg(_)),
             "kind={:?}, comparisons={:?}, trace={:?}, code={:?}",
             state.nodes[node as usize].kind,
             state.pred_src,
@@ -8200,13 +8764,11 @@ mod control_dependency_tests {
         let body = "cvt.u64.u32 %w, %r0; add.u64 %p1, %p1, %w; st.global.u32 [%p1], %p1;";
         let (state, output) = run_body_finish_ir(body, 0.0, false, "");
         assert_eq!(output.0, 0);
-        assert!(
-            state
-                .taint
-                .violations
-                .iter()
-                .any(|message| message.contains("address / control"))
-        );
+        assert!(state
+            .taint
+            .violations
+            .iter()
+            .any(|message| message.contains("address / control")));
     }
     #[test]
     fn source_validity_and_branch_mask_are_control_inputs() {
@@ -8310,6 +8872,947 @@ mod value_fault_tests {
                             faulting.contains(&op.as_str()) || structural.contains(&op.as_str()),
                             "{op}: an exec.rs error path ({tk}) without value-fault operands"
                         );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "atomic_memory_tests.rs"]
+mod atomic_memory_tests;
+
+#[cfg(test)]
+mod memory_effect_operand_tests {
+    use super::*;
+
+    fn r(index: u16) -> Reg {
+        Reg {
+            file: File::R,
+            idx: index,
+        }
+    }
+
+    fn cas(replacement: Option<Val>) -> Op {
+        Op::Atom {
+            op: AtomOp::Cas,
+            space: Space::Global,
+            bytes: 8,
+            addr: Addr {
+                base: Some(Val::Reg(r(2), 2)),
+                base2: None,
+                off: 0,
+            },
+            v: Val::Reg(r(10), 2),
+            d: Some(r(30)),
+            sync: ptxv_ir::MemSync {
+                sem: ptxv_ir::Sem::Relaxed,
+                scope: ptxv_ir::Scope::Gpu,
+            },
+            p: None,
+            new: replacement,
+        }
+    }
+
+    #[test]
+    fn explicit_cas_replacement_is_data() {
+        let operation = cas(Some(Val::Reg(r(20), 2)));
+        assert_eq!(value_regs(&operation), vec![r(10), r(11), r(20), r(21)]);
+        assert_eq!(control_regs(&operation), vec![r(2), r(3)]);
+    }
+
+    #[test]
+    fn implicit_cas_replacement_is_data() {
+        let operation = cas(None);
+        assert_eq!(value_regs(&operation), vec![r(10), r(11), r(12), r(13)]);
+        assert_eq!(control_regs(&operation), vec![r(2), r(3)]);
+    }
+}
+
+#[cfg(test)]
+mod uniform_comparison_owner_tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn peer_uniform_predicate_write_cannot_reuse_old_comparison() {
+        run_peer_uniform_predicate(false);
+    }
+
+    #[test]
+    fn skipped_input_dependent_peer_write_invalidates_comparison() {
+        run_peer_uniform_predicate(true);
+    }
+
+    fn run_peer_uniform_predicate(guarded: bool) {
+        let text = r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input) {
+  .reg .b64 %address;
+  .reg .f32 %f<3>;
+  .reg .pred %q;
+  ld.param.u64 %address, [input];
+  ld.global.f32 %f0, [%address];
+  ld.global.f32 %f1, [%address+4];
+  setp.gt.f32 %q, %f0, %f1;
+  setp.lt.f32 %q, %f0, %f1;
+  selp.f32 %f2, %f0, %f1, %q;
+  ret;
+}
+"#;
+        let mut kernel = ptxv_ptx::parse_kernel(text, Some("k")).unwrap();
+        let mut load = 0;
+        for instruction in &mut kernel.code {
+            match &mut instruction.op {
+                Op::Ld {
+                    d,
+                    space: Space::Global,
+                    ..
+                } => {
+                    *d = Reg {
+                        file: File::UR,
+                        idx: load,
+                    };
+                    load += 1;
+                }
+                Op::Fsetp {
+                    d, cmp, a, b, abs, ..
+                } => {
+                    *d = Reg {
+                        file: File::UP,
+                        idx: 0,
+                    };
+                    *a = Val::Reg(
+                        Reg {
+                            file: File::UR,
+                            idx: 0,
+                        },
+                        1,
+                    );
+                    *b = Val::Reg(
+                        Reg {
+                            file: File::UR,
+                            idx: 1,
+                        },
+                        1,
+                    );
+                    if *cmp == FCmp::Lt {
+                        abs[0] = true;
+                    }
+                }
+                Op::Sel { d, a, b, p } => {
+                    *d = Reg {
+                        file: File::UR,
+                        idx: 2,
+                    };
+                    *a = Val::Reg(
+                        Reg {
+                            file: File::UR,
+                            idx: 0,
+                        },
+                        1,
+                    );
+                    *b = Val::Reg(
+                        Reg {
+                            file: File::UR,
+                            idx: 1,
+                        },
+                        1,
+                    );
+                    p.reg = Some(Reg {
+                        file: File::UP,
+                        idx: 0,
+                    });
+                }
+                _ => {}
+            }
+        }
+        kernel.nregs[File::UR as usize] = 3;
+        kernel.nregs[File::P as usize] = 1;
+        if guarded {
+            let mut guard = kernel.code[3].clone();
+            let Op::Fsetp { d, .. } = &mut guard.op else {
+                unreachable!()
+            };
+            *d = Reg {
+                file: File::P,
+                idx: 0,
+            };
+            kernel.code.insert(3, guard);
+            kernel.code[5].guard = Pred {
+                reg: Some(Reg {
+                    file: File::P,
+                    idx: 0,
+                }),
+                neg: false,
+            };
+        }
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name": "uniform-comparison-owner", "description": "peer predicate write",
+            "entry": "k", "grid": [1,1,1], "block": [2,1,1], "outputs": [],
+            "buffers": [{"name": "x", "dtype": "f32", "shape": [2],
+                         "init": "zeros", "values": [[0,1.0],[1,2.0]]}],
+            "params": [{"kind": "ptr", "buffer": "x"}], "variants": []
+        }))
+        .unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut machine = Machine::new(Arc::new(kernel), launch);
+        let mut state = NumState {
+            segments: true,
+            ..Default::default()
+        };
+        state.f32_inputs.insert(0);
+        state.taint.taint_alloc(0, 8);
+        machine.num = Some(Box::new(state));
+        for pc in 0..3 {
+            machine.exec_one(&[0, 1], pc).unwrap();
+        }
+        let shift = u32::from(guarded);
+        if guarded {
+            machine.exec_one(&[0, 1], 3).unwrap();
+        }
+        machine.exec_one(&[0], 3 + shift).unwrap();
+        machine.exec_one(&[1], 4 + shift).unwrap();
+        let predicate = Pred {
+            reg: Some(Reg {
+                file: File::UP,
+                idx: 0,
+            }),
+            neg: false,
+        };
+        assert_eq!(machine.prd(0, predicate), !guarded);
+        machine.exec_one(&[0], 5 + shift).unwrap();
+        let destination = Reg {
+            file: File::UR,
+            idx: 2,
+        };
+        let actual = machine.rd(0, &Val::Reg(destination, 1)).unwrap() as u32;
+        assert_eq!(actual, (if guarded { 2.0f32 } else { 1.0f32 }).to_bits());
+        let state = machine.num.as_ref().unwrap();
+        if let Some(node) = state.node_of_reg(0, destination) {
+            if guarded {
+                assert!(
+                    !is_comparison_shortcut(&state.nodes[node as usize].kind),
+                    "a skipped input-dependent peer write retained comparison evidence"
+                );
+            }
+            assert_eq!(
+                state.nodes[node as usize].hw, actual,
+                "a peer UP write retained an older comparison: {:?}",
+                state.pred_src
+            );
+        }
+        assert!(machine.findings.is_empty(), "{:?}", machine.findings);
+    }
+    #[test]
+    fn parsed_skipped_predicate_write_cannot_reuse_old_comparison() {
+        let text = r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input) {
+  .reg .b64 %address;
+  .reg .f32 %f<3>;
+  .reg .pred %q<2>;
+  ld.param.u64 %address, [input];
+  ld.global.f32 %f0, [%address];
+  ld.global.f32 %f1, [%address+4];
+  setp.gt.f32 %q0, %f0, %f1;
+  setp.gt.f32 %q1, %f0, %f1;
+  @%q0 setp.lt.f32 %q1, %f0, %f1;
+  selp.f32 %f2, %f0, %f1, %q1;
+  ret;
+}
+"#;
+        let kernel = ptxv_ptx::parse_kernel(text, Some("k")).unwrap();
+        let destination = match kernel.code[6].op {
+            Op::Sel { d, .. } => d,
+            _ => panic!("expected parsed selection"),
+        };
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name": "conditional-predicate-comparison", "description": "skipped predicate write",
+            "entry": "k", "grid": [1,1,1], "block": [1,1,1], "outputs": [],
+            "buffers": [{"name": "x", "dtype": "f32", "shape": [2],
+                         "init": "zeros", "values": [[0,1.0],[1,2.0]]}],
+            "params": [{"kind": "ptr", "buffer": "x"}], "variants": []
+        }))
+        .unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut machine = Machine::new(Arc::new(kernel), launch);
+        let mut state = NumState {
+            segments: true,
+            ..Default::default()
+        };
+        state.f32_inputs.insert(0);
+        state.taint.taint_alloc(0, 8);
+        machine.num = Some(Box::new(state));
+        for pc in 0..7 {
+            machine.exec_one(&[0], pc).unwrap();
+        }
+        let actual = machine.rd(0, &Val::Reg(destination, 1)).unwrap() as u32;
+        assert_eq!(actual, 2.0f32.to_bits());
+        let state = machine.num.as_ref().unwrap();
+        if let Some(node) = state.node_of_reg(0, destination) {
+            assert_eq!(state.nodes[node as usize].hw, actual);
+            assert!(
+                !is_comparison_shortcut(&state.nodes[node as usize].kind),
+                "captured-false guard retained a comparison that is false on other inputs"
+            );
+        }
+        assert!(machine.findings.is_empty(), "{:?}", machine.findings);
+    }
+}
+
+#[cfg(test)]
+mod constant_predicate_probe {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn ignored_predicate_write_cannot_supply_comparison_evidence() {
+        run("P7");
+    }
+
+    #[test]
+    fn normalized_pt_selection_is_a_positive_control() {
+        run("PT");
+    }
+
+    #[test]
+    fn raw_architectural_constant_retains_selected_input_history() {
+        run("RAW_P7");
+    }
+
+    fn run(selection: &str) {
+        let text = r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input) {
+  .reg .b64 %address;
+  .reg .f32 %f<3>;
+  .reg .pred %q;
+  ld.param.u64 %address, [input];
+  ld.global.f32 %f0, [%address];
+  ld.global.f32 %f1, [%address+4];
+  setp.gt.f32 %q, %f0, %f1;
+  selp.f32 %f2, %f0, %f1, %q;
+  ret;
+}
+"#;
+        let mut kernel = ptxv_ptx::parse_kernel(text, Some("k")).unwrap();
+        let destination = Reg {
+            file: File::R,
+            idx: 2,
+        };
+        let mut load = 0;
+        for instruction in &mut kernel.code {
+            match &mut instruction.op {
+                Op::Ld {
+                    d,
+                    space: Space::Param,
+                    ..
+                } => {
+                    *d = Reg {
+                        file: File::R,
+                        idx: 10,
+                    };
+                }
+                Op::Ld {
+                    d,
+                    addr,
+                    space: Space::Global,
+                    ..
+                } => {
+                    addr.base = Some(Val::Reg(
+                        Reg {
+                            file: File::R,
+                            idx: 10,
+                        },
+                        2,
+                    ));
+                    *d = Reg {
+                        file: File::R,
+                        idx: load,
+                    };
+                    load += 1;
+                }
+                Op::Fsetp { .. } => {
+                    instruction.op =
+                        ptxv_sass::lower_text("FSETP.GT.AND PT, PT, R0, R1, PT", None).unwrap()
+                }
+                Op::Sel { .. } => {
+                    instruction.op = ptxv_sass::lower_text(
+                        &format!(
+                            "SEL R2, R0, R1, {}",
+                            if selection == "RAW_P7" {
+                                "PT"
+                            } else {
+                                selection
+                            }
+                        ),
+                        None,
+                    )
+                    .unwrap()
+                }
+                _ => {}
+            }
+        }
+        if selection == "RAW_P7" {
+            let select = kernel
+                .code
+                .iter_mut()
+                .find(|instruction| matches!(instruction.op, Op::Sel { .. }))
+                .expect("selection instruction");
+            let Op::Sel { p, .. } = &mut select.op else {
+                unreachable!()
+            };
+            p.reg = Some(Reg {
+                file: File::P,
+                idx: 7,
+            });
+        }
+        kernel.nregs[File::R as usize] = 12;
+        kernel.front = Front::Sass;
+        kernel.nregs[File::P as usize] = 8;
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name": "constant-predicate", "description": "ignored write",
+            "entry": "k", "grid": [1,1,1], "block": [1,1,1], "outputs": [],
+            "buffers": [{"name": "x", "dtype": "f32", "shape": [2],
+                         "init": "zeros", "values": [[0,1.0],[1,2.0]]}],
+            "params": [{"kind": "ptr", "buffer": "x"}], "variants": []
+        }))
+        .unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut machine = Machine::new(Arc::new(kernel), launch);
+        let mut state = NumState {
+            segments: true,
+            ..Default::default()
+        };
+        state.f32_inputs.insert(0);
+        state.taint.taint_alloc(0, 8);
+        machine.num = Some(Box::new(state));
+        for pc in 0..5 {
+            machine.exec_one(&[0], pc).unwrap();
+        }
+        let actual = machine.rd(0, &Val::Reg(destination, 1)).unwrap() as u32;
+        assert_eq!(actual, 1.0f32.to_bits());
+        let state = machine.num.as_ref().unwrap();
+        {
+            let node = state
+                .node_of_reg(0, destination)
+                .expect("constant predicate must preserve selected input history");
+            assert_eq!(
+                state.nodes[node as usize].hw, actual,
+                "an ignored constant-predicate write supplied comparison evidence"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod packed_atomic_taint_tests {
+    use ptxv_memory_write::atomic_components::Component::First;
+    use ptxv_memory_write::atomic_components::Component::Second;
+
+    use super::*;
+
+    #[test]
+    fn packed_return_accumulates_input_taint_from_both_halves() {
+        for tainted_half in [0, 1] {
+            for high_first in [false, true] {
+                let mut machine = crate::atomic_packed_tests::at_atomic(
+                    crate::atomic_packed_tests::machine_with_shape(false, 1, 1),
+                );
+                let pc = machine.threads[0].pc;
+                let Op::Atom {
+                    d: Some(destination),
+                    ..
+                } = machine.k.code[pc as usize].op
+                else {
+                    panic!("packed")
+                };
+                let mut numeric = NumState::default();
+                numeric.taint.mem.insert((1, 0, 2 * tainted_half));
+                machine.num = Some(Box::new(numeric));
+                for component in if high_first {
+                    [Second, First]
+                } else {
+                    [First, Second]
+                } {
+                    crate::atomic_packed_tests::take_component(&mut machine, 0, component);
+                }
+                assert!(
+                    machine.num.as_ref().unwrap().taint.reg_t(0, destination),
+                    "half{tainted_half}, high_first{high_first}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn is_comparison_shortcut(kind: &NodeKind) -> bool {
+    match kind {
+        NodeKind::Max { .. } => true,
+        NodeKind::Seg(program) => matches!(program.0.ops.as_slice(), [first, second]
+            if matches!(&first.kind, crate::seg::SKind::Inst { op: Op::Fsetp { .. }, .. })
+                && matches!(&second.kind, crate::seg::SKind::Inst { op: Op::Sel { .. }, .. })),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod comparison_selection_policy_tests {
+    use super::*;
+
+    #[test]
+    fn exact_slice_preserves_every_comparison_mode_tie_nan_and_operand_order() {
+        let modes = [
+            "F", "LT", "EQ", "LE", "GT", "NE", "GE", "NUM", "NAN", "LTU", "EQU", "LEU", "GTU",
+            "NEU", "GEU", "T",
+        ];
+        let bits = [
+            0,
+            0x8000_0000,
+            1,
+            0x8000_0001,
+            0x3f80_0000,
+            0xbf80_0000,
+            0x4000_0000,
+            0xc000_0000,
+            0x7f80_0000,
+            0xff80_0000,
+            0x7fc0_0000,
+            0x7fc0_1234,
+            0xffc0_5678,
+            0x7f80_0001,
+            0xff80_0001,
+        ];
+        for mode in modes {
+            let parsed = if matches!(mode, "F" | "T") {
+                "GT"
+            } else {
+                mode
+            };
+            let mut operation =
+                ptxv_sass::lower_text(&format!("FSETP.{parsed}.AND P0, PT, R0, R1, PT"), None)
+                    .unwrap();
+            if let Op::Fsetp { cmp, .. } = &mut operation {
+                if mode == "F" {
+                    *cmp = FCmp::F;
+                }
+                if mode == "T" {
+                    *cmp = FCmp::T;
+                }
+            }
+            let Op::Fsetp { cmp, .. } = operation else {
+                panic!()
+            };
+            for negate in [false, true] {
+                for swap in [false, true] {
+                    let plan = ptxv_ir::comparison_select::from_operation(&operation, negate, swap)
+                        .unwrap();
+                    let mut state = NumState::default();
+                    let x = state.const_leaf(0, 0);
+                    let y = state.const_leaf(0, 0);
+                    let n = state.comparison_selection_node(crate::seg::ComparisonContext {
+                        plan,
+                        left: x,
+                        right: y,
+                        comparison_pc: 1,
+                        selection_pc: 2,
+                    });
+                    let NodeKind::Seg(program) = &state.nodes[n as usize].kind else {
+                        panic!("comparison/selection must preserve its exact policy")
+                    };
+                    for a in bits {
+                        for b in bits {
+                            let predicate = fp::f32_cmp(a, b, cmp, false) != negate;
+                            let (first, second) = if swap { (b, a) } else { (a, b) };
+                            let expected = if predicate { first } else { second };
+                            assert_eq!(
+                                program.0.eval(&[a, b]).unwrap(),
+                                expected,
+                                "{mode}, negate={negate}, swap={swap}, x={a:08x}, y={b:08x}"
+                            );
+                        }
+                    }
+                    assert_eq!(program.0.eval(&[0, 0]).unwrap(), state.nodes[n as usize].hw);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn comparison_pair_keeps_both_argument_histories_and_source_pcs() {
+        let operation = ptxv_sass::lower_text("FSETP.GT.AND P0, PT, R0, R1, PT", None).unwrap();
+        let plan = ptxv_ir::comparison_select::from_operation(&operation, false, false).unwrap();
+        let mut state = NumState::default();
+        let x = state.const_leaf(0, 0);
+        let y = state.const_leaf(0x8000_0000, 0);
+        let n = state.comparison_selection_node(crate::seg::ComparisonContext {
+            plan,
+            left: x,
+            right: y,
+            comparison_pc: 17,
+            selection_pc: 23,
+        });
+        let NodeKind::Seg(program) = &state.nodes[n as usize].kind else {
+            panic!()
+        };
+        assert_eq!(program.0.args, [x, y]);
+        assert_eq!(program.0.pcs(), [17, 23].into_iter().collect());
+        assert_eq!(state.nodes[n as usize].hw, 0x8000_0000);
+        assert_eq!(
+            program
+                .0
+                .eval(&[3.0f32.to_bits(), 2.0f32.to_bits()])
+                .unwrap(),
+            3.0f32.to_bits()
+        );
+        assert_eq!(
+            program
+                .0
+                .eval(&[1.0f32.to_bits(), 2.0f32.to_bits()])
+                .unwrap(),
+            2.0f32.to_bits()
+        );
+    }
+}
+
+#[cfg(test)]
+mod signed_zero_comparison_probe {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn finite_signed_zero_selection_matches_numeric_history() {
+        run("P0");
+    }
+
+    fn run(selection: &str) {
+        let text = r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input) {
+  .reg .b64 %address;
+  .reg .f32 %f<3>;
+  .reg .pred %q;
+  ld.param.u64 %address, [input];
+  ld.global.f32 %f0, [%address];
+  ld.global.f32 %f1, [%address+4];
+  setp.gt.f32 %q, %f0, %f1;
+  selp.f32 %f2, %f0, %f1, %q;
+  ret;
+}
+"#;
+        let mut kernel = ptxv_ptx::parse_kernel(text, Some("k")).unwrap();
+        let destination = Reg {
+            file: File::R,
+            idx: 2,
+        };
+        let mut load = 0;
+        for instruction in &mut kernel.code {
+            match &mut instruction.op {
+                Op::Ld {
+                    d,
+                    space: Space::Param,
+                    ..
+                } => {
+                    *d = Reg {
+                        file: File::R,
+                        idx: 10,
+                    };
+                }
+                Op::Ld {
+                    d,
+                    addr,
+                    space: Space::Global,
+                    ..
+                } => {
+                    addr.base = Some(Val::Reg(
+                        Reg {
+                            file: File::R,
+                            idx: 10,
+                        },
+                        2,
+                    ));
+                    *d = Reg {
+                        file: File::R,
+                        idx: load,
+                    };
+                    load += 1;
+                }
+                Op::Fsetp { .. } => {
+                    instruction.op =
+                        ptxv_sass::lower_text("FSETP.GT.AND P0, PT, R0, R1, PT", None).unwrap()
+                }
+                Op::Sel { .. } => {
+                    instruction.op =
+                        ptxv_sass::lower_text(&format!("SEL R2, R0, R1, {selection}"), None)
+                            .unwrap()
+                }
+                _ => {}
+            }
+        }
+        kernel.nregs[File::R as usize] = 12;
+        kernel.front = Front::Sass;
+        kernel.nregs[File::P as usize] = 8;
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name": "constant-predicate", "description": "ignored write",
+            "entry": "k", "grid": [1,1,1], "block": [1,1,1], "outputs": [],
+            "buffers": [{"name": "x", "dtype": "f32", "shape": [2],
+                         "init": "zeros", "values": [[0,0.0],[1,-0.0]]}],
+            "params": [{"kind": "ptr", "buffer": "x"}], "variants": []
+        }))
+        .unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut machine = Machine::new(Arc::new(kernel), launch);
+        let mut state = NumState {
+            segments: true,
+            ..Default::default()
+        };
+        state.f32_inputs.insert(0);
+        state.taint.taint_alloc(0, 8);
+        machine.num = Some(Box::new(state));
+        for pc in 0..5 {
+            machine.exec_one(&[0], pc).unwrap();
+        }
+        let actual = machine.rd(0, &Val::Reg(destination, 1)).unwrap() as u32;
+        assert_eq!(actual, (-0.0f32).to_bits());
+        let state = machine.num.as_ref().unwrap();
+        let node = state
+            .node_of_reg(0, destination)
+            .expect("the actual comparison and selection must retain exact history");
+        assert_eq!(
+            state.nodes[node as usize].hw, actual,
+            "comparison-based max inference changed the selected signed-zero bits"
+        );
+        let NodeKind::Seg(program) = &state.nodes[node as usize].kind else {
+            panic!("comparison selection must retain its exact instruction slice");
+        };
+        assert_eq!(program.0.ops.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod memory_metadata_delivery_tests {
+    use super::*;
+
+    fn legacy(ns: &mut NumState, operation: &Op, active: &[usize], dg: &[usize]) {
+        let mut touched_ts: Vec<usize> = active.to_vec();
+        touched_ts.extend(dg.iter().copied().filter(|t| !active.contains(t)));
+        for r in operation.dst_regs() {
+            for &t in &touched_ts {
+                let k = ns.taint.reg_key(t, r);
+                let plan = symbolic::destination_plan(
+                    active.contains(&t),
+                    dg.contains(&t),
+                    ns.touched.contains(&k),
+                    false,
+                );
+                if plan.forget_half {
+                    ns.half.forget_register(t, r);
+                    ns.forget_predicate_comparison(t, r);
+                }
+                if plan.clear_history {
+                    ns.reg.remove(&k);
+                }
+                // The high half of a PTX register (V_HI) too.
+                if r.file == File::V {
+                    let h = (t as u32, file_tag(r.file), r.idx | V_HI);
+                    let plan = symbolic::destination_plan(
+                        active.contains(&t),
+                        dg.contains(&t),
+                        ns.touched.contains(&h),
+                        false,
+                    );
+                    if plan.clear_history {
+                        ns.reg.remove(&h);
+                    }
+                }
+            }
+        }
+        let tn = &mut ns.taint;
+        let t_any = tn.cur_src || tn.cur_read;
+        let mut per = tn.cur_pure.take();
+        // ASSUME(N-EQUIV): a shuffle: each destination carries the taint of the lane it read.
+        if matches!(operation, Op::Shfl { .. }) && !tn.shfl_src.is_empty() {
+            per = Some(std::mem::take(&mut tn.shfl_src));
+        }
+        // ASSUME(N-EQUIV): a load: each thread's destination register carries the taint of the bytes it got.
+        let ld_read = if per.is_none() && matches!(operation, Op::Ld { .. }) {
+            std::mem::take(&mut tn.ld_read)
+        } else {
+            vec![]
+        };
+        for r in operation.dst_regs() {
+            for &t in &touched_ts {
+                let plan =
+                    symbolic::destination_plan(active.contains(&t), dg.contains(&t), false, false);
+                if plan.clear_bits {
+                    tn.bits.remove(&tn.reg_key(t, r));
+                }
+            }
+            let lane_t = |t: usize| match &per {
+                Some(p) => p.iter().any(|&(u, x)| u == t && x),
+                None => ld_read
+                    .iter()
+                    .find(|x| x.0 == t && x.1 == r)
+                    .map_or(t_any, |x| x.2),
+            };
+            let uniform_t =
+                matches!(r.file, File::UR | File::UP) && active.iter().any(|&t| lane_t(t));
+            for &t in active {
+                let k = tn.reg_key(t, r);
+                let plan = symbolic::destination_plan(
+                    true,
+                    dg.contains(&t),
+                    false,
+                    uniform_t || lane_t(t),
+                );
+                if let Some(tainted) = plan.active_taint {
+                    if tainted {
+                        tn.reg.insert(k);
+                    } else {
+                        tn.reg.remove(&k);
+                    }
+                }
+            }
+            // Under a data-dependent guard the member's destination depends on input data.
+            for &t in dg {
+                let plan = symbolic::destination_plan(active.contains(&t), true, false, false);
+                if plan.force_taint {
+                    tn.reg.insert(tn.reg_key(t, r));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extracted_delivery_matches_prior_maps_with_uniform_aliases_and_saved_sources() {
+        let addr = Addr {
+            base: None,
+            base2: None,
+            off: 0,
+        };
+        for file in [File::V, File::R, File::UR, File::P, File::UP] {
+            let first = Reg { file, idx: 8 };
+            let operations = [
+                Op::Ld {
+                    d: first,
+                    n: 2,
+                    space: Space::Global,
+                    bytes: 8,
+                    addr: addr.clone(),
+                    sync: None,
+                    nc: false,
+                    sext: false,
+                },
+                Op::Ld256 {
+                    hi: first,
+                    lo: first,
+                    addr: addr.clone(),
+                    sync: None,
+                    nc: false,
+                    mask: 0x3c,
+                },
+                Op::St {
+                    space: Space::Global,
+                    bytes: 4,
+                    addr: addr.clone(),
+                    v: Val::Reg(first, 1),
+                    sync: None,
+                },
+            ];
+            for operation in operations {
+                for per_thread in [
+                    None,
+                    Some(vec![(0, false), (1, true), (1, false)]),
+                    Some(vec![(0, true), (1, false)]),
+                ] {
+                    for (active, guarded) in [
+                        (vec![], vec![1, 2]),
+                        (vec![0, 1], vec![]),
+                        (vec![0, 1], vec![1, 2]),
+                        (vec![0, 0], vec![0, 1, 1]),
+                    ] {
+                        let mut initial = NumState::default();
+                        initial.taint.uniform_owners = vec![0, 0, 0];
+                        initial.taint.cur_src = true;
+                        initial.taint.cur_pure = per_thread.clone();
+                        for thread in 0..3 {
+                            for idx in 8..11 {
+                                let reg = Reg { file, idx };
+                                let key = initial.taint.reg_key(thread, reg);
+                                initial.reg.insert(key, (thread * 16 + idx as usize) as u32);
+                                initial
+                                    .reg
+                                    .insert((thread as u32, file_tag(file), idx | V_HI), 99);
+                                initial.taint.reg.insert(key);
+                                initial.taint.bits.insert(key, 0x55aa);
+                                initial.taint.ld_read.push((
+                                    thread,
+                                    reg,
+                                    (thread + idx as usize) % 2 == 0,
+                                ));
+                                if (thread + idx as usize) % 3 == 0 {
+                                    initial.touched.push(key);
+                                }
+                                if matches!(file, File::P | File::UP) {
+                                    initial.pred_src.insert(
+                                        symbolic::register_key(thread as u32, file_tag(file), idx),
+                                        (0, FCmp::Eq, 0, 1),
+                                    );
+                                }
+                            }
+                        }
+                        let mut expected = initial.clone();
+                        legacy(&mut expected, &operation, &active, &guarded);
+                        let mut actual = initial;
+                        assert!(metadata_delivery::execute(
+                            &operation,
+                            &active,
+                            &guarded,
+                            &mut MemoryMetadataWriter {
+                                state: &mut actual,
+                                active: &active,
+                                source_any: false,
+                                per_thread: None,
+                                load_reads: Vec::new(),
+                            }
+                        ));
+                        assert_eq!(actual.reg, expected.reg);
+                        assert_eq!(actual.pred_src, expected.pred_src);
+                        assert_eq!(actual.taint.reg, expected.taint.reg);
+                        assert_eq!(actual.taint.bits, expected.taint.bits);
+                        assert_eq!(actual.taint.cur_pure, expected.taint.cur_pure);
+                        assert_eq!(actual.taint.ld_read, expected.taint.ld_read);
+                        assert_eq!(actual.touched, expected.touched);
                     }
                 }
             }

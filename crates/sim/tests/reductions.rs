@@ -356,7 +356,19 @@ fn unused_tensormap_fence_snapshots_are_race_dead() {
 /// front-ends were clean.
 #[test]
 fn position_through_other_special_registers() {
-    let case = Case::load(root().join("fixtures/e_pos_sreg")).unwrap();
+    let mut case = Case::load(root().join("fixtures/e_pos_sreg")).unwrap();
+    // One ticket lane per warp preserves both frontends' orders without enumerating 64! outputs.
+    for variant in &mut case.m.variants {
+        if matches!(variant.id.as_str(), "CTICKET" | "NONDET") {
+            let replacement = variant.replace.as_mut().unwrap();
+            let atomic = "atom.shared.add.u32 %r5, [s], 1;";
+            assert!(replacement.contains(atomic));
+            *replacement = replacement.replace(
+                atomic,
+                "and.b32 %r6, %r1, 31; setp.ne.u32 %p1, %r6, 0; @%p1 bra STORE; atom.shared.add.u32 %r5, [s], 1;",
+            );
+        }
+    }
     for front in ["ptx", "sass"] {
         for variant in ["good", "CLUSTERID", "CTICKET", "NONDET"] {
             let make = || machine(&case, variant, front);

@@ -8,6 +8,22 @@
 //! ptxv simulator and model checker.
 
 pub mod assumptions;
+#[cfg(test)]
+mod atomic_component_tests;
+mod atomic_exec;
+#[cfg(test)]
+mod atomic_lane_coverage_tests;
+#[cfg(test)]
+mod atomic_packed_tests;
+#[cfg(test)]
+mod atomic_predicate_coverage_tests;
+#[cfg(test)]
+mod atomic_red_coverage_tests;
+#[cfg(test)]
+mod atomic_sass_order_tests;
+#[cfg(test)]
+mod atomic_scalar_order_tests;
+mod bar_program;
 pub mod cert;
 pub mod certsmt;
 pub mod clock;
@@ -33,6 +49,7 @@ pub mod l1_cores;
 pub mod lowp;
 pub mod machine;
 pub mod membudget;
+mod memory_effect;
 pub mod mma_lp;
 pub mod model;
 pub mod mufu;
@@ -45,6 +62,9 @@ pub mod norm;
 pub mod num;
 pub mod prove;
 pub mod race_dead;
+#[cfg(test)]
+mod reduction_tests;
+mod register_liveness;
 pub mod rep;
 pub mod residency;
 pub mod seg;
@@ -963,3 +983,14 @@ fn fdtype_of(d: &str) -> Option<ptxv_ir::FFmt> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod atomic_log_tests;
+
+#[cfg(test)]
+mod atomic_exchange_coverage_tests;
+#[cfg(test)]
+mod dpor_uniform_tests;
+
+#[cfg(test)]
+mod bsync_footprint_tests;

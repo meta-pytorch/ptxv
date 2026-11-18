@@ -2,9 +2,10 @@ name = "e_ticket_addr"
 description = """
 Fixture for C-TICKET-ADDR (wellsync/perm.rs): slot assignment by fetch-add. Six threads (two CTAs)
 claim slots in their expert's counter and store their rows at prefix[e] + slot. The certificate
-(`--certify`) gives `clean-up-to-permutation` for good and refuses every mutant (BRANCH, VALUE,
+(`--certify`) gives `clean-up-to-permutation` for PTX good and refuses every mutant (BRANCH, VALUE,
 OVERLAP, NOHB, GUARD, SHIFT, READ: see kernel.ptx); exploration finds the outputs nondeterministic.
-A second launch (k2) copies back[1] to back[0] (READ: reads a row instead)."""
+A second launch (k2) copies back[1] to back[0] (READ: reads a row instead).
+SASS overlapping returned warp-lane claims are conservatively unmodeled."""
 ptx = "kernel.ptx"
 entry = "k"
 grid = [2, 1, 1]
@@ -95,6 +96,7 @@ buffers = ["val", "src"]
 [[variants]]
 id = "good"
 expect = ["nondeterministic"]
+expect_sass = ["nondeterministic", "unmodeled"]
 
 [[variants]]
 id = "BRANCH"
@@ -103,6 +105,7 @@ marker = "@ROW"
 find = "add.u32 %r7, %r4, %r6;"
 replace = "add.u32 %r7, %r4, %r6; setp.gt.u32 %p1, %r6, 1; @%p1 bra DONE;"
 expect = ["nondeterministic"]
+expect_sass = ["nondeterministic", "unmodeled"]
 
 [[variants]]
 id = "VALUE"
@@ -111,6 +114,7 @@ marker = "@VAL"
 find = "mad.lo.u32 %r9, %r2, 10, 7;"
 replace = "mov.u32 %r9, %r6;"
 expect = ["nondeterministic"]
+expect_sass = ["nondeterministic", "unmodeled"]
 
 [[variants]]
 id = "OVERLAP"
@@ -119,6 +123,7 @@ marker = "@ROW"
 find = "add.u32 %r7, %r4, %r6;"
 replace = "mov.u32 %r7, %r6;"
 expect = ["nondeterministic", "race"]
+expect_sass = ["nondeterministic", "race", "unmodeled"]
 
 [[variants]]
 id = "NOHB"
@@ -127,6 +132,7 @@ marker = "@NOHB"
 find = "mov.u32 %r5, 0;"
 replace = "mov.u32 %r5, 0; setp.ne.u32 %p2, %r2, 3; @%p2 bra NOZ; st.global.u32 [%rd3], %r5; NOZ:"
 expect = ["nondeterministic", "race"]
+expect_sass = ["nondeterministic", "race", "unmodeled"]
 
 [[variants]]
 id = "GUARD"
@@ -135,6 +141,7 @@ marker = "@GUARD"
 find = "mov.u32 %r8, 0;"
 replace = "mov.u32 %r8, 0; setp.ne.u32 %p3, %r6, 0; @%p3 bra NOG; atom.global.add.u32 %r8, [%rd3+8], 1; NOG:"
 expect = ["nondeterministic"]
+expect_sass = ["nondeterministic", "unmodeled"]
 
 [[variants]]
 id = "SHIFT"
@@ -143,6 +150,7 @@ marker = "@SHIFT"
 find = "mov.u32 %r11, 0;"
 replace = "setp.eq.u32 %p3, %r2, 5; selp.u32 %r11, 4, 0, %p3;"
 expect = ["nondeterministic", "race"]
+expect_sass = ["nondeterministic", "race", "unmodeled"]
 
 [[variants]]
 id = "READ"
@@ -151,3 +159,4 @@ marker = "@READ"
 find = "ld.global.u32 %r1, [%rd2+4];"
 replace = "ld.global.u32 %r1, [%rd1];"
 expect = ["nondeterministic"]
+expect_sass = ["nondeterministic", "unmodeled"]

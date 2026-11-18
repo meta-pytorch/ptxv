@@ -15,24 +15,27 @@
 //! * Each instruction keeps its source line and text so that every report points at the
 //!   input the user gave us (a PTX line or a SASS address).
 
+pub mod analysis_knowledge;
+pub mod atomic_cancel;
+pub mod atomic_result;
+pub mod comparison_select;
 pub mod control_flow;
+pub mod control_transfer;
+pub mod destination_rows;
+pub mod guard_certificate;
+pub mod masked_load;
+pub mod metadata_delivery;
+pub mod payload;
+pub mod predicate_read;
+pub mod read_window;
+pub mod register_effect;
 pub mod register_owner;
+pub mod store_window;
 
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum File {
     /// PTX virtual register (one slot holds the whole value, up to 64 bits).
     V,
@@ -46,18 +49,7 @@ pub enum File {
     UP,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Reg {
     pub file: File,
     pub idx: u16,
@@ -401,18 +393,7 @@ pub enum F2Lanes {
 }
 
 /// Function of the SASS multi-function unit (`MUFU.<func>`), or of a PTX `.approx` op.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MufuFunc {
     Ex2,
     Rcp,
@@ -500,17 +481,7 @@ pub enum LpRnd {
 
 /// `tcgen05.mma .collector::a::*` (SASS: `.A_KEEP` after the A descriptor = keep A in the
 /// collector buffer, `.A_REUSE` = A may come from it). S-TC-COLLECTOR.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    Hash,
-    Serialize,
-    Deserialize
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MmaCollector {
     /// No qualifier / `::discard` (SASS: neither): the buffer may be discarded.
     #[default]
@@ -640,18 +611,7 @@ impl HSel {
 }
 
 /// PTX memory-model scope of a strong operation or fence.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Scope {
     Cta,
     Cluster,
@@ -2296,6 +2256,9 @@ impl Op {
     /// Register values read by this operation, predicates included (not the guard). Exhaustive:
     /// used by "read before ready" checks and by the E-SPIN liveness check.
     pub fn src_regs(&self) -> Vec<Reg> {
+        if let Some(registers) = register_effect::memory_reads(self) {
+            return registers;
+        }
         let mut out = Vec::new();
         let mut v = |x: &Val| {
             if let Val::Reg(r, n) = x {
@@ -2728,6 +2691,9 @@ impl Op {
 
     /// Registers this operation writes (predicates included). Exhaustive.
     pub fn dst_regs(&self) -> Vec<Reg> {
+        if let Some(registers) = register_effect::memory_writes(self) {
+            return registers;
+        }
         // `n` 32-bit slots: SASS registers d..d+n; a PTX virtual register holds up to 64 bits,
         // so one register.
         let span = |d: Reg, n: u16| {
@@ -3320,11 +3286,10 @@ mod tests {
             dims: [256, 1, 1],
         };
         assert!(req.mismatch([256, 1, 1]).is_none());
-        assert!(
-            req.mismatch([512, 1, 1])
-                .unwrap()
-                .contains("required block")
-        );
+        assert!(req
+            .mismatch([512, 1, 1])
+            .unwrap()
+            .contains("required block"));
         assert!(req.mismatch([128, 2, 1]).is_some());
         let max = Ntid {
             req: false,
@@ -3438,3 +3403,5 @@ mod vector_reg_tests {
 fn yes() -> bool {
     true
 }
+#[cfg(test)]
+mod atomic_result_tests;

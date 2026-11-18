@@ -521,6 +521,56 @@ The interpreter is validated by **differential conformance**: run the same `.ptx
 same inputs on GB300 and in `sim/Concrete`, and require bitwise-equal outputs. This runs on
 every kernel in the corpus and on every CI change.
 
+### 4.1 Native execution effects
+
+`Machine` remains the native simulator. Its adapters use dependency-free components in
+`crates/memory-write` and shared IR helpers to prepare and apply memory, register, control
+and barrier effects. The adapters retain allocation lookup, instruction dispatch and
+hardware-specific semantics.
+
+Memory payloads are captured before destination mutations, including overlapping copies.
+Writes update concrete bytes, per-byte definedness and symbolic histories together;
+partial writes invalidate every intersecting history word. Masks and register-word order
+are preserved for narrow, vector and physical-register accesses. A failed CAS keeps the
+memory bytes while applying the required numeric-history effect.
+
+Softmax analysis recognizes structurally checked comparison/select maxima under its
+finite-input requirement. The exact instruction slice remains authoritative for hardware
+bits, including signed zeros, while its real interpretation supplies the maximum term.
+
+Atomic continuations freeze each issued lane's operands and address before any component
+writes back. Independently atomic components can interleave, and their returned values,
+definedness and numeric provenance remain attached to the issued lanes. A conflicting
+atomic shape whose lane-order alternatives are unsupported reports `unmodeled` rather
+than certifying the single simulated order.
+
+Execution and dependency analysis use the same register ownership: R/P values are local
+to a lane, while UR/UP values belong to the warp. A cached local walk cannot assume a
+mutable uniform value remains constant while another split runs. Footprints record those
+shared dependencies and convergence-mask mutations, so partial-order reduction retains
+the conflicting schedules.
+
+Barrier updates share checked counter transitions and generation-membership effects.
+An arrival that currently cannot complete a phase is not enough to justify executing it
+alone: other arrivals or transaction updates may change which phase receives it. Invalid
+waits and poll dry runs retain their diagnostics before blocking. These are corrections
+to native execution and its reductions; they do not make an ordinary `clean` verdict a
+formal memory-safety theorem.
+Encoded mbarrier words also connect ordinary shared stores to synchronization. Stores and
+operations that land shared bytes remain scheduling boundaries when a kernel observes
+barrier memory; their footprints cover initialization and every possible overlapping
+barrier phase. An uninitialized query records reads of its resolved bytes and phases in
+DPOR rather than conflicting with every other query. Generic query errors keep the
+conservative footprint. Exhaustive small graphs compare both reduced explorers against
+unreduced schedules, including partial-word initialization and invalidation.
+The certificate additionally orders every barrier query after initialization and against
+overlapping backing-memory writes. This includes failed or discarded queries, whose native
+execution may perform no ordinary race check. Both earlier partial initialization and later
+async overwrites are checked; ordered encoded initialization can still certify.
+Release builds retain checked integer arithmetic. Single-kernel numerical statistics
+handle an exact f32 zero cell using the smallest-subnormal spacing (2^-149), avoiding an
+invalid binade lookup under those checks.
+
 ---
 
 ## 5. Part 2: numerical verification

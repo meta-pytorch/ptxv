@@ -1,0 +1,24 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry k() {
+ .shared .align 8 .b64 cell;
+ .reg .b32 %r0;
+ .reg .b64 %old;
+ .reg .pred %init, %success, %middle, %trap;
+ mov.u32 %r0, %tid.x;
+ setp.eq.u32 %init, %r0, 0;
+ @%init st.shared.u64 [cell], 0;
+ bar.sync 0;
+ atom.shared.max.u64 %old, [cell], 1;
+ setp.eq.u64 %success, %old, 0;
+ setp.eq.u32 %middle, %r0, 1;
+ and.pred %trap, %success, %middle;
+ @%trap trap;
+ ret;
+}

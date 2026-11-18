@@ -877,9 +877,9 @@ MUTANTS += [
     # bytes (r0_tma_sum B01: expect_tx larger than the TMA, a hang on GB300).
     SrcMutant(
         "mbar-tx-ignore",
-        "crates/sim/src/exec.rs",
-        "        if mb.pending == 0 && mb.tx == 0 {\n            let p = (mb.phase % 2) as usize;",
-        "        if mb.pending == 0 {\n            let p = (mb.phase % 2) as usize;",
+        "crates/memory-write/src/barrier.rs",
+        "    let completed = phase_completes(state.pending, state.transactions == 0);",
+        "    let completed = phase_completes(state.pending, true);",
         [("r0_tma_sum", "B01", f, []) for f in ("ptx", "sass")],
     ),
     # S-MBAR-MEM: the expected count decoded from an STS.64-initialized mbarrier one short.
@@ -942,7 +942,10 @@ MUTANTS += [
     SrcMutant(
         "walk-noreread",
         "crates/sim/src/explore.rs",
-        "                    let v = m.bar_read_c(t, k, wc)?;\n                    let i = kids.binary_search_by_key(&v, |e| e.0).ok()?;",
+        (
+            "                    let v = m.bar_read_c(t, k, wc);\n"
+            "                    let i = kids.binary_search_by_key(&v, |e| e.0).ok()?;"
+        ),
         "                    let (v, i) = (kids[0].0, 0usize);",
         [("e_barwalk", v, f, []) for v in ("good", "BW1") for f in ("ptx", "sass")],
         tests=[LIB, ("ptxv-sim", "lib", "explore::walk_cache_tests::walk_cache_keys_register_barrier_ids")],
@@ -950,24 +953,126 @@ MUTANTS += [
     SrcMutant(
         "walkid-ops",
         "crates/sim/src/explore.rs",
-        "            .all(|(x, y)| x.guard == y.guard && x.op == y.op)",
-        "            .all(|(x, y)| x.guard == y.guard)",
+        (
+            "fn walk_same(a: (&BarCfg, &ptxv_ir::Kernel), b: (&BarCfg, &ptxv_ir::Kernel)) -> bool {\n"
+            "    a.0 == b.0\n"
+            "        && match (a.0.program.kernel_option(), b.0.program.kernel_option()) {\n"
+            "            (None, None) => true,\n"
+            "            (Some(left), Some(right)) => {\n"
+            "                left.front == right.front\n"
+            "                    && left.code.len() == right.code.len()\n"
+            "                    && left\n"
+            "                        .code\n"
+            "                        .iter()\n"
+            "                        .zip(&right.code)\n"
+            "                        .all(|(x, y)| x.guard == y.guard && x.op == y.op)\n"
+            "            }\n"
+            "            _ => false,\n"
+            "        }\n"
+            "        && a.1.front == b.1.front\n"
+            "        && a.1.code.len() == b.1.code.len()\n"
+            "        && a.1\n"
+            "            .code\n"
+            "            .iter()\n"
+            "            .zip(&b.1.code)\n"
+            "            .all(|(x, y)| x.guard == y.guard && x.op == y.op)\n"
+            "}"
+        ),
+        (
+            "fn walk_same(a: (&BarCfg, &ptxv_ir::Kernel), b: (&BarCfg, &ptxv_ir::Kernel)) -> bool {\n"
+            "    a.0 == b.0\n"
+            "        && match (a.0.program.kernel_option(), b.0.program.kernel_option()) {\n"
+            "            (None, None) => true,\n"
+            "            (Some(left), Some(right)) => {\n"
+            "                left.front == right.front\n"
+            "                    && left.code.len() == right.code.len()\n"
+            "                    && left\n"
+            "                        .code\n"
+            "                        .iter()\n"
+            "                        .zip(&right.code)\n"
+            "                        .all(|(x, y)| x.guard == y.guard)\n"
+            "            }\n"
+            "            _ => false,\n"
+            "        }\n"
+            "        && a.1.front == b.1.front\n"
+            "        && a.1.code.len() == b.1.code.len()\n"
+            "        && a.1\n"
+            "            .code\n"
+            "            .iter()\n"
+            "            .zip(&b.1.code)\n"
+            "            .all(|(x, y)| x.guard == y.guard)\n"
+            "}"
+        ),
         [],
         tests=[LIB],
     ),
     SrcMutant(
         "walkid-guards",
         "crates/sim/src/explore.rs",
-        "            .all(|(x, y)| x.guard == y.guard && x.op == y.op)",
-        "            .all(|(x, y)| x.op == y.op)",
+        (
+            "fn walk_same(a: (&BarCfg, &ptxv_ir::Kernel), b: (&BarCfg, &ptxv_ir::Kernel)) -> bool {\n"
+            "    a.0 == b.0\n"
+            "        && match (a.0.program.kernel_option(), b.0.program.kernel_option()) {\n"
+            "            (None, None) => true,\n"
+            "            (Some(left), Some(right)) => {\n"
+            "                left.front == right.front\n"
+            "                    && left.code.len() == right.code.len()\n"
+            "                    && left\n"
+            "                        .code\n"
+            "                        .iter()\n"
+            "                        .zip(&right.code)\n"
+            "                        .all(|(x, y)| x.guard == y.guard && x.op == y.op)\n"
+            "            }\n"
+            "            _ => false,\n"
+            "        }\n"
+            "        && a.1.front == b.1.front\n"
+            "        && a.1.code.len() == b.1.code.len()\n"
+            "        && a.1\n"
+            "            .code\n"
+            "            .iter()\n"
+            "            .zip(&b.1.code)\n"
+            "            .all(|(x, y)| x.guard == y.guard && x.op == y.op)\n"
+            "}"
+        ),
+        (
+            "fn walk_same(a: (&BarCfg, &ptxv_ir::Kernel), b: (&BarCfg, &ptxv_ir::Kernel)) -> bool {\n"
+            "    a.0 == b.0\n"
+            "        && match (a.0.program.kernel_option(), b.0.program.kernel_option()) {\n"
+            "            (None, None) => true,\n"
+            "            (Some(left), Some(right)) => {\n"
+            "                left.front == right.front\n"
+            "                    && left.code.len() == right.code.len()\n"
+            "                    && left\n"
+            "                        .code\n"
+            "                        .iter()\n"
+            "                        .zip(&right.code)\n"
+            "                        .all(|(x, y)| x.op == y.op)\n"
+            "            }\n"
+            "            _ => false,\n"
+            "        }\n"
+            "        && a.1.front == b.1.front\n"
+            "        && a.1.code.len() == b.1.code.len()\n"
+            "        && a.1\n"
+            "            .code\n"
+            "            .iter()\n"
+            "            .zip(&b.1.code)\n"
+            "            .all(|(x, y)| x.op == y.op)\n"
+            "}"
+        ),
         [],
         tests=[LIB],
     ),
     SrcMutant(
         "walkid-barcfg",
         "crates/sim/src/explore.rs",
-        "    a.0 == b.0\n        && a.1.front == b.1.front",
-        "    true\n        && a.1.front == b.1.front",
+        (
+            "fn walk_same(a: (&BarCfg, &ptxv_ir::Kernel), b: (&BarCfg, &ptxv_ir::Kernel)) -> bool {\n"
+            "    a.0 == b.0"
+        ),
+        (
+            "fn walk_same(a: (&BarCfg, &ptxv_ir::Kernel), b: (&BarCfg, &ptxv_ir::Kernel)) -> bool {\n"
+            "    true"
+        ),
         [],
         tests=[LIB],
     ),
@@ -987,16 +1092,22 @@ MUTANTS += [
         "crates/sim/src/explore.rs",
         (
             "                                if let Some((_, src)) = renv.iter().find(|e| e.0 == *r) {\n"
+            "                                    if !ptxv_ir::analysis_knowledge::value_is_thread_private(src) {\n"
+            "                                        return None;\n"
+            "                                    }\n"
             "                                    let k = BarKey::Val(src.clone());\n"
-            "                                    let x = self.bar_read(t, &k);\n"
-            "                                    reads.push((k, x.unwrap_or(0)));\n"
+            "                                    let x = machine.bar_read(t, &k);\n"
+            "                                    reads.push((k, x));\n"
             "                                    return x;\n"
             "                                }"
         ),
         (
             "                                if let Some((_, src)) = renv.iter().find(|e| e.0 == *r) {\n"
+            "                                    if !ptxv_ir::analysis_knowledge::value_is_thread_private(src) {\n"
+            "                                        return None;\n"
+            "                                    }\n"
             "                                    let k = BarKey::Val(src.clone());\n"
-            "                                    let x = self.bar_read(t, &k);\n"
+            "                                    let x = machine.bar_read(t, &k);\n"
             "                                    return x;\n"
             "                                }"
         ),
@@ -1007,18 +1118,15 @@ MUTANTS += [
         "walk-nosetpread",
         "crates/sim/src/explore.rs",
         (
-            "                        let k = BarKey::Val(v.clone());\n"
-            "                        let x = self.bar_read(t, &k);\n"
-            "                        // (A failed read is recorded as 0: a thread reading 0 there reuses a\n"
-            "                        // walk that knew less, which is conservative.)\n"
-            "                        reads.push((k, x.unwrap_or(0)));\n"
-            "                        x"
+            "                                let k = BarKey::Val(v.clone());\n"
+            "                                let x = machine.bar_read(t, &k);\n"
+            "                                reads.push((k, x));\n"
+            "                                x.map(|x| (x, 0))"
         ),
         (
-            "                        let k = BarKey::Val(v.clone());\n"
-            "                        let x = self.bar_read(t, &k);\n"
-            "                        let _ = (&k, &reads);\n"
-            "                        x"
+            "                                let k = BarKey::Val(v.clone());\n"
+            "                                let x = machine.bar_read(t, &k);\n"
+            "                                x.map(|x| (x, 0))"
         ),
         [],
         tests=[("ptxv-sim", "lib", WCT + "walk_cache_keys_a_setp_operand")],
@@ -1026,32 +1134,32 @@ MUTANTS += [
     SrcMutant(
         "walk-noconv",
         "crates/sim/src/explore.rs",
-        "            let c = self.bar_read(t, &BarKey::Conv).unwrap_or(0);\n            reads.push((BarKey::Conv, c));",
-        "            let c = self.bar_read(t, &BarKey::Conv).unwrap_or(0);\n            let _ = c;",
+        (
+            "            let c = self.bar_read(t, &BarKey::Conv);\n"
+            "            reads.push((BarKey::Conv, c));"
+        ),
+        (
+            "            let c = self.bar_read(t, &BarKey::Conv);\n"
+            "            let _ = c;"
+        ),
         [],
         tests=[("ptxv-sim", "lib", WCT + "walk_cache_keys_the_warps_convergence")],
     ),
     SrcMutant(
         "walkseen-hash4",
         "crates/sim/src/explore.rs",
-        "            let mut seen: HashSet<(usize, Env, REnv), BuildHasherDefault<WalkHasher>> =\n                HashSet::default();",
         (
-            "            #[derive(Default)]\n"
-            "            struct HashOnly(HashSet<u64>);\n"
-            "            impl HashOnly {\n"
-            "                fn h<T: std::hash::Hash>(x: &T) -> u64 {\n"
-            "                    let mut s = WalkHasher::default();\n"
-            "                    x.hash(&mut s);\n"
-            "                    std::hash::Hasher::finish(&s) >> 60\n"
-            "                }\n"
-            "                fn contains<T: std::hash::Hash>(&self, x: &T) -> bool {\n"
-            "                    self.0.contains(&Self::h(x))\n"
-            "                }\n"
-            "                fn insert<T: std::hash::Hash>(&mut self, x: T) -> bool {\n"
-            "                    self.0.insert(Self::h(&x))\n"
-            "                }\n"
-            "            }\n"
-            "            let mut seen = HashOnly::default();"
+            "            fn fresh(&mut self, state: &(usize, Env, REnv)) -> bool {\n"
+            "                self.seen.insert(state.clone())\n"
+            "            }"
+        ),
+        (
+            "            fn fresh(&mut self, state: &(usize, Env, REnv)) -> bool {\n"
+            "                let mut hash = WalkHasher::default();\n"
+            "                std::hash::Hash::hash(state, &mut hash);\n"
+            "                let bucket = (std::hash::Hasher::finish(&hash) >> 60) as usize;\n"
+            "                self.seen.insert((bucket, vec![], vec![]))\n"
+            "            }"
         ),
         [],
         tests=[("ptxv-sim", "lib", WCT + "register_id_walk_visits_every_state")],
@@ -1063,22 +1171,14 @@ MUTANTS += [
         "walk-regs-nopredread",
         "crates/sim/src/explore.rs",
         (
-            "                        if unknown.contains(&r) || !ucur(&r) {\n"
-            "                            return None;\n"
-            "                        }\n"
-            "                        used.push(r);\n"
-            "                        let k = BarKey::Pred(r);\n"
-            "                        let v = self.bar_read(t, &k);\n"
-            "                        reads.push((k, v.unwrap_or(0)));"
+            "        let key = BarKey::Pred(register);\n"
+            "        let value = self.machine.bar_read(self.thread, &key);\n"
+            "        self.reads.push((key, value));"
         ),
         (
-            "                        if unknown.contains(&r) || !ucur(&r) {\n"
-            "                            return None;\n"
-            "                        }\n"
-            "                        used.push(r);\n"
-            "                        let k = BarKey::Pred(r);\n"
-            "                        let v = self.bar_read(t, &k);\n"
-            "                        let _ = (&k, &reads);"
+            "        let key = BarKey::Pred(register);\n"
+            "        let value = self.machine.bar_read(self.thread, &key);\n"
+            "        let _ = &key;"
         ),
         [],
         tests=[("ptxv-sim", "lib", WCT + "walk_cache_keys_a_register_id_walks_predicate")],
@@ -1088,12 +1188,12 @@ MUTANTS += [
         "crates/sim/src/explore.rs",
         (
             "                                    let k = BarKey::Uni(a.clone());\n"
-            "                                    let u = self.bar_read(t, &k).unwrap_or(0);\n"
+            "                                    let u = machine.bar_read(t, &k);\n"
             "                                    reads.push((k, u));"
         ),
         (
             "                                    let k = BarKey::Uni(a.clone());\n"
-            "                                    let u = self.bar_read(t, &k).unwrap_or(0);\n"
+            "                                    let u = machine.bar_read(t, &k);\n"
             "                                    let _ = &k;"
         ),
         [],
@@ -1103,25 +1203,14 @@ MUTANTS += [
         "walkseen-pconly",
         "crates/sim/src/explore.rs",
         (
-            "            let mut seen: HashSet<(usize, Env, REnv), BuildHasherDefault<WalkHasher>> =\n"
-            "                HashSet::default();"
+            "            fn fresh(&mut self, state: &(usize, Env, REnv)) -> bool {\n"
+            "                self.seen.insert(state.clone())\n"
+            "            }"
         ),
         (
-            "            #[derive(Default)]\n"
-            "            struct PcOnly(HashSet<usize>);\n"
-            "            #[allow(dead_code)]\n"
-            "            impl PcOnly {\n"
-            "                fn contains(&self, x: &(usize, Env, REnv)) -> bool {\n"
-            "                    self.0.contains(&x.0)\n"
-            "                }\n"
-            "                fn insert(&mut self, x: (usize, Env, REnv)) -> bool {\n"
-            "                    self.0.insert(x.0)\n"
-            "                }\n"
-            "                fn len(&self) -> usize {\n"
-            "                    self.0.len()\n"
-            "                }\n"
-            "            }\n"
-            "            let mut seen = PcOnly::default();"
+            "            fn fresh(&mut self, state: &(usize, Env, REnv)) -> bool {\n"
+            "                self.seen.insert((state.0, vec![], vec![]))\n"
+            "            }"
         ),
         [],
         tests=[("ptxv-sim", "lib", WCT + "register_id_walk_visits_every_state")],
@@ -1130,25 +1219,14 @@ MUTANTS += [
         "plainseen-pconly",
         "crates/sim/src/explore.rs",
         (
-            "            let mut seen: HashSet<(usize, Env, VEnv), BuildHasherDefault<WalkHasher>> =\n"
-            "                HashSet::default();"
+            "            fn fresh(&mut self, state: &(usize, Env, VEnv)) -> bool {\n"
+            "                self.seen.insert(state.clone())\n"
+            "            }"
         ),
         (
-            "            #[derive(Default)]\n"
-            "            struct PcOnly(HashSet<usize>);\n"
-            "            #[allow(dead_code)]\n"
-            "            impl PcOnly {\n"
-            "                fn contains(&self, x: &(usize, Env, VEnv)) -> bool {\n"
-            "                    self.0.contains(&x.0)\n"
-            "                }\n"
-            "                fn insert(&mut self, x: (usize, Env, VEnv)) -> bool {\n"
-            "                    self.0.insert(x.0)\n"
-            "                }\n"
-            "                fn len(&self) -> usize {\n"
-            "                    self.0.len()\n"
-            "                }\n"
-            "            }\n"
-            "            let mut seen = PcOnly::default();"
+            "            fn fresh(&mut self, state: &(usize, Env, VEnv)) -> bool {\n"
+            "                self.seen.insert((state.0, vec![], vec![]))\n"
+            "            }"
         ),
         [],
         tests=[("ptxv-sim", "lib", WCT + "plain_walk_visits_every_state")],
@@ -1189,8 +1267,16 @@ MUTANTS += [
     SrcMutant(
         "alloc-noblock",
         "crates/sim/src/exec.rs",
-        "                        .tmem_find(self.threads[t].cta, (n / 32) as u32)\n                        .is_some(),",
-        "                        .tmem_find(self.threads[t].cta, (n / 32) as u32)\n                        .is_some() || true,",
+        (
+            "                                available: self\n"
+            "                                    .tmem_find(self.threads[t].cta, (n / 32) as u32)\n"
+            "                                    .is_some(),"
+        ),
+        (
+            "                                available: self\n"
+            "                                    .tmem_find(self.threads[t].cta, (n / 32) as u32)\n"
+            "                                    .is_some() || true,"
+        ),
         [("e_tmem_alloc_block", "HOLD", f, []) for f in ("ptx", "sass")],
     ),
     # L-OPCLASS: MUFU dropped from the variable-latency set (its results taken as interlocked).
@@ -2394,8 +2480,8 @@ MUTANTS += [
     SrcMutant(
         "num-control-off",
         "crates/cli/src/main.rs",
-        "            .or(control);",
-        "            .or(control.filter(|_| false));",
+        "        let broken = match (broken, control) {",
+        "        let broken = match (broken, control.filter(|_| false)) {",
         [],
         [NUM_BRANCH],
     ),
@@ -4408,9 +4494,9 @@ MUTANTS += [
     # Slices (N-SEG): a predicate argument of a slice read as nonzero again.
     SrcMutant(
         "sign-seg",
-        "crates/sim/src/seg.rs",
-        "                                .is_none_or(|(_, s)| r.pred_bit(get(*s, vals))),",
-        "                                .is_none_or(|(_, s)| get(*s, vals) != 0),",
+        "crates/sim/src/seg/binding.rs",
+        "            register.pred_bit(read_sval(source, inputs.args, inputs.prior))",
+        "            read_sval(source, inputs.args, inputs.prior) != 0",
         [],
         [
             ("ptxv-sim", "lib", "seg::tests::sign_predicate_reads_bit_31"),
@@ -4429,11 +4515,11 @@ MUTANTS += [
     # E-CONST-BRA's constant guards.
     SrcMutant(
         "sign-constguard",
-        "crates/sim/src/explore.rs",
-        "            env.get(&r).map(|&v| r.pred_bit(v) ^ p.neg)",
-        "            env.get(&r).map(|&v| (v != 0) ^ p.neg)",
+        "crates/ir/src/guard_certificate.rs",
+        "        if !matches!(register.file, File::P | File::UP) {",
+        "        if !matches!(register.file, File::P | File::UP | File::R | File::UR) {",
         [],
-        [("ptxv-sim", "lib", "explore::sign_pred_tests::const_guard_reads_sign_bit")],
+        [("ptxv-sim", "lib", "explore::sign_pred_tests::const_guard_refuses_sign_bit")],
     ),
     # The look-ahead walk's predicates (constant and per lane).
     SrcMutant(
@@ -5009,8 +5095,8 @@ MUTANTS += [
     SrcMutant(
         "equiv-cas-compare",
         "crates/sim/src/num.rs",
-        "                    if cmp || old_input_derived {\n",
-        "                    if false && cmp || old_input_derived {\n",
+        "                    if cmp || a.old_input_derived {\n",
+        "                    if false && cmp || a.old_input_derived {\n",
         [],
         [EQUIV_CAS],
     ),

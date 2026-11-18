@@ -1,0 +1,37 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 8.8
+.target sm_100a
+.address_size 64
+.visible .entry mbar_transaction_generation_order() {
+  .reg .pred %p;
+  .reg .b32 %thread, %warp;
+  .shared .align 8 .b64 bar;
+  mov.u32 %thread, %tid.x;
+  shr.u32 %warp, %thread, 5;
+  setp.eq.u32 %p, %thread, 0;
+  @%p mbarrier.init.shared::cta.b64 [bar], 1;
+  @%p mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [bar], 1;
+  @%p mbarrier.arrive.shared::cta.b64 _, [bar];
+  bar.sync 0;
+  setp.eq.u32 %p, %warp, 0;
+  @%p bra PAY;
+  setp.eq.u32 %p, %warp, 1;
+  @%p bra EXPECT;
+  bra WAIT;
+PAY:
+  setp.eq.u32 %p, %thread, 0;
+  @%p mbarrier.complete_tx.relaxed.cta.shared::cta.b64 [bar], 1;
+  ret;
+EXPECT:
+  setp.eq.u32 %p, %thread, 32;
+  @%p mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [bar], 1;
+  ret;
+WAIT:
+  mbarrier.try_wait.parity.shared::cta.b64 %p, [bar], 0;
+  @!%p bra WAIT;
+  ret;
+}

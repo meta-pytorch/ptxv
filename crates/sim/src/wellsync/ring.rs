@@ -286,7 +286,13 @@ fn fail(rl: &mut RingLog, key: String, msg: String) {
 }
 
 /// Hook (`pre_inst`): iteration starts and loads of poll loops.
-pub(super) fn pre(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize], pc: u32) {
+pub(super) fn pre(
+    m: &Machine,
+    log: &mut SyncLog,
+    members: &[usize],
+    active: &[usize],
+    pc: u32,
+) {
     let code = &m.k.code;
     let inst = &code[pc as usize];
     // A warp-level loop iteration starts at the head.
@@ -578,7 +584,12 @@ pub(super) fn hist<'a>(m: &Machine, log: &'a SyncLog, word: Word, n: usize) -> H
 
 /// A plain write to the word after the first strong one, from the race shadow's last writer
 /// (a later plain write would be the shadow's last write).
-fn plain_writer(m: &Machine, word: Word, n: usize, writes: &[&super::SAcc]) -> Option<String> {
+fn plain_writer(
+    m: &Machine,
+    word: Word,
+    n: usize,
+    writes: &[&super::SAcc],
+) -> Option<String> {
     let loc = loc_of((word.0, word.1), word.2);
     let last = writes.last()?;
     for i in 0..n {
@@ -624,7 +635,15 @@ fn read_index(m: &Machine, e: &Entry, x: &RRead, hs: &Hist) -> WIdx {
 /// included) read. A relaxed counter store after a release fence is not itself
 /// happens-before its reader, so the first bound alone would let a poll read back a value
 /// older than one it already saw.
-fn coh_lb(m: &Machine, log: &SyncLog, hs: &Hist, word: Word, t: usize, ev: &Ev, vc: &VC) -> WIdx {
+fn coh_lb(
+    m: &Machine,
+    log: &SyncLog,
+    hs: &Hist,
+    word: Word,
+    t: usize,
+    ev: &Ev,
+    vc: &VC,
+) -> WIdx {
     let mut lb = hs
         .writes
         .iter()
@@ -867,7 +886,7 @@ fn replay(
     cell: &Option<SyncCell>,
 ) -> Result<Out, String> {
     let mut m = snap.clone();
-    m.fp = None;
+    m.set_footprint(None);
     m.num = None;
     m.ring = None;
     set_mem_bytes(&mut m, loc_of((word.0, word.1), word.2), bytes);
@@ -887,7 +906,11 @@ fn replay(
         let t = members[0];
         let mut p = m.threads[t].pc;
         loop {
+            let finding_count = m.findings.len();
             m.exec(&[t], p)?;
+            if m.findings.len() != finding_count {
+                return Err("the replayed poll iteration reports a finding".into());
+            }
             if p == e.b {
                 break;
             }
@@ -917,7 +940,11 @@ fn replay(
             .filter(|&t| m.threads[t].pc == pc)
             .collect();
         let stores = crate::spin::store_spans(&m, &group, pc)?;
+        let finding_count = m.findings.len();
         m.exec(&group, pc)?;
+        if m.findings.len() != finding_count {
+            return Err("the replayed poll iteration reports a finding".into());
+        }
         changed_memory |= stores
             .iter()
             .any(|&(loc, n)| !crate::spin::same_bytes(&m, &initial, loc, n));
@@ -958,7 +985,11 @@ fn psyncs(x: &Machine, members: &[usize]) -> Vec<super::PSync> {
 
 /// The counter read of an entry's exiting iteration that C-RING decides: the reads of words
 /// some strong write is concurrent with. Err if there are several such words.
-fn ring_read<'a>(m: &Machine, log: &SyncLog, e: &'a Entry) -> Result<Option<&'a RRead>, String> {
+fn ring_read<'a>(
+    m: &Machine,
+    log: &SyncLog,
+    e: &'a Entry,
+) -> Result<Option<&'a RRead>, String> {
     let last = e.snaps.len() - 1;
     let mut found: Option<&RRead> = None;
     for r in e.reads.iter().filter(|r| r.iter == last) {
@@ -1067,7 +1098,10 @@ pub struct ChoiceRec {
 
 /// C-RING's analysis of a finished run: reasons it fails, the run's choices (in run order),
 /// and the counters it relied on (for the verdict).
-pub(super) fn check(m: &Machine, log: &SyncLog) -> (Vec<String>, Vec<ChoiceRec>, BTreeSet<String>) {
+pub(super) fn check(
+    m: &Machine,
+    log: &SyncLog,
+) -> (Vec<String>, Vec<ChoiceRec>, BTreeSet<String>) {
     let mut out: Vec<String> = log.ring.fails.values().cloned().collect();
     let mut choices = Vec::new();
     let mut counters = BTreeSet::new();
@@ -1460,7 +1494,7 @@ pub(super) fn stuck_infeasible(m: &Machine) -> Option<String> {
         }
         let mut x = m.clone();
         x.ring = None;
-        x.fp = None;
+        x.set_footprint(None);
         x.num = None;
         let warp = th.warp;
         let members: Vec<usize> = x

@@ -157,10 +157,10 @@ pub fn partition(m: &Machine) -> Vec<Vec<u32>> {
         };
         let sf = Arc::new(SFoot::new(&[]));
         m.sfoot = Some(sf.clone());
-        m.fp = Some(Box::default());
+        m.set_footprint(Some(Box::default()));
         m.apply(&a);
         m.findings.clear();
-        let mut fp = m.fp.take().map(|b| *b).unwrap_or_default();
+        let mut fp = m.take_footprint().map(|b| *b).unwrap_or_default();
         m.sfoot = None;
         fp.normalize();
         steps += 1;
@@ -195,7 +195,8 @@ pub fn partition(m: &Machine) -> Vec<Vec<u32>> {
 pub fn restrict(m: &Machine, warps: &[u32]) -> Result<Machine, String> {
     let mut m = m.clone();
     for g in 0..m.launch.grids.len() {
-        let live = |m: &Machine, g: usize| m.grid_threads(g).any(|t| m.threads[t].st != St::Exited);
+        let live =
+            |m: &Machine, g: usize| m.grid_threads(g).any(|t| m.threads[t].st != St::Exited);
         if live(&m, g) {
             let preds: Vec<usize> = m
                 .launch
@@ -215,7 +216,7 @@ pub fn restrict(m: &Machine, warps: &[u32]) -> Result<Machine, String> {
     let keep: std::collections::BTreeSet<u32> = warps.iter().copied().collect();
     for t in 0..m.threads.len() {
         if m.threads[t].st != St::Exited && !keep.contains(&m.threads[t].warp) {
-            m.threads[t].make_mut().st = St::Exited;
+            m.threads[t].make_mut().set_status(St::Exited);
         }
     }
     let live: Vec<usize> = (0..m.threads.len())

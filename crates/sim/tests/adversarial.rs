@@ -121,9 +121,10 @@ fn adv(case: &str, variants: &[&str]) {
 /// folds goes the folded way in every execution. Conclusion: dropping the other edge from the
 /// reductions' reachability loses no behaviour. Enforced: `exec.rs` reports a folded branch
 /// that goes the other way as `unmodeled` (const-bra).
-/// - good (SASS: `BRA.U !UP0` on `c[0x0][0x388]` = flag = 1) folds and is clean; with flag = 0
-///   it folds the other way and the unbarriered read races. FLIP (the guard through a `xor`,
-///   not propagated) is not folded on PTX and races.
+/// - good is clean; with flag = 0 the unbarriered read races. The compiler's mutable UR/UP
+///   guard remains unknown. A parsed private-register launch-parameter guard folds, and a
+///   deliberately wrong fold must be reported. FLIP (the guard through an unpropagated xor)
+///   is not folded on PTX and races.
 /// - A wrong fold (the analysis decided the other way) must surface as `unmodeled` on every
 ///   schedule search, not as a clean verdict: this is the check the rule rests on.
 /// - e_const_bra2: one entry launched with flag = 1 then flag = 0 (concatenated code, one fold
@@ -147,17 +148,60 @@ fn e_const_bra_fold_is_enforced() {
         let m = machine(&z, "good", front);
         assert_eq!(classes(m, front), ["race"], "flag 0 {front}");
     }
-    // The SASS fold of good, and the PTX front's absence of one.
-    let m = machine(&base, "good", "sass");
+    // The compiler uses mutable warp registers, which are not admitted guard facts.
+    let compiled = machine(&base, "good", "sass");
+    let compiled_pc = bra(&compiled);
+    assert!(matches!(
+        compiled.k.code[compiled_pc].guard.reg.unwrap().file,
+        ptxv_ir::File::UR | ptxv_ir::File::UP
+    ));
+    assert!(compiled.bar_cfg.fold[compiled_pc].is_none());
+    // Use the same launch parameter through a private-register propagation window.
+    let instructions = [
+        "MOV R0, c[0x0][0x388]",
+        "ISETP.NE.U32.AND P0, PT, R0, RZ, PT",
+        "@P0 BRA `(.L_exit)",
+        "BPT.TRAP 0x1",
+        "EXIT",
+    ];
+    let mut text = String::from(".text.k:\n");
+    for (pc, instruction) in instructions.iter().enumerate() {
+        if pc == 4 {
+            text.push_str(".L_exit:\n");
+        }
+        let control = ptxv_sass::scoreboard::Ctrl {
+            stall: 15,
+            yld: false,
+            wbar: (pc == 0).then_some(0),
+            rbar: None,
+            wait: u8::from(pc == 1),
+            reuse: 0,
+        };
+        text.push_str(&format!(
+            "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+            pc * 16,
+            control.encode(0)
+        ));
+    }
+    let mut kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+    assert!(kernel.static_findings.is_empty());
+    kernel.params = compiled.k.params.clone();
+    kernel.param_cbank = compiled.k.param_cbank;
+    let launch = build_launch(&base, &kernel).unwrap();
+    let m = Machine::new(Arc::new(kernel), Arc::new(launch));
     let pc = bra(&m);
-    let v = m.bar_cfg.fold[pc].expect("SASS: the parameter branch is folded");
+    let v = m.bar_cfg.fold[pc].expect("SASS: the private launch-parameter branch is folded");
     let mp = machine(&base, "good", "ptx");
     assert!(mp.bar_cfg.fold.iter().all(|f| f.is_none()), "PTX folds");
     // A wrong fold is reported, in every search.
     let mut wrong = m.clone();
-    let mut cfg = (*wrong.bar_cfg).clone();
-    cfg.fold[pc] = Some(!v);
-    wrong.bar_cfg = Arc::new(cfg);
+    let mut fold = wrong.bar_cfg.fold.clone();
+    fold[pc] = Some(!v);
+    wrong.bar_cfg = Arc::new(
+        wrong
+            .bar_cfg
+            .with_control_flow_tables(fold, wrong.bar_cfg.rets.clone()),
+    );
     let ex = explore(wrong.clone(), 100_000);
     assert!(
         ex.findings
@@ -200,9 +244,13 @@ fn e_ret_sites_are_enforced() {
             .unwrap();
     assert_eq!(m.bar_cfg.rets[ret].len(), 2, "two call sites");
     let mut wrong = m.clone();
-    let mut cfg = (*wrong.bar_cfg).clone();
-    cfg.rets[ret].truncate(1);
-    wrong.bar_cfg = Arc::new(cfg);
+    let mut rets = wrong.bar_cfg.rets.clone();
+    rets[ret].truncate(1);
+    wrong.bar_cfg = Arc::new(
+        wrong
+            .bar_cfg
+            .with_control_flow_tables(wrong.bar_cfg.fold.clone(), rets),
+    );
     let unmod = |fs: &[ptxv_sim::machine::Finding]| {
         fs.iter()
             .any(|f| f.kind == "unmodeled" && f.sig.starts_with("ret-target"))

@@ -33,6 +33,7 @@ use ptxv_ir::Inst;
 use ptxv_ir::Op;
 use ptxv_ir::Reg;
 use ptxv_ir::Val;
+use ptxv_memory_write::execution;
 
 use crate::machine::Finding;
 use crate::machine::Machine;
@@ -1327,11 +1328,12 @@ pub type PollRead = (usize, u32, crate::exec::Loc, usize, u8);
 pub fn wpoll_dry(m0: &Machine, members: &[usize], h: u32, b: u32) -> Option<Vec<PollRead>> {
     use crate::machine::St;
     let mut m = m0.clone();
-    m.fp = None;
+    m.set_footprint(None);
     m.num = None;
     let k = m.k.clone();
     let mut done = vec![false; members.len()];
     let mut reads = Vec::new();
+    let mut audit = execution::begin_audit();
     for _ in 0..4096 {
         let run: Vec<usize> = (0..members.len())
             .filter(|&i| !done[i] && m.threads[members[i]].st == St::Run)
@@ -1370,10 +1372,16 @@ pub fn wpoll_dry(m0: &Machine, members: &[usize], h: u32, b: u32) -> Option<Vec<
             }
         }
         let stores = store_spans(&m, &group, pc).ok()?;
-        if m.exec(&group, pc).is_err() {
+        let finding_count = m.findings.len();
+        if m.exec(&group, pc).is_err() || m.findings.len() != finding_count {
             return None;
         }
-        if stores.iter().any(|&(loc, n)| !same_bytes(&m, m0, loc, n)) {
+        for (loc, n) in stores {
+            let initial = memory_sample(m0, loc, n)?;
+            let current = memory_sample(&m, loc, n)?;
+            audit = execution::record_store(audit, &initial, &current);
+        }
+        if !audit.memory_unchanged {
             return None;
         }
         for &t in &group {
@@ -1393,33 +1401,56 @@ pub fn wpoll_dry(m0: &Machine, members: &[usize], h: u32, b: u32) -> Option<Vec<
     }
     members
         .iter()
-        .all(|&t| {
-            m.threads[t].regs == m0.threads[t].regs
-                && m.threads[t].preds == m0.threads[t].preds
-                && m.threads[t].pdef == m0.threads[t].pdef
-                && m.threads[t].written == m0.threads[t].written
-                && m.threads[t].vund == m0.threads[t].vund
-                && {
-                    let w = m.threads[t].warp as usize;
-                    m.warps[w].ur == m0.warps[w].ur
-                        && m.warps[w].ur_written == m0.warps[w].ur_written
-                        && m.warps[w].up == m0.warps[w].up
-                        && m.warps[w].up_def == m0.warps[w].up_def
-                }
-        })
+        .all(|&t| execution::accepts(audit, register_state(m0, t), register_state(&m, t)))
         .then_some(reads)
 }
 
-pub(crate) fn same_bytes(a: &Machine, b: &Machine, loc: crate::exec::Loc, n: usize) -> bool {
-    let byte = |m: &Machine, i: usize| -> Option<(u8, bool)> {
-        let (mem, off) = match loc {
-            crate::exec::Loc::Shared { cta, off } => (&m.smem[cta as usize], off as usize),
-            crate::exec::Loc::Global { alloc, off } => (&m.gmem[alloc], off as usize),
-            _ => return None,
-        };
-        Some((*mem.bytes.get(off + i), mem.sh.get(off + i).undef))
+fn register_state(m: &Machine, t: usize) -> execution::RegisterState<'_> {
+    let thread = &m.threads[t];
+    let warp = &m.warps[thread.warp as usize];
+    execution::RegisterState {
+        scalar: &thread.regs,
+        predicates: &thread.preds,
+        predicate_defined: &thread.pdef,
+        scalar_defined: &thread.written,
+        vector_undefined: &thread.vund,
+        uniform: &warp.ur,
+        uniform_defined: &warp.ur_written,
+        uniform_predicates: warp.up,
+        uniform_predicate_defined: warp.up_def,
+    }
+}
+
+fn memory_sample(
+    m: &Machine,
+    loc: crate::exec::Loc,
+    n: usize,
+) -> Option<Vec<execution::MemoryByte>> {
+    let (mem, offset) = match loc {
+        crate::exec::Loc::Shared { cta, off } => (&m.smem[cta as usize], off as usize),
+        crate::exec::Loc::Global { alloc, off } => (&m.gmem[alloc], off as usize),
+        _ => return None,
     };
-    (0..n).all(|i| byte(a, i).is_some() && byte(a, i) == byte(b, i))
+    Some(
+        (0..n)
+            .map(|i| execution::MemoryByte {
+                bits: *mem.bytes.get(offset + i),
+                defined: !mem.sh.get(offset + i).undef,
+            })
+            .collect(),
+    )
+}
+
+pub(crate) fn same_bytes(
+    a: &Machine,
+    b: &Machine,
+    loc: crate::exec::Loc,
+    n: usize,
+) -> bool {
+    match (memory_sample(a, loc, n), memory_sample(b, loc, n)) {
+        (Some(current), Some(initial)) => execution::same_memory(&initial, &current),
+        _ => false,
+    }
 }
 
 pub(crate) fn store_spans(
@@ -1497,5 +1528,223 @@ mod retry_tests {
             let m = crate::machine::Machine::new(Arc::new(k), Arc::new(launch));
             assert_eq!(super::retry_shape(&m, 0).is_ok(), accepted, "{target}");
         }
+    }
+}
+
+#[cfg(test)]
+mod execution_reduction_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use ptxv_case::Case;
+    use ptxv_ir::File;
+    use ptxv_ir::Reg;
+
+    use super::*;
+
+    fn machine(assembly: &str) -> Machine {
+        let mut case =
+            Case::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_resid"))
+                .unwrap();
+        case.m.params.clear();
+        case.m.grid = [1, 1, 1];
+        case.m.block = [1, 1, 1];
+        case.m.buffers[0].shape = vec![16];
+        let mut dis = String::from(".text.k:\n");
+        for line in assembly.lines() {
+            dis.push_str(line);
+            dis.push('\n');
+            if line.starts_with("/*") {
+                dis.push_str("/* 0x000fc00000000000 */\n");
+            }
+        }
+        let k = ptxv_sass::lower(&dis, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        let launch = crate::build_launch(&case, &k).unwrap();
+        Machine::new(Arc::new(k), Arc::new(launch))
+    }
+
+    #[test]
+    fn conditional_poll_writes_cannot_leave_live_values() {
+        for write in [
+            "@%pending mov.u32 %result, 2;",
+            "@%pending add.u32 %result, %result, 1;",
+        ] {
+            let text = format!(
+                r#".version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k() {{
+ .reg .b64 %addr;
+ .reg .b32 %value, %result;
+ .reg .pred %pending, %retry;
+ mov.u64 %addr, 0;
+ mov.u32 %result, 0;
+LOOP:
+ ld.acquire.gpu.global.u32 %value, [%addr];
+ setp.eq.u32 %pending, %value, 2;
+ {write}
+ setp.ne.u32 %retry, %value, 1;
+ @%retry bra LOOP;
+ st.global.u32 [%addr+4], %result;
+ ret;
+}}"#
+            );
+            let kernel = ptxv_ptx::parse_kernel(&text, Some("k")).unwrap();
+            let loops = poll_loops(&kernel.code, kernel.front);
+            assert_eq!(loops.len(), 1);
+            assert!(loops[0].1.is_err(), "{write}: {loops:?}");
+        }
+    }
+
+    #[test]
+    fn retry_counter_is_refused_when_failed_path_revisits_it() {
+        for (target, accepted) in [(".L_stub", true), (".L_first", false)] {
+            let m = machine(&format!(
+                r#".L_first:
+/*0000*/ SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R2], R4 ;
+/*0010*/ IADD3 R5, R5, 0x1, RZ ;
+/*0020*/ @!P0 BRA `({target}) ;
+.L_cont:
+/*0030*/ STG.E [R6.64], R5 ;
+/*0040*/ EXIT ;
+.L_stub:
+/*0050*/ SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R2], R4 ;
+/*0060*/ @!P0 BRA `(.L_stub) ;
+/*0070*/ BRA `(.L_cont) ;"#
+            ));
+            assert_eq!(retry_shape(&m, 0).is_ok(), accepted, "{target}");
+        }
+    }
+
+    #[test]
+    fn dry_poll_checks_uniform_values_and_definedness() {
+        for (instruction, initial_written, accepted) in [
+            ("UMOV UR4, 0x1", true, false),
+            ("UMOV UR4, 0x0", false, false),
+            ("UMOV UR4, 0x0", true, true),
+            ("MOV R4, 0x0", false, false),
+            ("MOV R4, 0x0", true, true),
+        ] {
+            let mut m = machine(&format!(
+                ".L_loop:\n/*0000*/ {instruction} ;\n/*0010*/ BRA `(.L_loop) ;"
+            ));
+            if initial_written {
+                m.wr(
+                    0,
+                    Reg {
+                        file: File::R,
+                        idx: 4,
+                    },
+                    0,
+                    1,
+                );
+                m.wr(
+                    0,
+                    Reg {
+                        file: File::UR,
+                        idx: 4,
+                    },
+                    0,
+                    1,
+                );
+            }
+            assert_eq!(
+                wpoll_dry(&m, &[0], 0, 1).is_some(),
+                accepted,
+                "{instruction}/{initial_written}"
+            );
+        }
+    }
+
+    #[test]
+    fn dry_poll_cannot_hide_a_reported_finding() {
+        let mut m =
+            machine(".L_loop:\n/*0000*/ @P0 STG.E [R2.64], R4 ;\n/*0010*/ BRA `(.L_loop) ;");
+        assert!(wpoll_dry(&m, &[0], 0, 1).is_none());
+        m.exec(&[0], 0).unwrap();
+        assert!(
+            m.findings.iter().any(|f| f.sig.contains("uninit")),
+            "{:?}",
+            m.findings
+        );
+    }
+
+    #[test]
+    fn dry_poll_checks_wide_and_intermediate_stores() {
+        for instruction in ["STG.E.ENL2.256 [R2.64], R4, R8", "STG.E [R2.64], R4"] {
+            let mut m = machine(&format!(
+                ".L_loop:\n/*0000*/ {instruction} ;\n/*0010*/ BRA `(.L_loop) ;"
+            ));
+            let base = m.launch.allocs[0].base;
+            m.wr(
+                0,
+                Reg {
+                    file: File::R,
+                    idx: 2,
+                },
+                base,
+                2,
+            );
+            for r in 4..12 {
+                m.wr(
+                    0,
+                    Reg {
+                        file: File::R,
+                        idx: r,
+                    },
+                    0,
+                    1,
+                );
+            }
+            assert!(
+                wpoll_dry(&m, &[0], 0, 1).is_some(),
+                "{instruction}: same bytes"
+            );
+            m.wr(
+                0,
+                Reg {
+                    file: File::R,
+                    idx: 4,
+                },
+                1,
+                1,
+            );
+            assert!(
+                wpoll_dry(&m, &[0], 0, 1).is_none(),
+                "{instruction}: changed bytes"
+            );
+        }
+        let mut m = machine(
+            ".L_loop:\n/*0000*/ STG.E [R2.64], R4 ;\n/*0010*/ STG.E [R2.64], R5 ;\n/*0020*/ BRA `(.L_loop) ;",
+        );
+        let base = m.launch.allocs[0].base;
+        m.wr(
+            0,
+            Reg {
+                file: File::R,
+                idx: 2,
+            },
+            base,
+            2,
+        );
+        m.wr(
+            0,
+            Reg {
+                file: File::R,
+                idx: 4,
+            },
+            1,
+            1,
+        );
+        m.wr(
+            0,
+            Reg {
+                file: File::R,
+                idx: 5,
+            },
+            0,
+            1,
+        );
+        assert!(wpoll_dry(&m, &[0], 0, 2).is_none(), "write then restore");
     }
 }

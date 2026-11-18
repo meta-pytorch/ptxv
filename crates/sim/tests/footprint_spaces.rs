@@ -5,7 +5,7 @@
 
 //! DPOR footprint space ids stay disjoint: a named space (`SPACE_*: u8 = N`) has a value of its
 //! own, no literal `rec(N, ..)` / `rec_sync(N, ..)` / `add(N, ..)` reuses it, and every id in
-//! use is documented on `Footprint` (machine.rs). Two subsystems sharing an id make each one's
+//! use is documented on `Footprint` (machine_footprint.rs). Two subsystems sharing an id make each one's
 //! dependencies trip the other's reduction (e.g. a collector write read as an mbarrier arrival).
 
 use std::collections::BTreeMap;
@@ -29,6 +29,12 @@ fn sources() -> Vec<(String, String)> {
             }
         }
     }
+    let core =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../memory-write/src/machine_footprint.rs");
+    out.push((
+        core.display().to_string(),
+        std::fs::read_to_string(&core).unwrap(),
+    ));
     out
 }
 
@@ -80,14 +86,14 @@ fn footprint_spaces_are_disjoint() {
         );
     }
     // Documented on `Footprint`.
-    let machine = &src
+    let footprint = &src
         .iter()
-        .find(|(p, _)| p.ends_with("machine.rs"))
+        .find(|(p, _)| p.ends_with("machine_footprint.rs"))
         .unwrap()
         .1;
-    let at = machine.find("pub struct Footprint {").unwrap();
-    let doc_start = machine[..at].rfind("\n\n").unwrap();
-    let doc = &machine[doc_start..at];
+    let at = footprint.find("pub struct Footprint {").unwrap();
+    let doc_start = footprint[..at].rfind("\n\n").unwrap();
+    let doc = &footprint[doc_start..at];
     for v in literal.keys().chain(named.keys()) {
         if *v == 98 {
             continue; // SPACE_CTA_ALL: slices.rs's whole-CTA key, documented at its definition

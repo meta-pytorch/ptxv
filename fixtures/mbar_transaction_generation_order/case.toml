@@ -1,0 +1,18 @@
+name = "mbar_transaction_generation_order"
+description = """
+A barrier with no pending arrivals still expects one transaction. Paying that debt first
+completes the phase and enables the waiter; adding another expected transaction first
+leaves the waiter blocked. Both count-zero operations must share a dependency.
+"""
+ptx = "kernel.ptx"
+arch = "sm_100a"
+entry = "mbar_transaction_generation_order"
+grid = [1, 1, 1]
+block = [96, 1, 1]
+outputs = []
+buffers = []
+params = []
+
+[[variants]]
+id = "good"
+expect = ["deadlock"]

@@ -79,6 +79,9 @@ pub fn compile(
                 continue;
             }
             if let Ok(f) = &info.result {
+                if f.func == ident::Func::Max {
+                    continue;
+                }
                 let t = table::slice_table(
                     &format!("slice @{} {}", info.pc, f.show()),
                     &info.prog,
@@ -178,9 +181,9 @@ pub fn op_tables(p: &Prog, t: &Tables) -> Vec<Option<u32>> {
         .map(|op| match op {
             Op::Nl(NlOp::Seg {
                 prog,
-                real: Some(_),
+                real: Some(form),
                 ..
-            }) => t.by_key.get(&ident::func_key(prog)).copied(),
+            }) if form.func != ident::Func::Max => t.by_key.get(&ident::func_key(prog)).copied(),
             Op::Nl(n @ NlOp::Mufu { .. }) => t.by_key.get(&mufu_key(n).unwrap()).copied(),
             _ => None,
         })

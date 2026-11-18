@@ -26,7 +26,10 @@ pub fn on() -> bool {
 pub fn analyze(
     m: &Machine,
     b: ptxv_sim::coverage::Budget,
-) -> (Coverage, Option<(Box<ptxv_sim::symb::SymState>, Machine)>) {
+) -> (
+    Coverage,
+    Option<(Box<ptxv_sim::symb::SymState>, Machine)>,
+) {
     if on() {
         ptxv_sim::coverage::analyze_sym(m, b, Some(Default::default()))
     } else {

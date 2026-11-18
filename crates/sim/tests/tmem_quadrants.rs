@@ -39,7 +39,8 @@ fn tmem_quadrants_follow_linear_thread_rank() {
         for block in [[128, 1, 1], [32, 4, 1], [32, 1, 4], [16, 2, 4]] {
             case.m.block = block;
             let launch = build_launch(&case, &k).unwrap();
-            let (m, findings, done) = run_once(Machine::new(Arc::new(k.clone()), Arc::new(launch)));
+            let (m, findings, done) =
+                run_once(Machine::new(Arc::new(k.clone()), Arc::new(launch)));
             assert!(
                 done && findings.is_empty(),
                 "{:?} {block:?}: {findings:?}",

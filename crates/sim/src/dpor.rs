@@ -48,9 +48,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
 
+use crate::explore::static_findings;
 use crate::explore::Action;
 use crate::explore::Verdict;
-use crate::explore::static_findings;
 use crate::machine::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -81,6 +81,10 @@ fn split_threads(m: &Machine, warp: u32, pc: u32) -> Vec<u32> {
 fn pid_of(m: &Machine, a: &Action) -> (Pid, Option<(u32, u32)>) {
     match a {
         Action::Split { warp, pc, .. } => (Pid::Split(split_threads(m, *warp, *pc)[0]), None),
+        Action::AtomicComponent { warp, pc, .. } => (
+            Pid::Split(m.atomic_component_members(*warp, *pc)[0] as u32),
+            None,
+        ),
         Action::Launch(c) => (Pid::Launch(*c), None),
         Action::Clc(i, _) | Action::Async(i) => {
             let o = &m.pending[*i];
@@ -152,14 +156,20 @@ fn successors(m: &Machine) -> Vec<Alt> {
             let (pid, op) = pid_of(m, &a);
             let threads = match a {
                 Action::Split { warp, pc, .. } => split_threads(m, warp, pc),
+                Action::AtomicComponent { warp, pc, .. } => m
+                    .atomic_component_members(warp, pc)
+                    .into_iter()
+                    .map(|t| t as u32)
+                    .collect(),
                 Action::Async(_) | Action::Clc(..) | Action::Launch(_) => vec![],
             };
             let mut n = m.clone();
-            n.fp = Some(Box::default());
+            n.set_footprint(Some(Box::default()));
             n.apply(&a);
-            let mut fp = *n.fp.take().unwrap();
+            let mut fp = *n.take_footprint().unwrap();
             fp.normalize();
-            let findings = std::mem::take(&mut n.findings);
+            // Dry poll checks need the path's observed signatures to recognize repeats.
+            let findings = n.findings.clone();
             let created = n
                 .pending
                 .iter()
@@ -264,6 +274,8 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
             members.iter().map(|&u| u as u32).collect(),
         ));
         let f = &mut out.last_mut().unwrap().1;
+        let shared = ptxv_memory_write::footprint::shared_register_range(w);
+        f.add(shared.0, shared.1, shared.2, shared.3, false);
         // Its action will start here (a split of the same warp arriving would merge).
         if m.merge_sensitive(pc) {
             f.add(8, w, pc as u64, pc as u64 + 1, true);
@@ -313,10 +325,22 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
             // A blocked poll reads the mbarrier and its phase state, which the completion that
             // unblocks it (or, completing the next phase first, keeps it blocked) writes.
             ptxv_ir::Op::MbarTryWait { addr, .. } => {
-                if let Ok(a) = m.addr(t, addr) {
-                    let off = a & 0xff_ffff;
-                    f.add(0, m.threads[t].cta as u32, off, off + 8, false);
-                    f.add(6, m.threads[t].cta as u32, off, off + 8, false);
+                for &u in &members {
+                    if !m.prd(u, inst.guard) {
+                        continue;
+                    }
+                    match m
+                        .addr(u, addr)
+                        .and_then(|a| m.resolve(u, ptxv_ir::Space::Shared, a, 8))
+                    {
+                        Ok(crate::exec::Loc::Shared { cta, off }) => {
+                            let off = off as u64;
+                            f.add(0, cta as u32, off, off + 8, false);
+                            f.add(6, cta as u32, off, off + 8, false);
+                            f.add(12, cta as u32, off << 20, (off + 1) << 20, false);
+                        }
+                        _ => f.all = true,
+                    }
                 }
             }
             ptxv_ir::Op::BulkWait { .. } => {
@@ -396,12 +420,112 @@ fn blocked_footprints(m: &Machine, enabled: &BTreeSet<Pid>) -> Vec<(Pid, Footpri
     out
 }
 
+fn select_stateful_remote_barriers(machine: &Machine) -> bool {
+    machine.k.front == ptxv_ir::Front::Ptx
+        && machine.launch.grids.len() == 1
+        && machine.launch.grids[0]
+            .cluster
+            .iter()
+            .any(|&extent| extent > 1)
+        && machine
+            .k
+            .code
+            .iter()
+            .any(|inst| matches!(inst.op, ptxv_ir::Op::StAsync { .. }))
+        && machine
+            .k
+            .code
+            .iter()
+            .any(|inst| matches!(inst.op, ptxv_ir::Op::MbarTryWait { .. }))
+        && !machine
+            .k
+            .code
+            .iter()
+            .any(|inst| matches!(inst.op, ptxv_ir::Op::Atom { .. }))
+}
+
+fn select_stateful_tmem(machine: &Machine) -> bool {
+    use ptxv_ir::AtomOp;
+    use ptxv_ir::Front;
+    use ptxv_ir::Op;
+    use ptxv_ir::Space;
+
+    machine.launch.grids.len() == 1
+        && machine.launch.grids[0].grid == [1, 1, 1]
+        && machine.launch.grids[0].cluster == [1, 1, 1]
+        && machine.k.code.iter().any(|inst| {
+            matches!(
+                (machine.k.front, &inst.op),
+                (Front::Ptx, Op::TmemAlloc { .. }) | (Front::Sass, Op::TmemAllocRaw { .. })
+            )
+        })
+        && machine.k.code.iter().any(|inst| {
+            matches!(
+                (machine.k.front, &inst.op),
+                (Front::Ptx, Op::TmemDealloc { .. }) | (Front::Sass, Op::TmemFreeRaw { .. })
+            )
+        })
+        && machine
+            .k
+            .code
+            .iter()
+            .any(|inst| matches!(inst.op, Op::TmemLd { .. }))
+        && machine
+            .k
+            .code
+            .iter()
+            .any(|inst| matches!(inst.op, Op::TmemSt { .. }))
+        && machine
+            .k
+            .code
+            .iter()
+            .any(|inst| matches!(inst.op, Op::MbarTryWait { .. }))
+        && machine.k.code.iter().all(|inst| match inst.op {
+            Op::Atom {
+                op: AtomOp::And | AtomOp::Or,
+                space: Space::Shared,
+                bytes: 4,
+                d: None,
+                p: None,
+                new: None,
+                ..
+            } => true,
+            Op::Atom { .. } => false,
+            _ => true,
+        })
+}
+
 pub fn explore_dpor(m0: Machine, max_states: usize) -> Verdict {
     // Limited residency and the TMEM co-tenant (residency.rs, tenant.rs): the stateful
     // explorer only (the footprints do not name residency slots or allocation choices).
     // NIC queue pairs (nic.rs): the stateful explorer only.
     if m0.launch.env.residency.is_some() || m0.launch.env.tmem_cotenant || m0.nic.is_some() {
         return crate::explore::explore(m0, max_states);
+    }
+    if select_stateful_remote_barriers(&m0) {
+        let mut verdict = crate::explore::explore(m0, max_states);
+        verdict.notes.push(format!(
+            "Stateful explorer selected for PTX cluster st.async/mbarrier code without atomics (state cap {max_states})"
+        ));
+        return verdict;
+    }
+    if select_stateful_tmem(&m0) {
+        let front = match m0.k.front {
+            ptxv_ir::Front::Ptx => "PTX",
+            ptxv_ir::Front::Sass => "SASS",
+        };
+        let mut verdict = crate::explore::explore(m0, max_states);
+        verdict.notes.push(format!(
+            "Stateful explorer selected for single-CTA {front} TMEM lifecycle/mbarrier code with only returnless shared32 AND/OR atomics (state cap {max_states})"
+        ));
+        return verdict;
+    }
+    if m0.private_register_projection().is_some() {
+        let mut verdict = crate::explore::explore(m0, max_states);
+        verdict.notes.push(format!(
+            "Stateful explorer selected for forward PTX integer-atomic private continuations (state cap {max_states})"
+        ));
+        return verdict;
     }
     let base = m0.clone();
     let mut v = crate::smem::two_pass(m0, |m0| {
@@ -812,4 +936,723 @@ fn trace(frames: &[Frame]) -> Vec<String> {
         .iter()
         .filter_map(|f| f.exec.as_ref().map(|e| e.desc.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod uniform_blocked_footprint_tests {
+    use super::*;
+
+    #[test]
+    fn blocked_wait_tracks_every_lanes_resolved_barrier_and_phase() {
+        let text = r#"
+.version 9.0
+.target sm_100a
+.address_size 64
+.visible .entry k() {
+  .reg .b32 %r;
+  .reg .b64 %rd<2>;
+  .reg .pred %p;
+  .shared .align 8 .b64 bars[2];
+  mov.u32 %r, %tid.x;
+  mul.lo.u32 %r, %r, 8;
+  mov.u64 %rd0, bars;
+  cvt.u64.u32 %rd1, %r;
+  add.u64 %rd0, %rd0, %rd1;
+WAIT:
+  mbarrier.try_wait.parity.shared::cta.b64 %p, [%rd0], 0;
+  @!%p bra WAIT;
+  ret;
+}
+"#;
+        let kernel = ptxv_ptx::parse_kernel(text, Some("k")).unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: serde_json::from_value(serde_json::json!({
+                "name":"blocked-wait-lanes", "description":"per-lane query dependencies",
+                "entry":"k", "grid":[1,1,1], "block":[2,1,1],
+                "outputs":[], "buffers":[], "params":[], "variants":[]
+            }))
+            .unwrap(),
+        };
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let mut machine = Machine::new(std::sync::Arc::new(kernel), std::sync::Arc::new(launch));
+        for pc in 0..5 {
+            machine.exec_one(&[0, 1], pc).unwrap();
+        }
+        let pc = machine.threads[0].pc;
+        assert!(matches!(
+            machine.k.code[pc as usize].op,
+            ptxv_ir::Op::MbarTryWait { .. }
+        ));
+        for t in 0..2 {
+            machine.threads[t].make_mut().wait_error = Some(pc);
+        }
+        assert!(!machine.split_enabled(&[0, 1], pc));
+        let blocked = blocked_footprints(&machine, &BTreeSet::new());
+        assert_eq!(blocked.len(), 1);
+        let read = &blocked[0].1;
+        assert!(!read.all);
+        let ptxv_ir::Op::MbarTryWait { addr, .. } = &machine.k.code[pc as usize].op else {
+            unreachable!()
+        };
+        let mut targets = Vec::new();
+        for t in 0..2 {
+            let crate::exec::Loc::Shared { cta, off } = machine
+                .resolve(t, ptxv_ir::Space::Shared, machine.addr(t, addr).unwrap(), 8)
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            targets.push((cta as u32, off as u64));
+        }
+        assert_eq!(targets[0].0, targets[1].0);
+        assert_eq!(targets[0].1 + 8, targets[1].1);
+        for (cta, off) in targets {
+            for (space, lo, hi) in [
+                (0, off, off + 8),
+                (6, off, off + 8),
+                (12, off << 20, (off + 1) << 20),
+            ] {
+                let mut write = Footprint::default();
+                write.add(space, cta, lo, hi, true);
+                assert!(
+                    read.conflicts(&write),
+                    "lane target {off}, space {space}: {read:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn blocked_split_keeps_its_uniform_read_dependency() {
+        let instructions = [
+            "S2UR UR0, SR_CTAID.X",
+            "S2R R0, SR_LANEID",
+            "ISETP.EQ.U32.AND P0, PT, R0, RZ, PT",
+            "@P0 SYNCS.EXCH.64 URZ, [RZ], 0x7ffff800001ffffe",
+            "@P0 BRA `(.L_wait)",
+            "UMOV UR0, 0x80000000",
+            "EXIT",
+            "SYNCS.PHASECHK.TRANS64 P1, [RZ], UR0",
+            "@!P1 BRA `(.L_wait)",
+            "BPT.TRAP 0x1",
+            "EXIT",
+        ];
+        let mut text = String::from(".text.k:\n");
+        for (pc, instruction) in instructions.iter().enumerate() {
+            if pc == 7 {
+                text.push_str(".L_wait:\n");
+            }
+            let control = ptxv_sass::scoreboard::Ctrl {
+                stall: 15,
+                yld: false,
+                wbar: matches!(pc, 0 | 1 | 7).then_some(0),
+                rbar: None,
+                wait: if matches!(pc, 1 | 2 | 8) { 1 } else { 0 },
+                reuse: 0,
+            };
+            text.push_str(&format!(
+                "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                pc * 16,
+                control.encode(0)
+            ));
+        }
+        let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        assert!(
+            kernel.static_findings.is_empty(),
+            "{:?}",
+            kernel.static_findings
+        );
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name":"uniform-blocked-wait", "description":"shared warp register dependencies",
+            "entry":"k", "grid":[1,1,1], "block":[32,1,1], "dynamic_smem":16,
+            "outputs":[], "buffers":[], "params":[], "variants":[]
+        }))
+        .unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let mut machine = Machine::new(std::sync::Arc::new(kernel), std::sync::Arc::new(launch));
+        for pc in 0..5 {
+            machine.exec_one(&(0..32).collect::<Vec<_>>(), pc).unwrap();
+        }
+        assert!(!machine.split_enabled(&[0], 7));
+        let enabled = machine
+            .actions()
+            .iter()
+            .map(|(action, _)| pid_of(&machine, action).0)
+            .collect();
+        let blocked = blocked_footprints(&machine, &enabled);
+        let (_, read, _) = blocked
+            .iter()
+            .find(|(pid, _, _)| *pid == Pid::Split(0))
+            .unwrap();
+        machine.set_footprint(Some(Box::default()));
+        machine.wr(
+            1,
+            ptxv_ir::Reg {
+                file: ptxv_ir::File::UR,
+                idx: 0,
+            },
+            0x80000000,
+            1,
+        );
+        let mut write = *machine.take_footprint().unwrap();
+        write.normalize();
+        assert!(write.conflicts(read));
+        assert!(machine.split_enabled(&[0], 7));
+    }
+}
+
+#[cfg(test)]
+mod poll_finding_history_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use ptxv_case::Case;
+
+    use super::*;
+
+    #[test]
+    fn repeated_poll_races_block_after_their_first_report() {
+        let case =
+            Case::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/l1_litmus"))
+                .unwrap();
+        let text = case.variant_ptx("pr3").unwrap();
+        let kernel = ptxv_ptx::parse_kernel(&text, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let result = explore_dpor(Machine::new(Arc::new(kernel), Arc::new(launch)), 1000);
+        assert!(
+            result.complete,
+            "{} states: {:?}",
+            result.states,
+            result.classes()
+        );
+        let mut classes = result.classes();
+        classes.retain(|class| class != "nondeterministic");
+        assert_eq!(classes, ["race", "stale"]);
+        let signatures: HashSet<_> = result.findings.iter().map(|finding| &finding.sig).collect();
+        assert_eq!(signatures.len(), result.findings.len());
+    }
+}
+
+#[cfg(test)]
+mod remote_barrier_selection_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use ptxv_case::Case;
+    use ptxv_ir::Front;
+    use ptxv_ir::Op;
+    use serde_json::json;
+
+    use super::*;
+
+    fn machine() -> Machine {
+        let case = Case::load(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_rmsnorm_cluster_drain"),
+        )
+        .unwrap();
+        let mut text = case.variant_ptx("good").unwrap();
+        for (from, to, count) in [
+            ("%r14, 2;", "%r14, 1;", 1),
+            (
+                "mbarrier.try_wait.parity.shared.b64",
+                "mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64",
+                4,
+            ),
+            (
+                "mbarrier.arrive.shared::cluster.b64",
+                "mbarrier.arrive.release.cluster.shared::cluster.b64",
+                1,
+            ),
+            (
+                "mbarrier.arrive.expect_tx.shared.b64",
+                "mbarrier.arrive.expect_tx.relaxed.cluster.shared::cta.b64",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                text.matches(from).count(),
+                count,
+                "remote selector fixture changed: {from}"
+            );
+            text = text.replace(from, to);
+        }
+        let kernel = ptxv_ptx::parse_kernel(&text, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        Machine::new(Arc::new(kernel), Arc::new(launch))
+    }
+
+    fn snapshot(verdict: &Verdict) -> serde_json::Value {
+        json!({"states":verdict.states,"transitions":verdict.transitions,
+            "terminal_states":verdict.terminal_states,
+            "complete":verdict.complete,"outputs":verdict.outputs,
+            "distinct_outputs":verdict.distinct_outputs,"findings":verdict.findings,
+            "assumptions":verdict.assumptions,"notes":verdict.notes})
+    }
+
+    fn remove_selection_note(verdict: &mut Verdict, cap: usize) {
+        assert_eq!(
+            verdict.notes.pop().unwrap(),
+            format!(
+                "Stateful explorer selected for PTX cluster st.async/mbarrier code without atomics (state cap {cap})"
+            )
+        );
+    }
+
+    #[test]
+    fn selection_requires_the_remote_barrier_shape_and_excludes_every_atomic() {
+        let initial = machine();
+        assert!(select_stateful_remote_barriers(&initial));
+        assert!(!ptxv_ir::atomic_cancel::certificate_candidate(
+            initial.k.front,
+            &initial.k.code
+        ));
+        let mut wrong_front = initial.clone();
+        Arc::make_mut(&mut wrong_front.k).front = Front::Sass;
+        assert!(!select_stateful_remote_barriers(&wrong_front));
+        for remove_store in [false, true] {
+            let mut missing = initial.clone();
+            for inst in &mut Arc::make_mut(&mut missing.k).code {
+                if matches!(inst.op, Op::StAsync { .. }) && remove_store
+                    || matches!(inst.op, Op::MbarTryWait { .. }) && !remove_store
+                {
+                    inst.op = Op::Nop;
+                }
+            }
+            assert!(!select_stateful_remote_barriers(&missing));
+        }
+        let mut no_cluster = initial.clone();
+        Arc::make_mut(&mut no_cluster.launch).grids[0].cluster = [1, 1, 1];
+        assert!(!select_stateful_remote_barriers(&no_cluster));
+        let mut large_cluster = initial.clone();
+        Arc::make_mut(&mut large_cluster.launch).grids[0].cluster = [65_536, 65_536, 1];
+        assert!(select_stateful_remote_barriers(&large_cluster));
+        let mut multi_grid = initial.clone();
+        let grid = multi_grid.launch.grids[0].clone();
+        Arc::make_mut(&mut multi_grid.launch).grids.push(grid);
+        assert!(!select_stateful_remote_barriers(&multi_grid));
+        let case = Case::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../probes/generic8"))
+            .unwrap();
+        let text = case.variant_ptx("good").unwrap();
+        let kernel = ptxv_ptx::parse_kernel(&text, Some(&case.m.entry)).unwrap();
+        for atom in kernel
+            .code
+            .iter()
+            .filter(|inst| matches!(inst.op, Op::Atom { .. }))
+        {
+            let mut with_atomic = initial.clone();
+            Arc::make_mut(&mut with_atomic.k).code[0].op = atom.op.clone();
+            assert!(!select_stateful_remote_barriers(&with_atomic));
+        }
+    }
+
+    #[test]
+    fn selection_preserves_direct_stateful_observations_and_assumptions() {
+        let initial = machine();
+        let direct = crate::explore::explore(initial.clone(), 2_000_000);
+        let mut selected = explore_dpor(initial, 2_000_000);
+        assert!(direct.complete);
+        remove_selection_note(&mut selected, 2_000_000);
+        assert_eq!(snapshot(&selected), snapshot(&direct));
+    }
+
+    #[test]
+    fn selection_preserves_initial_findings_and_low_budget_incompleteness() {
+        let mut terminal = machine();
+        for thread in terminal.threads.iter_mut() {
+            thread.make_mut().set_status(St::Exited);
+        }
+        terminal.report(
+            "violation",
+            "selector-initial".into(),
+            "pre-existing finding".into(),
+        );
+        let direct = crate::explore::explore(terminal.clone(), 16);
+        let mut selected = explore_dpor(terminal, 16);
+        assert!(direct
+            .findings
+            .iter()
+            .any(|finding| finding.sig == "selector-initial"));
+        remove_selection_note(&mut selected, 16);
+        assert_eq!(snapshot(&selected), snapshot(&direct));
+        let initial = machine();
+        let direct = crate::explore::explore(initial.clone(), 1);
+        let mut selected = explore_dpor(initial, 1);
+        assert!(!direct.complete);
+        assert!(!selected.complete);
+        remove_selection_note(&mut selected, 1);
+        assert_eq!(snapshot(&selected), snapshot(&direct));
+    }
+
+    #[test]
+    fn inner_dpor_backtracks_a_nonhead_consumed_op() {
+        let case =
+            Case::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_dpor_nonhead"))
+                .unwrap();
+        let text = case.variant_ptx("NH").unwrap();
+        let kernel = ptxv_ptx::parse_kernel(&text, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case.for_variant("NH").unwrap(), &kernel).unwrap();
+        let initial = Machine::new(Arc::new(kernel), Arc::new(launch));
+        assert!(select_stateful_remote_barriers(&initial));
+        let before = NONHEAD_BACKTRACKS.load(std::sync::atomic::Ordering::Relaxed);
+        let verdict = explore_dpor_one(initial, 2_000_000);
+        let after = NONHEAD_BACKTRACKS.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            after > before,
+            "NH/ptx: no inner non-head backtrack; states={}, complete={}, notes={:?}",
+            verdict.states,
+            verdict.complete,
+            verdict.notes
+        );
+    }
+}
+
+#[cfg(test)]
+mod tmem_selection_tests {
+    use std::sync::Arc;
+
+    use ptxv_ir::Addr;
+    use ptxv_ir::AtomOp;
+    use ptxv_ir::File;
+    use ptxv_ir::Front;
+    use ptxv_ir::MemSync;
+    use ptxv_ir::Op;
+    use ptxv_ir::Reg;
+    use ptxv_ir::Space;
+    use ptxv_ir::Val;
+    use serde_json::json;
+
+    use super::*;
+
+    fn machine(front: Front) -> Machine {
+        let mut machine = crate::dpor_uniform_tests::machine("UMOV UR0, 0x0", "NOP", &["NOP"], 4);
+        // Unreachable markers exercise admission independently of the parsed FA4 fixture.
+        let code = &mut Arc::make_mut(&mut machine.k).code;
+        let reg = Reg {
+            file: File::R,
+            idx: 0,
+        };
+        let mut add = |op| {
+            let mut inst = code.last().unwrap().clone();
+            inst.op = op;
+            code.push(inst);
+        };
+        add(Op::TmemAllocRaw {
+            d: reg,
+            ok: reg,
+            units: Val::Imm(1),
+            pair: false,
+        });
+        add(Op::TmemFreeRaw { mask: Val::Imm(0) });
+        add(Op::TmemLd {
+            d: reg,
+            n: 1,
+            taddr: Val::Imm(0),
+            off: 0,
+            tracked: false,
+            s16x64b: false,
+            half: None,
+            s16x256b: false,
+            s16x128b: false,
+            red: None,
+            regs: None,
+        });
+        add(Op::TmemSt {
+            taddr: Val::Imm(0),
+            off: 0,
+            v: vec![Val::Imm(0)],
+            tracked: false,
+            half: None,
+            s16x256b: false,
+            s16x128b: false,
+        });
+        add(Op::MbarTryWait {
+            addr: Addr {
+                base: None,
+                base2: None,
+                off: 0,
+            },
+            parity: Val::Imm(0),
+            bit31: false,
+            d: reg,
+            scope: ptxv_ir::Scope::Cluster,
+            acquire: true,
+        });
+        if front == Front::Ptx {
+            for inst in code {
+                inst.op = match &inst.op {
+                    Op::TmemAllocRaw { .. } => Op::TmemAlloc {
+                        dst: Addr {
+                            base: None,
+                            base2: None,
+                            off: 0,
+                        },
+                        ncols: Val::Imm(32),
+                    },
+                    Op::TmemFreeRaw { .. } => Op::TmemDealloc {
+                        taddr: Val::Imm(0),
+                        ncols: Val::Imm(32),
+                    },
+                    _ => inst.op.clone(),
+                };
+            }
+            Arc::make_mut(&mut machine.k).front = front;
+        }
+        machine
+    }
+
+    fn atom(op: AtomOp) -> Op {
+        Op::Atom {
+            op,
+            space: Space::Shared,
+            bytes: 4,
+            addr: Addr {
+                base: None,
+                base2: None,
+                off: 0,
+            },
+            v: Val::Imm(0),
+            d: None,
+            p: None,
+            new: None,
+            sync: MemSync {
+                sem: ptxv_ir::Sem::Relaxed,
+                scope: ptxv_ir::Scope::Cta,
+            },
+        }
+    }
+
+    fn snapshot(verdict: &Verdict) -> serde_json::Value {
+        json!({"states":verdict.states,"transitions":verdict.transitions,
+            "terminal_states":verdict.terminal_states,
+            "complete":verdict.complete,"outputs":verdict.outputs,
+            "distinct_outputs":verdict.distinct_outputs,"findings":verdict.findings,
+            "assumptions":verdict.assumptions,"notes":verdict.notes})
+    }
+
+    fn remove_note(verdict: &mut Verdict, cap: usize, front: &str) {
+        assert_eq!(
+            verdict.notes.pop().unwrap(),
+            format!(
+                "Stateful explorer selected for single-CTA {front} TMEM lifecycle/mbarrier code with only returnless shared32 AND/OR atomics (state cap {cap})"
+            )
+        );
+    }
+
+    #[test]
+    fn selection_requires_lifecycle_single_cta_and_returnless_shared_bitwise_atoms() {
+        for front in [Front::Ptx, Front::Sass] {
+            let initial = machine(front);
+            assert!(select_stateful_tmem(&initial));
+            let mut wrong = initial.clone();
+            Arc::make_mut(&mut wrong.k).front = if front == Front::Ptx {
+                Front::Sass
+            } else {
+                Front::Ptx
+            };
+            assert!(!select_stateful_tmem(&wrong));
+            let mut wrong = initial.clone();
+            Arc::make_mut(&mut wrong.launch).grids[0].grid = [2, 1, 1];
+            assert!(!select_stateful_tmem(&wrong));
+            let mut wrong = initial.clone();
+            Arc::make_mut(&mut wrong.launch).grids[0].cluster = [2, 1, 1];
+            assert!(!select_stateful_tmem(&wrong));
+            let mut wrong = initial.clone();
+            let grid = wrong.launch.grids[0].clone();
+            Arc::make_mut(&mut wrong.launch).grids.push(grid);
+            assert!(!select_stateful_tmem(&wrong));
+            for pc in initial.k.code.iter().enumerate().filter_map(|(pc, inst)| {
+                matches!(
+                    inst.op,
+                    Op::TmemAllocRaw { .. }
+                        | Op::TmemFreeRaw { .. }
+                        | Op::TmemAlloc { .. }
+                        | Op::TmemDealloc { .. }
+                        | Op::TmemLd { .. }
+                        | Op::TmemSt { .. }
+                        | Op::MbarTryWait { .. }
+                )
+                .then_some(pc)
+            }) {
+                let mut wrong = initial.clone();
+                Arc::make_mut(&mut wrong.k).code[pc].op = Op::Nop;
+                assert!(!select_stateful_tmem(&wrong));
+            }
+            for operation in [AtomOp::And, AtomOp::Or] {
+                let mut good = initial.clone();
+                let mut inst = good.k.code[0].clone();
+                inst.op = atom(operation);
+                Arc::make_mut(&mut good.k).code.push(inst);
+                assert!(select_stateful_tmem(&good));
+            }
+            for operation in [
+                AtomOp::Add,
+                AtomOp::Cas,
+                AtomOp::CasSpin,
+                AtomOp::Exch,
+                AtomOp::FAddFtz,
+            ] {
+                let mut wrong = initial.clone();
+                let mut inst = wrong.k.code[0].clone();
+                inst.op = atom(operation);
+                Arc::make_mut(&mut wrong.k).code.push(inst);
+                assert!(!select_stateful_tmem(&wrong));
+            }
+            let reg = Reg {
+                file: File::R,
+                idx: 0,
+            };
+            for field in 0..6 {
+                let mut op = atom(AtomOp::Or);
+                if let Op::Atom {
+                    space,
+                    bytes,
+                    d,
+                    p,
+                    new,
+                    ..
+                } = &mut op
+                {
+                    match field {
+                        0 => *space = Space::Global,
+                        1 => *space = Space::Generic,
+                        2 => *bytes = 8,
+                        3 => *d = Some(reg),
+                        4 => *p = Some(reg),
+                        _ => *new = Some(Val::Imm(1)),
+                    }
+                }
+                let mut wrong = initial.clone();
+                let mut inst = wrong.k.code[0].clone();
+                inst.op = op;
+                Arc::make_mut(&mut wrong.k).code.push(inst);
+                assert!(!select_stateful_tmem(&wrong));
+            }
+        }
+    }
+
+    #[test]
+    fn selection_preserves_full_stateful_result_and_initial_findings() {
+        for front in [Front::Ptx, Front::Sass] {
+            let mut initial = machine(front);
+            initial.report(
+                "violation",
+                "tmem-selection-initial".into(),
+                "pre-existing finding".into(),
+            );
+            let direct = crate::explore::explore(initial.clone(), 1000);
+            let mut selected = explore_dpor(initial, 1000);
+            assert!(direct.complete);
+            assert!(direct
+                .findings
+                .iter()
+                .any(|f| f.sig == "tmem-selection-initial"));
+            remove_note(
+                &mut selected,
+                1000,
+                if front == Front::Ptx { "PTX" } else { "SASS" },
+            );
+            assert_eq!(snapshot(&selected), snapshot(&direct));
+        }
+    }
+
+    #[test]
+    fn selection_keeps_the_same_low_cap_incomplete() {
+        for front in [Front::Ptx, Front::Sass] {
+            let initial = machine(front);
+            let direct = crate::explore::explore(initial.clone(), 1);
+            let mut selected = explore_dpor(initial, 1);
+            assert!(!direct.complete);
+            assert!(!selected.complete);
+            remove_note(
+                &mut selected,
+                1,
+                if front == Front::Ptx { "PTX" } else { "SASS" },
+            );
+            assert_eq!(snapshot(&selected), snapshot(&direct));
+        }
+    }
+}
+
+#[cfg(test)]
+mod private_continuation_selection_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn machine(tail: &str) -> Machine {
+        let source = format!(".version 8.8\n.target sm_103a\n.address_size 64\n.visible .entry k(.param .u64 input) {{ .reg .b32 %r0; .reg .b64 %a; .reg .pred %p0; ld.param.u64 %a,[input]; atom.global.add.u32 %r0,[%a],1; {tail} ret; }}");
+        let kernel = ptxv_ptx::parse_kernel(&source, Some("k")).unwrap();
+        let case = ptxv_case::Case {
+            dir: Default::default(),
+            m: serde_json::from_value(serde_json::json!({
+                "name":"private-continuations", "description":"direct stateless cross-check",
+                "entry":"k", "grid":[1,1,1], "block":[4,1,1], "outputs":["x"],
+                "buffers":[{"name":"x", "dtype":"u32", "shape":[4], "init":"zeros"}],
+                "params":[{"kind":"ptr", "buffer":"x"}], "variants":[]
+            }))
+            .unwrap(),
+        };
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        Machine::new(Arc::new(kernel), Arc::new(launch))
+    }
+
+    #[test]
+    fn selected_search_matches_unselected_stateless_outputs_and_races() {
+        for tail in [
+            "setp.ne.u32 %p0,%r0,3; @%p0 bra DONE; st.global.u32 [%a+8],17; DONE:",
+            "st.global.u32 [%a+8],%r0;",
+        ] {
+            let initial = machine(tail);
+            assert!(initial.private_register_projection().is_some());
+            let selected = explore_dpor(initial.clone(), 100_000);
+            let raw = explore_dpor_one(initial, 100_000);
+            assert!(selected.complete && raw.complete);
+            assert!(selected
+                .notes
+                .iter()
+                .any(|note| note.contains("private continuations")));
+            assert_eq!(selected.classes(), raw.classes());
+            let mut selected_outputs = selected.outputs;
+            let mut raw_outputs = raw.outputs;
+            selected_outputs.sort();
+            raw_outputs.sort();
+            assert_eq!(selected_outputs, raw_outputs);
+            let signatures = |findings: Vec<Finding>| {
+                let mut signatures: Vec<_> = findings
+                    .into_iter()
+                    .map(|finding| (finding.kind, finding.sig))
+                    .collect();
+                signatures.sort();
+                signatures
+            };
+            assert_eq!(signatures(selected.findings), signatures(raw.findings));
+        }
+    }
+
+    #[test]
+    fn selection_keeps_the_cap_and_requires_the_pinned_plain_machine() {
+        let initial = machine("st.global.u32 [%a+8],%r0;");
+        let capped = explore_dpor(initial.clone(), 1);
+        assert!(!capped.complete);
+        assert!(capped
+            .notes
+            .iter()
+            .any(|note| note.contains("state cap 1)")));
+        let mut replaced = initial.clone();
+        replaced.k = Arc::new((*replaced.k).clone());
+        assert!(replaced.private_register_projection().is_none());
+        let unselected = explore_dpor(replaced, 100_000);
+        assert!(unselected.complete);
+        assert!(!unselected
+            .notes
+            .iter()
+            .any(|note| note.contains("private continuations")));
+        let mut recorded = initial;
+        recorded.set_footprint(Some(Default::default()));
+        assert!(recorded.private_register_projection().is_none());
+    }
 }

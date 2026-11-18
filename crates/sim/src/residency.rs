@@ -121,7 +121,7 @@ pub fn with_residency_on(mut m: Machine, r: u32, device: Option<u32>) -> Machine
         if m.threads[t].st == St::Run
             && m.threads[t].pc == m.launch.g(m.threads[t].cta as u32).entry
         {
-            m.threads[t].make_mut().st = St::Unlaunched;
+            m.threads[t].make_mut().set_status(St::Unlaunched);
         }
     }
     m
@@ -825,12 +825,15 @@ pub fn analyze(m0: &Machine, max_states: usize, cap: usize) -> Report {
 /// Machines at the start of each launch group: the earlier groups run once each
 /// (`explore::run_once`, as `groups::Opts::run_first`), later groups held back. A group
 /// whose predecessor did not terminate gets the error.
-pub fn group_machines(full: &Machine, groups: &[Vec<usize>]) -> Vec<Result<Machine, String>> {
+pub fn group_machines(
+    full: &Machine,
+    groups: &[Vec<usize>],
+) -> Vec<Result<Machine, String>> {
     let hold = |mut m: Machine, keep: &[usize]| {
         for g in 0..m.launch.grids.len() {
             if !keep.contains(&g) {
                 for t in m.grid_threads(g) {
-                    m.threads[t].make_mut().st = St::Exited;
+                    m.threads[t].make_mut().set_status(St::Exited);
                 }
             }
         }

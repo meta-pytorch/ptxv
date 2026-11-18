@@ -61,7 +61,7 @@ id = "B03"
 summary = "no bar.sync between mbarrier.init (thread 0) and other threads' try_wait"
 marker = "@B03"
 replace = "<delete>"
-expect = ["race"]
+expect = ["race", "violation"]
 hw_note = "other warps may poll an uninitialized mbarrier"
 
 [[variants]]

@@ -133,9 +133,48 @@ pub(super) fn analyze(
         let first = writes[0];
         let what = |m: &Machine, a: &SAcc| describe_ev(m, &a.ev);
         let gated = super::TICKET_OK.with(|t| t.borrow().contains(w));
+        for (index, a) in writes.iter().enumerate() {
+            for b in &writes[index + 1..] {
+                if a.ev.actor < nthreads
+                    && b.ev.actor < nthreads
+                    && !ptxv_memory_write::atomic_scalar::ticket_pair_eligible(
+                        a.ev.actor,
+                        m.threads[a.ev.actor as usize].warp,
+                        a.ev.pc,
+                        b.ev.actor,
+                        m.threads[b.ev.actor as usize].warp,
+                        b.ev.pc,
+                        m.atomic_scalar_supported(a.ev.pc),
+                    )
+                {
+                    if gated {
+                        out.bad.push(format!(
+                            "C-TICKET: bundled lanes at {} cannot be forced separately",
+                            what(m, a)
+                        ));
+                    }
+                    continue 'words;
+                }
+            }
+        }
         for a in accs {
             // A read-modify-write is logged as its read and its write.
-            let ok = a.ev.actor < nthreads
+            // Ticket forcing counts an entire instruction at one word; a continued vector or packed atomic
+            // needs a separate gate and claim identity for every component.
+            let eligible = match m.k.code[a.ev.pc as usize].op {
+                Op::Atom { op, bytes, .. } => {
+                    ptxv_memory_write::atomic_components::ticket_access_eligible(
+                        op == AtomOp::FAddFtz,
+                        bytes,
+                    ) && ptxv_memory_write::atomic_packed::ticket_access_eligible(
+                        op == AtomOp::AddBf16x2,
+                        bytes,
+                    )
+                }
+                _ => true,
+            };
+            let ok = eligible
+                && a.ev.actor < nthreads
                 && (a.lo, a.hi) == (first.lo, first.hi)
                 && match a.rmw {
                     Some((op, _, acq, _)) => !acq && !matches!(op, AtomOp::Cas | AtomOp::CasSpin),
@@ -250,8 +289,14 @@ impl Machine {
             } => (*space, *bytes, addr),
             _ => return None,
         };
-        let a = self.addr(t, addr).ok()?;
-        match self.resolve(t, space, a, bytes as usize).ok()? {
+        let a = self
+            .atomic_scalar_frozen_address(t, pc)
+            .or_else(|| self.addr(t, addr).ok())?;
+        self.ticket_word_at(t, space, a, bytes)
+    }
+
+    fn ticket_word_at(&self, t: usize, space: Space, address: u64, bytes: u8) -> Option<Word> {
+        match self.resolve(t, space, address, bytes as usize).ok()? {
             crate::exec::Loc::Shared { cta, off } => Some((0, cta as u32, off as u64)),
             crate::exec::Loc::Global { alloc, off } => Some((1, alloc as u32, off)),
             crate::exec::Loc::Param { .. } => None,
@@ -261,23 +306,49 @@ impl Machine {
     /// C-TICKET: may `members` run the gated write at `pc`? Not while an active lane writing
     /// a ticket word is not the forced writer of that word's next write.
     pub fn ticket_ready(&self, members: &[usize], pc: u32) -> bool {
-        let Some(r) = self.ring.as_ref() else {
+        if self.ring.is_none() {
             return true;
-        };
+        }
         let inst = &self.k.code[pc as usize];
         members
             .iter()
             .filter(|&&t| self.prd(t, inst.guard))
-            .all(|&t| {
-                let Some(w) = self.ticket_word(t, pc) else {
-                    return true;
-                };
-                let k = r.tick_claims.get(&w).map_or(0, |v| v.len());
-                r.tick_force
-                    .get(&w)
-                    .and_then(|v| v.get(k))
-                    .is_none_or(|&f| f == t as u32)
-            })
+            .all(|&t| self.ticket_ready_actor(t, pc))
+    }
+
+    pub(crate) fn ticket_ready_actor(&self, t: usize, pc: u32) -> bool {
+        let Some(r) = self.ring.as_ref() else {
+            return true;
+        };
+        let Some(w) = self.ticket_word(t, pc) else {
+            return true;
+        };
+        let count = r.tick_claims.get(&w).map_or(0, Vec::len);
+        let forced = r
+            .tick_force
+            .get(&w)
+            .and_then(|order| order.get(count))
+            .copied();
+        ptxv_memory_write::atomic_scalar::claim_allowed(t as u32, forced)
+    }
+
+    pub(crate) fn ticket_count_actor_at(
+        &mut self,
+        t: usize,
+        space: Space,
+        address: u64,
+        bytes: u8,
+    ) {
+        let Some(word) = self.ticket_word_at(t, space, address, bytes) else {
+            return;
+        };
+        let Some(ring) = self.ring.as_mut() else {
+            return;
+        };
+        let ring = std::sync::Arc::make_mut(ring);
+        if ring.tick_words.contains(&word) {
+            ring.tick_claims.entry(word).or_default().push(t as u32);
+        }
     }
 
     /// C-TICKET: count the writes of ticket words by `members` at the gated `pc` (before it

@@ -83,7 +83,7 @@ fn hold(mut m: Machine, keep: &BTreeSet<usize>) -> Machine {
             continue;
         }
         for t in m.grid_threads(g) {
-            m.threads[t].make_mut().st = St::Exited;
+            m.threads[t].make_mut().set_status(St::Exited);
         }
     }
     relive(&mut m);
@@ -138,7 +138,12 @@ fn carry_obligs(c: &Carry) -> Vec<Oblig> {
 /// The machine for the next group: `fin` (the end state of the groups so far) with the
 /// launches of `next` back in their initial state (from `full`), the global race shadow
 /// demoted to plain accesses, and `obligs` added to the earlier groups' (`Machine::xg`).
-pub fn boundary(fin: Machine, full: &Machine, next: &[usize], obligs: &[Oblig]) -> Machine {
+pub fn boundary(
+    fin: Machine,
+    full: &Machine,
+    next: &[usize],
+    obligs: &[Oblig],
+) -> Machine {
     // The explorer edits static tables of its states (`peekwait`, `peekskip` in `bar_cfg`)
     // and the certificate may have run the weak kernel: back to the case's own.
     let mut fin = fin.with_statics(full);
@@ -148,7 +153,7 @@ pub fn boundary(fin: Machine, full: &Machine, next: &[usize], obligs: &[Oblig]) 
     fin.wlog = Default::default();
     fin.ring = None;
     fin.findings.clear();
-    fin.fp = None;
+    fin.set_footprint(None);
     fin.num = None;
     fin.elect_high = full.elect_high;
     fin.elect_any = full.elect_any;
@@ -194,7 +199,8 @@ pub fn boundary(fin: Machine, full: &Machine, next: &[usize], obligs: &[Oblig]) 
 /// threads are read only by `grid_done_vc` (and a meet must not depend on which operation an
 /// async unit's clock value names in one terminal state or another).
 fn fold_completed(m: &mut Machine) {
-    let done = |m: &Machine, cta: u16| m.threads.iter().all(|t| t.cta != cta || t.st == St::Exited);
+    let done =
+        |m: &Machine, cta: u16| m.threads.iter().all(|t| t.cta != cta || t.st == St::Exited);
     let recs = std::mem::take(&mut m.completed);
     let mut keep = Vec::new();
     for r in recs {
@@ -275,8 +281,9 @@ impl Meet {
             }
         }
         m.vipr = Default::default();
-        let done =
-            |m: &Machine, cta: u16| m.threads.iter().all(|t| t.cta != cta || t.st == St::Exited);
+        let done = |m: &Machine, cta: u16| {
+            m.threads.iter().all(|t| t.cta != cta || t.st == St::Exited)
+        };
         let mut fin = |a: u32, cta: u16, c: u32| {
             let e = self.finals.entry(a).or_insert((cta, c));
             e.1 = e.1.max(c);
@@ -387,7 +394,9 @@ impl Meet {
 /// of counter choices, wellsync/ring.rs): their meet, as for an explored group's terminal
 /// states, with every run's `Carry` and the meet's obligations as one `Carry`. Err if the
 /// runs leave different global memory (later groups would need one continuation each).
-pub(crate) fn meet_runs(runs: Vec<(Machine, Carry)>) -> Result<(Machine, Carry), String> {
+pub(crate) fn meet_runs(
+    runs: Vec<(Machine, Carry)>,
+) -> Result<(Machine, Carry), String> {
     let mut meet = Meet::default();
     let mut carry = Carry::default();
     for (m, c) in runs {

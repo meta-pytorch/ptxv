@@ -20,3 +20,4 @@ unnameable_test_items = "deny"
 
 [profile.release]
 debug = 1
+overflow-checks = true

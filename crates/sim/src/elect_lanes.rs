@@ -451,6 +451,93 @@ fn collective(op: &Op) -> bool {
 /// carry the leader's position to other lanes; a memory write of such a value by lanes it
 /// does not select.
 pub fn lane_classes(k: &Kernel, blocks: &[[u32; 3]]) -> Option<Part> {
+    lane_classes_with_atomic_history(k, blocks, None)
+}
+
+/// Before one nonrepeating dead-return claim, pending clones have no earlier claim history.
+/// Other claims and stores keep their actors distinct. Before this claim, clones take their
+/// reads in the same SIMT steps, so their reader histories and keyed SC fences stay related
+/// by permutation along with their clocks. After a claim its actor stays fixed, while the
+/// still-pending members of its class remain interchangeable.
+pub(crate) fn dead_atomic_lane_classes(k: &Kernel, blocks: &[[u32; 3]]) -> Option<Part> {
+    if k.front != ptxv_ir::Front::Ptx {
+        return None;
+    }
+    let claims: Vec<_> = k
+        .code
+        .iter()
+        .enumerate()
+        .filter(|(_, inst)| inst.guard.is_always() && matches!(inst.op, Op::Atom { .. }))
+        .collect();
+    let [(pc, claim)] = claims.as_slice() else {
+        return None;
+    };
+    let Op::Atom {
+        d: Some(result),
+        bytes: 4,
+        ..
+    } = claim.op
+    else {
+        return None;
+    };
+    let cfg = Cfg::new(k);
+    if !claim.guard.is_always()
+        || k.code.iter().any(|inst| {
+            inst.op.src_regs().contains(&result)
+                || inst.guard.reg == Some(result)
+                || inst
+                    .op
+                    .src_regs()
+                    .into_iter()
+                    .chain(inst.op.dst_regs())
+                    .chain(inst.guard.reg)
+                    .any(|reg| matches!(reg.file, ptxv_ir::File::UR | ptxv_ir::File::UP))
+                || !(pure(&inst.op)
+                    || matches!(
+                        inst.op,
+                        Op::Ld { .. }
+                            | Op::St { .. }
+                            | Op::Fence { .. }
+                            | Op::Bra { .. }
+                            | Op::Exit
+                            | Op::Nop
+                            | Op::Atom { .. }
+                    )
+                    || matches!(
+                        inst.op,
+                        Op::VoteAny { mask: None, .. }
+                            | Op::VoteAll { mask: None, .. }
+                            | Op::VoteAny {
+                                mask: Some(Val::Imm(0xffff_ffff)),
+                                ..
+                            }
+                            | Op::VoteAll {
+                                mask: Some(Val::Imm(0xffff_ffff)),
+                                ..
+                            }
+                    ))
+                || inst.op.src_vals().iter().any(|value| {
+                    matches!(
+                        value,
+                        Val::SReg(SReg::Clock | SReg::ClockLo32 | SReg::ClockHi32)
+                    )
+                })
+        })
+        || cfg.reach(pc + 1, k.code.len()).contains(pc)
+        || k.code.iter().enumerate().any(|(pc, inst)| {
+            matches!(inst.op, Op::Fence { .. }) && cfg.reach(pc + 1, k.code.len()).contains(&pc)
+        })
+    {
+        return None;
+    }
+    lane_classes_with_atomic_history(k, blocks, Some(*pc))
+}
+
+fn lane_classes_with_atomic_history(
+    k: &Kernel,
+    blocks: &[[u32; 3]],
+    atomic: Option<usize>,
+) -> Option<Part> {
     if k.code
         .iter()
         .any(|i| matches!(i.op, Op::Call { .. } | Op::CallAbs { .. } | Op::Brx { .. }))
@@ -529,7 +616,8 @@ pub fn lane_classes(k: &Kernel, blocks: &[[u32; 3]]) -> Option<Part> {
     for block in blocks {
         let threads = (block[0] * block[1] * block[2]) as usize;
         for w in 0..threads.div_ceil(32) {
-            if let (p, true) = warp_classes(k, &cfg, &branches, local, block, w)? {
+            let (p, elects) = warp_classes(k, &cfg, &branches, local, block, w, atomic)?;
+            if elects || atomic.is_some() {
                 all = meet(&all, &p);
             }
         }
@@ -545,6 +633,7 @@ fn warp_classes(
     local: bool,
     block: &[u32; 3],
     w: usize,
+    atomic: Option<usize>,
 ) -> Option<(Part, bool)> {
     let n = k.code.len();
     let tid = |l: usize, d: u8| -> u64 {
@@ -817,6 +906,18 @@ fn warp_classes(
                     continue;
                 }
                 all = meet(&all, &e.part());
+                if atomic.is_some() && writes_memory(&inst.op) && atomic != Some(pc) {
+                    // Earlier claims and lane-ordered stores leave actor identities in
+                    // memory history even when all values are equal. Keep them distinct.
+                    let writers: Part = std::array::from_fn(|lane| {
+                        if e.known >> lane & 1 == 1 {
+                            lane as u8
+                        } else {
+                            32
+                        }
+                    });
+                    all = meet(&all, &writers);
+                }
                 if pure(&inst.op) {
                     continue;
                 }

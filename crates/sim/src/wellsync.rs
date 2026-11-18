@@ -155,6 +155,7 @@ use crate::explore::Action;
 use crate::explore::Verdict;
 use crate::machine::*;
 
+mod fadd;
 mod order;
 pub mod perm;
 pub mod ring;
@@ -215,6 +216,23 @@ pub fn bsync_groups(m: &Machine, b: u8, lanes: &[usize]) -> Option<Vec<Vec<usize
         }
     }
     Some(groups.into_iter().map(|g| g.1).collect())
+}
+
+pub(crate) fn begin_atomic_component(m: &mut Machine) {
+    let mut log = take(m);
+    log.inst_tok = log.next_tok;
+    log.inst_seq = log.seq;
+    m.wlog.0 = Some(log);
+}
+
+pub(crate) fn retire_atomic_components(m: &mut Machine, members: &[usize]) {
+    let mut log = take(m);
+    let token = log.next_tok;
+    log.next_tok += 1;
+    for &thread in members {
+        log.tok[thread] = token;
+    }
+    m.wlog.0 = Some(log);
 }
 
 /// One event: who, at which own clock, and its position in the run (program order for one
@@ -286,6 +304,30 @@ struct WaitRec {
     pid: Option<usize>,
 }
 
+#[derive(Clone, Debug)]
+struct QueryRec {
+    ev: Ev,
+    vc: VC,
+    vis: VC,
+}
+
+#[derive(Clone, Debug)]
+struct InvalRec {
+    ev: Ev,
+    vc: VC,
+    vis: VC,
+}
+
+#[derive(Clone, Debug)]
+struct MbarWrite {
+    cta: u16,
+    lo: u32,
+    hi: u64,
+    ev: Ev,
+    vc: VC,
+    init: bool,
+}
+
 /// How a peek's result was used before its predicate died.
 #[derive(Clone, Debug)]
 enum PeekUse {
@@ -313,7 +355,8 @@ struct MbObj {
     expected: u32,
     phases: BTreeMap<i64, PhaseRec>,
     waits: Vec<WaitRec>,
-    inval: Option<(Ev, VC)>,
+    queries: Vec<QueryRec>,
+    invals: Vec<InvalRec>,
 }
 
 #[derive(Clone, Debug)]
@@ -429,6 +472,7 @@ struct WaitPre {
     init: Epoch,
     phase0: i64,
     expected: u32,
+    result: bool,
 }
 
 /// A thread's peek taint (`SyncLog::ptaint`): the peek, and each register derived from it
@@ -451,6 +495,7 @@ pub struct SyncLog {
     /// Per thread: own clock at its last strong (non-ticking) store, or u32::MAX.
     last_nt: Vec<u32>,
     mbars: HashMap<(u16, u32), Vec<MbObj>>,
+    mbar_writes: Vec<MbarWrite>,
     stash: Option<Stash>,
     pre_waits: Vec<WaitPre>,
     /// Per thread: the peek whose result it holds, and the registers that hold it or a value
@@ -546,7 +591,8 @@ impl SyncLog {
                 expected,
                 phases: BTreeMap::new(),
                 waits: vec![],
-                inval: None,
+                queries: vec![],
+                invals: vec![],
             });
         }
         v.last_mut().unwrap()
@@ -857,7 +903,7 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                     continue; // reported by the machine
                 }
                 let cid = m.launch.cluster_of(m.threads[t].cta as u32).0;
-                let g = m.clusters.get(&cid).map_or(0, |c| c.gen);
+                let g = m.clusters.get(&cid).map_or(0, |c| c.r#gen);
                 let po_ok = match log.cl_last[t] {
                     None => g == 0,
                     Some((pg, waited)) => waited && pg + 1 == g,
@@ -895,17 +941,33 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                 let Ok(Loc::Shared { cta, off }) = m.resolve(t, Space::Shared, a, 8) else {
                     continue;
                 };
-                let Ok(p) = m.rd(t, parity) else { continue };
-                let par = (if *bit31 { (p >> 31) & 1 } else { p & 1 }) as u32;
+                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
+                let ev = log.ev(t as u32, &vc, pc);
                 let mb = match m.mbars.get(&(cta, off)) {
                     Some(mb) => mb.clone(),
                     None => match m.mbar_decode_mem(cta, off) {
                         Some(mb) => mb,
-                        None => continue, // reported by the machine
+                        None => {
+                            log.fail(
+                                format!("query-init:{pc}"),
+                                format!(
+                                    "C-WAIT: mbarrier cta{cta}@smem{off:#x}: query by {} has no initialization",
+                                    describe_ev(m, &ev)
+                                ),
+                            );
+                            continue;
+                        }
                     },
                 };
-                let vc = m.order_vc(t); // S-MBAR-SCOPE: the order of events
-                let ev = log.ev(t as u32, &vc, pc);
+                log.mbobj(cta, off, mb.init, mb.phase as i64, mb.expected)
+                    .queries
+                    .push(QueryRec {
+                        ev,
+                        vc: vc.clone(),
+                        vis: m.threads[t].vis.clone(),
+                    });
+                let Ok(p) = m.rd(t, parity) else { continue };
+                let par = (if *bit31 { (p >> 31) & 1 } else { p & 1 }) as u32;
                 log.pre_waits.push(WaitPre {
                     t,
                     cta,
@@ -919,6 +981,8 @@ fn pre_inst_log(m: &Machine, log: &mut SyncLog, members: &[usize], pc: u32) {
                     init: mb.init,
                     phase0: mb.phase as i64,
                     expected: mb.expected,
+                    result: matches!(m.try_wait_result(t), Ok(Some(_)))
+                        && !m.peek_forced_failed(t, pc),
                 });
             }
         }
@@ -1079,7 +1143,7 @@ fn peek_uses(m: &Machine, log: &mut SyncLog, members: &[usize], active: &[usize]
             return;
         }
         let mut c = m.clone();
-        c.fp = None;
+        c.set_footprint(None);
         c.num = None;
         c.gfoot = None;
         c.gown = None;
@@ -1272,7 +1336,7 @@ fn look_step(
                 if c.prd(t, inst.guard) {
                     c.wp(t, *d, true);
                 }
-                c.threads[t].make_mut().pc = pc + 1;
+                c.threads[t].make_mut().set_pc(pc + 1);
             }
             return Ok(());
         }
@@ -1285,7 +1349,7 @@ fn look_step(
                 if c.prd(t, inst.guard) {
                     c.wp(t, *d, false);
                 }
-                c.threads[t].make_mut().pc = pc + 1;
+                c.threads[t].make_mut().set_pc(pc + 1);
             }
             return Ok(());
         }
@@ -1312,7 +1376,11 @@ fn look_step(
 type RegLoc = (u8, usize, u16);
 
 /// Register locations of `members` (and their warp) that differ between two copies.
-fn reg_diff(a: &Machine, b: &Machine, members: &[usize]) -> Result<Vec<RegLoc>, String> {
+fn reg_diff(
+    a: &Machine,
+    b: &Machine,
+    members: &[usize],
+) -> Result<Vec<RegLoc>, String> {
     let mut out = Vec::new();
     for &t in members {
         let (x, y) = (&a.threads[t], &b.threads[t]);
@@ -1382,7 +1450,7 @@ fn skip_equiv(
     };
     let fresh = |x: &Machine| {
         let mut c = x.clone();
-        c.fp = None;
+        c.set_footprint(None);
         c.num = None;
         c.gfoot = None;
         c.gown = None;
@@ -1487,7 +1555,7 @@ fn walk_dead(
     let fresh = |m: &Machine| {
         let mut c = m.clone();
         c.wlog = LogSlot(None);
-        c.fp = None;
+        c.set_footprint(None);
         c.num = None;
         c.gfoot = None;
         c.gown = None;
@@ -1512,7 +1580,7 @@ fn walk_dead(
     };
     let set_pc = |c: &mut Machine, pc: usize| {
         for &t in members {
-            c.threads[t].make_mut().pc = pc as u32;
+            c.threads[t].make_mut().set_pc(pc as u32);
         }
     };
     // Which bits of each differing register differ (all, at the meeting point): byte
@@ -1552,7 +1620,11 @@ fn walk_dead(
                                     idx: q.idx + i,
                                 })
                             });
-                            if hit { None } else { Some(0) }
+                            if hit {
+                                None
+                            } else {
+                                Some(0)
+                            }
                         }
                         Val::Reg(q, _) if diff.contains(q) => {
                             if !matches!(q.file, File::R | File::UR) {
@@ -1578,7 +1650,11 @@ fn walk_dead(
                                 let n = (sl >> (4 * i)) & 0xf;
                                 let byte = (src >> (8 * (n & 7))) & 0xff;
                                 let bm = if n & 8 != 0 {
-                                    if byte & 0x80 != 0 { 0xff } else { 0 }
+                                    if byte & 0x80 != 0 {
+                                        0xff
+                                    } else {
+                                        0
+                                    }
                                 } else {
                                     byte
                                 };
@@ -1854,7 +1930,9 @@ pub fn post_inst(m: &mut Machine, members: &[usize], pc: u32, _ok: bool) {
     let together = m.k.front == Front::Sass && membership(m, pc).0;
     for w in std::mem::take(&mut log.pre_waits) {
         let th = &m.threads[w.t];
-        let success = if w.peek {
+        let success = if w.peek && w.d.is_pt(m.k.front) {
+            w.result
+        } else if w.peek {
             m.prd(
                 w.t,
                 Pred {
@@ -1879,7 +1957,9 @@ pub fn post_inst(m: &mut Machine, members: &[usize], pc: u32, _ok: bool) {
         let pid = w.peek.then(|| {
             log.peeks
                 .push(((w.cta, w.off), w.parity, PeekUse::Unused, inst_id));
-            log.ptaint[w.t].push((log.peeks.len() - 1, vec![(w.d, !success as u64)]));
+            if !w.d.is_pt(m.k.front) {
+                log.ptaint[w.t].push((log.peeks.len() - 1, vec![(w.d, !success as u64)]));
+            }
             log.peeks.len() - 1
         });
         let obj = log.mbobj(w.cta, w.off, w.init, w.phase0, w.expected);
@@ -1980,6 +2060,35 @@ fn peek_then_wait(m: &Machine, pc: u32) -> bool {
     false
 }
 
+/// Record byte writes and explicit initializations that can change a query's validity.
+/// Called before `strong_access` marks a non-ticking store's clock window.
+pub fn mbar_write(
+    m: &mut Machine,
+    actor: u32,
+    vc: &VC,
+    pc: u32,
+    cta: u16,
+    off: u32,
+    n: usize,
+    init: bool,
+) {
+    if n == 0 {
+        return;
+    }
+    let vc = m.order_vc_of(actor, vc);
+    let mut log = take(m);
+    let ev = log.ev(actor, &vc, pc);
+    log.mbar_writes.push(MbarWrite {
+        cta,
+        lo: off,
+        hi: off as u64 + n as u64,
+        ev,
+        vc,
+        init,
+    });
+    m.wlog.0 = Some(log);
+}
+
 /// Hook (exec.rs `mbar_atomic`): an operation on the mbarrier at (cta, off) by `actor` at
 /// clock `vc` is about to change it (arrive / complete_tx) or observe it (wait, inval).
 pub fn mbar_op(m: &mut Machine, actor: u32, vc: &VC, pc: u32, cta: u16, off: u32) {
@@ -2000,7 +2109,13 @@ pub fn mbar_op(m: &mut Machine, actor: u32, vc: &VC, pc: u32, cta: u16, off: u32
     match kind {
         Op::MbarTryWait { .. } if thread_op => {}
         Op::MbarInval { .. } if thread_op => {
-            log.mbobj(cta, off, init, phase, expected).inval = Some((ev, vc.clone()));
+            log.mbobj(cta, off, init, phase, expected)
+                .invals
+                .push(InvalRec {
+                    ev,
+                    vc: vc.clone(),
+                    vis: m.threads[actor as usize].vis.clone(),
+                });
         }
         _ => {
             log.mbobj(cta, off, init, phase, expected);
@@ -2071,7 +2186,16 @@ pub fn warpsync_released(m: &mut Machine, _warp: u32, _mask: u32, lanes: &[usize
     m.wlog.0 = Some(log);
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AtomicAccess {
+    pub(crate) op: AtomOp,
+    pub(crate) request: ptxv_memory_write::atomic_exec::AtomicRequest,
+    pub(crate) result_used: bool,
+    pub(crate) acquires: bool,
+}
+
 /// Hook (exec.rs `access_x`): a strong access.
+#[allow(clippy::too_many_arguments)]
 pub fn strong_access(
     m: &mut Machine,
     actor: u32,
@@ -2080,6 +2204,7 @@ pub fn strong_access(
     loc: Loc,
     n: usize,
     data: Option<&[u8]>,
+    atomic_input: Option<AtomicAccess>,
 ) {
     let write = data.is_some();
     // Poll loads are C-POLL's (`poll_pre`) and C-RING's (ring.rs), including the reads of
@@ -2101,18 +2226,18 @@ pub fn strong_access(
         (vec![], None)
     };
     let thread = (actor as usize) < m.threads.len();
-    let (rmw, fadd) = match &m.k.code[pc as usize].op {
-        Op::Atom { op, d, sync, v, .. } if thread => {
-            let x = m.rd(actor as usize, v);
-            let sign = x.as_ref().map(|x| x & 0x8000_0000 != 0);
+    let (rmw, fadd) = match atomic_input {
+        Some(input) if thread => {
+            let sign = input.request.value & 0x8000_0000 != 0;
             let key = matches!(
-                (op, sign),
-                (AtomOp::MaxS, Ok(false)) | (AtomOp::MinU, Ok(true))
+                (input.op, sign),
+                (AtomOp::MaxS, false) | (AtomOp::MinU, true)
             );
-            let fadd = (*op == AtomOp::FAddFtz && n == 4)
-                .then(|| x.ok().map(|x| x as u32))
-                .flatten();
-            (Some((*op, d.is_some(), sync.acquires(), key)), fadd)
+            let fadd = ptxv_memory_write::atomic_exec::fadd_operand(input.request);
+            (
+                Some((input.op, input.result_used, input.acquires, key)),
+                fadd,
+            )
         }
         _ => (None, None),
     };
@@ -2247,6 +2372,15 @@ fn analyze(m: &Machine, log: &SyncLog) -> Vec<String> {
                     String::new()
                 }
             );
+            for q in &o.queries {
+                if o.init.actor != q.ev.actor && !o.init.hb(&q.vc) && !o.init.hb(&q.vis) {
+                    add(format!(
+                        "C-WAIT: {name}: initialization by {} is not ordered before query by {}",
+                        m.actor_name(o.init.actor),
+                        describe_ev(m, &q.ev)
+                    ));
+                }
+            }
             let reqs: BTreeMap<i64, Req> = o
                 .phases
                 .iter()
@@ -2426,18 +2560,75 @@ fn analyze(m: &Machine, log: &SyncLog) -> Vec<String> {
                     ));
                 }
             }
-            if let Some((iev, ivc)) = &o.inval {
+            for i in &o.invals {
+                let (iev, ivc) = (&i.ev, &i.vc);
                 let late = o
                     .phases
                     .values()
                     .flat_map(|p| p.ops.iter().map(|x| x.ev))
                     .chain(o.waits.iter().map(|w| w.ev))
+                    .chain(o.queries.iter().map(|q| q.ev))
                     .find(|e| !e.hb(iev.actor, iev.seq, ivc));
                 if let Some(e) = late {
                     add(format!(
                         "C-PHASE: {name}: mbarrier.inval by {} is not ordered after {}",
                         describe_ev(m, iev),
                         describe_ev(m, &e)
+                    ));
+                }
+            }
+        }
+    }
+    let queried: BTreeMap<_, _> = log
+        .mbars
+        .iter()
+        .map(|(&key, objects)| (key, objects))
+        .collect();
+    for (&(cta, off), objects) in &queried {
+        for i in objects.iter().flat_map(|o| &o.invals) {
+            let events = objects.iter().flat_map(|o| {
+                o.queries.iter().map(|q| (&q.ev, &q.vc)).chain(
+                    o.phases
+                        .values()
+                        .flat_map(|p| p.ops.iter().map(|op| (&op.ev, &op.vc))),
+                )
+            });
+            for (ev, vc) in events {
+                if !ev.hb(i.ev.actor, i.ev.seq, &i.vc) && !i.ev.hb(ev.actor, ev.seq, vc) {
+                    add(format!(
+                        "C-PHASE: mbarrier cta{cta}@smem{off:#x}: invalidation by {} is not ordered with {} across incarnations",
+                        describe_ev(m, &i.ev),
+                        describe_ev(m, ev)
+                    ));
+                }
+            }
+        }
+    }
+    for w in &log.mbar_writes {
+        let first = (w.cta, w.lo.saturating_sub(7));
+        let last = (w.cta, (w.hi - 1).min(u32::MAX as u64) as u32);
+        for (&(cta, off), objects) in queried.range(first..=last) {
+            for q in objects.iter().flat_map(|o| &o.queries) {
+                if !w.ev.hb(q.ev.actor, q.ev.seq, &q.vc)
+                    && !(w.init && w.ev.hb(q.ev.actor, q.ev.seq, &q.vis))
+                    && !q.ev.hb(w.ev.actor, w.ev.seq, &w.vc)
+                {
+                    add(format!(
+                        "C-WAIT: mbarrier cta{cta}@smem{off:#x}: query by {} is not ordered with shared write by {}",
+                        describe_ev(m, &q.ev),
+                        describe_ev(m, &w.ev)
+                    ));
+                }
+            }
+            for i in objects.iter().flat_map(|o| &o.invals) {
+                if !w.ev.hb(i.ev.actor, i.ev.seq, &i.vc)
+                    && !(w.init && w.ev.hb(i.ev.actor, i.ev.seq, &i.vis))
+                    && !i.ev.hb(w.ev.actor, w.ev.seq, &w.vc)
+                {
+                    add(format!(
+                        "C-PHASE: mbarrier cta{cta}@smem{off:#x}: invalidation by {} is not ordered with shared write by {}",
+                        describe_ev(m, &i.ev),
+                        describe_ev(m, &w.ev)
                     ));
                 }
             }
@@ -2730,8 +2921,8 @@ fn poll_post(m: &mut Machine, log: &mut SyncLog, from: u64) {
             }
         }
         let th = m.threads[t].make_mut();
-        th.vc = best.1.0;
-        th.acq_pending = best.1.1;
+        th.vc = best.1 .0;
+        th.acq_pending = best.1 .1;
         let best = best.0;
         log.polls[i].sync = Some(best);
     }
@@ -2800,7 +2991,7 @@ fn poll_try(
 ) -> Result<Option<(Machine, PSync)>, String> {
     let (h, b) = r.at.polls[&r.pc];
     let mut m = (*r.at).clone();
-    m.fp = None;
+    m.set_footprint(None);
     m.num = None;
     if let Some((v, cell)) = src {
         m.ring = None;
@@ -3392,7 +3583,7 @@ fn cas_replay(
 ) -> Result<bool, String> {
     let (h, b) = at.polls[&pc];
     let mut m = at.clone();
-    m.fp = None;
+    m.set_footprint(None);
     m.num = None;
     if let Some(v) = v {
         set_mem_bytes(&mut m, loc_of(key, lo), v);
@@ -3573,12 +3764,12 @@ fn cas_check(m: &Machine, log: &SyncLog) -> (Vec<String>, HashSet<CasWord>) {
             }
             Err(s) => why.push(format!(
                 "C-CAS: CAS polls on {} {} byte {:#x}: {s}",
-                if w.0.0 == 0 {
+                if w.0 .0 == 0 {
                     "shared memory of CTA"
                 } else {
                     "global allocation"
                 },
-                w.0.1,
+                w.0 .1,
                 w.1
             )),
         }
@@ -3838,6 +4029,12 @@ fn fadd_word(m: &Machine, acc: &[SAcc], w: ((u8, u32), u64, u64)) -> Result<(), 
         };
         let v0 = word(&ws[g[0]].old);
         let want = word(&ws[*g.last().unwrap()].val);
+        // The checked layers include every remaining-operand prefix, so this stronger
+        // certificate covers every linear extension without enumerating the orders.
+        let values: Vec<_> = g.iter().map(|&index| ws[index].fadd.unwrap()).collect();
+        if fadd::order_independent(&values, v0, want) {
+            continue;
+        }
         // Depth-first over linear extensions of happens-before restricted to the group.
         let k = g.len();
         let mut seen: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
@@ -4017,6 +4214,7 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     // Input coverage rides on the first certificate run when asked (coverage.rs `Tap`).
     crate::coverage::tap_attach(&mut m);
     let mut fs = Vec::new();
+    let mut delivery = crate::explore::FindingDelivery::default();
     let mut steps = 0usize;
     // PTXV_CERT_PROGRESS=N: print the step count every N steps (stderr), for timing runs that
     // do not finish.
@@ -4066,15 +4264,15 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
                 .any(|f| f.msg.contains("E-CLC eager launch"))
         {
             EAGER_FAILED.with(|e| e.set(true));
-            fs.append(&mut m.findings);
+            delivery.collect(&mut m, &mut fs);
             break;
         }
-        if let Some(why) = faults.repeats(&m.findings) {
+        if let Some(why) = faults.repeats(delivery.fresh(&m)) {
             extra.push(why);
-            fs.append(&mut m.findings);
+            delivery.collect(&mut m, &mut fs);
             break;
         }
-        fs.append(&mut m.findings);
+        delivery.collect(&mut m, &mut fs);
     }
     let ok = m.terminal();
     // The run went where `explore::run_once` goes: to its end (or the same fault loop),
@@ -4088,7 +4286,7 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
     RING_PRUNED.with(|p| *p.borrow_mut() = None);
     if ok {
         m.exit_checks();
-        fs.append(&mut m.findings);
+        delivery.collect(&mut m, &mut fs);
     } else if let Some(why) = ring::stuck_infeasible(&m)
         .or_else(|| ticket::stuck_infeasible(&m))
         .filter(|_| extra.is_empty())
@@ -4106,6 +4304,7 @@ fn run_logged(mut m: Machine) -> (Machine, Vec<Finding>, bool, usize, Vec<String
             ..Default::default()
         });
     }
+    delivery.finish(&mut m, &mut fs);
     let mut why = extra;
     let facq = fence_acquired(&m);
     match m.wlog.0.take() {
@@ -4526,7 +4725,10 @@ fn crosscheck(
     (None, notes)
 }
 
-fn certify_inner(m0: Machine, mut keep: Option<&mut Option<(Machine, Carry)>>) -> Outcome {
+fn certify_inner(
+    m0: Machine,
+    mut keep: Option<&mut Option<(Machine, Carry)>>,
+) -> Outcome {
     let mut o = certify_lazy(m0, keep.as_deref_mut());
     // The whole check's time budget (membudget.rs) was spent before the certificate finished:
     // one of its runs may have been stopped, so it does not hold (never a pass), and keeps
@@ -5207,7 +5409,7 @@ pub fn slice_machine(mut m0: Machine, c: u32) -> Machine {
     for t in 0..m0.threads.len() {
         let cta = m0.threads[t].cta as u32;
         if m0.launch.cluster_of(cta).0 != c && m0.launch.grid_index(cta) >= cg {
-            m0.threads[t].make_mut().st = St::Exited;
+            m0.threads[t].make_mut().set_status(St::Exited);
         }
     }
     let live: Vec<usize> = (0..m0.threads.len())
@@ -5761,5 +5963,495 @@ mod crosscheck_tests {
             why.contains("continued deterministically, reported race"),
             "{why}"
         );
+    }
+}
+
+#[cfg(test)]
+mod mbar_query_audit_tests {
+    use super::*;
+
+    fn machine() -> Machine {
+        let kernel = Arc::new(
+            ptxv_ptx::parse_kernel(
+                ".version 8.8\n.target sm_103a\n.address_size 64\n.visible .entry k() { .shared .align 8 .b64 bar; ret; }",
+                Some("k"),
+            )
+            .unwrap(),
+        );
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: serde_json::from_value(serde_json::json!({
+                "name":"query-order-audit", "description":"certificate ordering controls",
+                "entry":"k", "grid":[1,1,1], "block":[2,1,1], "outputs":[],
+                "buffers":[], "params":[], "variants":[]
+            }))
+            .unwrap(),
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut m = Machine::new(kernel, launch);
+        m.wlog = LogSlot(Some(Box::new(SyncLog::new(&m))));
+        m
+    }
+
+    fn query(m: &mut Machine, actor: u32, vc: VC, vis: VC) {
+        let log = m.wlog.0.as_mut().unwrap();
+        let ev = log.ev(actor, &vc, 0);
+        let init = Epoch {
+            actor: 0,
+            clock: 1,
+            pc: 0,
+            strong: 0,
+            sv: false,
+            view: 0,
+        };
+        log.mbobj(0, 16, init, 0, 1)
+            .queries
+            .push(QueryRec { ev, vc, vis });
+    }
+
+    fn unordered_write(m: &Machine) -> bool {
+        analyze(m, m.wlog.0.as_ref().unwrap())
+            .iter()
+            .any(|why| why.contains("not ordered with shared write"))
+    }
+
+    #[test]
+    fn explicit_reinitialization_must_follow_even_an_unobserved_query() {
+        for ordered in [false, true] {
+            let mut m = machine();
+            query(&mut m, 1, vc_from_sorted(vec![(0, 1), (1, 1)]), VC::new());
+            let mut vc = vc_single(0, 2);
+            if ordered {
+                vc_raise(&mut vc, 1, 1);
+            }
+            mbar_write(&mut m, 0, &vc, 0, 0, 16, 8, true);
+            assert_eq!(unordered_write(&m), !ordered);
+        }
+    }
+
+    #[test]
+    fn later_invalidation_does_not_hide_an_unordered_earlier_invalidation() {
+        let mut m = machine();
+        query(&mut m, 1, vc_from_sorted(vec![(0, 1), (1, 1)]), VC::new());
+        let log = m.wlog.0.as_mut().unwrap();
+        for vc in [vc_single(0, 2), vc_from_sorted(vec![(0, 3), (1, 1)])] {
+            let ev = log.ev(0, &vc, 0);
+            log.mbars.get_mut(&(0, 16)).unwrap()[0]
+                .invals
+                .push(InvalRec {
+                    ev,
+                    vc,
+                    vis: VC::new(),
+                });
+        }
+        assert!(
+            analyze(&m, m.wlog.0.as_ref().unwrap())
+                .iter()
+                .any(|why| why.contains("mbarrier.inval") && why.contains("not ordered after"))
+        );
+    }
+
+    #[test]
+    fn cross_incarnation_invalidation_must_be_ordered_with_reinitialization() {
+        for ordered in [false, true] {
+            let mut m = machine();
+            let old = Epoch {
+                actor: 0,
+                clock: 1,
+                pc: 0,
+                strong: 0,
+                sv: false,
+                view: 0,
+            };
+            let new = Epoch {
+                actor: 1,
+                clock: 2,
+                ..old
+            };
+            let log = m.wlog.0.as_mut().unwrap();
+            let vc = vc_from_sorted(vec![(0, 2), (1, 1)]);
+            let ev = log.ev(0, &vc, 0);
+            log.mbobj(0, 16, old, 0, 1).invals.push(InvalRec {
+                ev,
+                vc,
+                vis: VC::new(),
+            });
+            let vc = vc_from_sorted(vec![(0, if ordered { 2 } else { 1 }), (1, 2)]);
+            mbar_write(&mut m, 1, &vc, 0, 0, 16, 8, true);
+            let log = m.wlog.0.as_mut().unwrap();
+            let vc = vc_from_sorted(vec![(0, 2), (1, 3)]);
+            let ev = log.ev(1, &vc, 0);
+            log.mbobj(0, 16, new, 0, 1).queries.push(QueryRec {
+                ev,
+                vc,
+                vis: VC::new(),
+            });
+            let why = analyze(&m, m.wlog.0.as_ref().unwrap());
+            assert_eq!(
+                why.iter().any(|why| why.contains("invalidation")
+                    && why.contains("not ordered with shared write")),
+                !ordered,
+                "{why:?}"
+            );
+            assert!(!why.iter().any(|why| why.contains("C-WAIT")), "{why:?}");
+        }
+    }
+
+    #[test]
+    fn non_ticking_store_clock_does_not_order_later_queries_or_writes() {
+        for query_first in [false, true] {
+            for known in [1, 2] {
+                let mut m = machine();
+                let vc = vc_single(0, 1);
+                strong_access(
+                    &mut m,
+                    0,
+                    &vc,
+                    0,
+                    Loc::Shared { cta: 0, off: 0 },
+                    4,
+                    Some(&[0; 4]),
+                    None,
+                );
+                assert_eq!(m.wlog.0.as_ref().unwrap().last_nt[0], 1);
+                let observer = vc_from_sorted(vec![(0, known), (1, 1)]);
+                if query_first {
+                    query(&mut m, 0, vc, VC::new());
+                    mbar_write(&mut m, 1, &observer, 0, 0, 16, 8, false);
+                } else {
+                    mbar_write(&mut m, 0, &vc, 0, 0, 16, 8, false);
+                    query(&mut m, 1, observer, VC::new());
+                }
+                assert_eq!(unordered_write(&m), known == 1, "query_first={query_first}");
+            }
+        }
+    }
+
+    #[test]
+    fn init_visibility_does_not_order_an_ordinary_backing_write() {
+        for init in [false, true] {
+            let mut m = machine();
+            mbar_write(&mut m, 0, &vc_single(0, 1), 0, 0, 16, 8, init);
+            query(&mut m, 1, vc_single(1, 1), vc_single(0, 1));
+            assert_eq!(unordered_write(&m), !init);
+            assert!(
+                !analyze(&m, m.wlog.0.as_ref().unwrap())
+                    .iter()
+                    .any(|why| why.contains("not ordered before query"))
+            );
+            let log = m.wlog.0.as_mut().unwrap();
+            let vc = vc_single(1, 1);
+            let ev = log.ev(1, &vc, 0);
+            log.mbars.get_mut(&(0, 16)).unwrap()[0]
+                .invals
+                .push(InvalRec {
+                    ev,
+                    vc,
+                    vis: vc_single(0, 1),
+                });
+            assert_eq!(
+                analyze(&m, m.wlog.0.as_ref().unwrap())
+                    .iter()
+                    .any(|why| why.contains("invalidation")
+                        && why.contains("not ordered with shared write")),
+                !init
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod scalar_atomic_audit_tests {
+    use super::*;
+
+    fn machine(atomic: &str, acquire: bool) -> Machine {
+        let text = format!(
+            r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input) {{
+  .reg .b32 %r0;
+  .reg .b64 %rd<2>;
+  .reg .f32 %f<4>;
+  ld.param.u64 %rd0, [input];
+  mov.f32 %f0, 0f3f800000;
+  mov.f32 %f1, 0f41200000;
+  {atomic}
+  ret;
+}}
+"#
+        );
+        let mut kernel = ptxv_ptx::parse_kernel(&text, Some("k")).unwrap();
+        if acquire {
+            for instruction in &mut kernel.code {
+                if let Op::Atom { sync, .. } = &mut instruction.op {
+                    sync.sem = Sem::Acquire;
+                }
+            }
+        }
+        let manifest = serde_json::from_value(serde_json::json!({
+            "name":"atomic-log-audit", "description":"actual scalar atomic audit inputs",
+            "entry":"k", "grid":[1,1,1], "block":[1,1,1], "outputs":[],
+            "buffers":[{"name":"x","dtype":"f32","shape":[4],"init":"zeros"}],
+            "params":[{"kind":"ptr","buffer":"x"}], "variants":[]
+        }))
+        .unwrap();
+        let case = ptxv_case::Case {
+            dir: std::path::PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        Machine::new(Arc::new(kernel), launch)
+    }
+
+    fn run_logged(mut machine: Machine) -> (Machine, Vec<Finding>) {
+        machine.wlog = LogSlot(Some(Box::new(SyncLog::new(&machine))));
+        let (machine, findings, complete) = crate::explore::run_once(machine);
+        assert!(complete);
+        (machine, findings)
+    }
+
+    #[test]
+    fn scalar_component_and_packed_hooks_retain_actual_inputs_and_flags() {
+        for (text, op, result_used, acquire, operands) in [
+            (
+                "atom.global.add.u32 %r0, [%rd0], 7;",
+                AtomOp::Add,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.or.b32 %r0, [%rd0], 7;",
+                AtomOp::Or,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.and.b32 %r0, [%rd0], 7;",
+                AtomOp::And,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.xor.b32 %r0, [%rd0], 7;",
+                AtomOp::Xor,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.exch.b32 %r0, [%rd0], 7;",
+                AtomOp::Exch,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.max.u32 %r0, [%rd0], 7;",
+                AtomOp::MaxU,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.min.s32 %r0, [%rd0], 7;",
+                AtomOp::MinS,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.inc.u32 %r0, [%rd0], 7;",
+                AtomOp::Inc,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.dec.u32 %r0, [%rd0], 7;",
+                AtomOp::Dec,
+                true,
+                true,
+                vec![None],
+            ),
+            (
+                "atom.global.add.f32 %f2, [%rd0], %f0;",
+                AtomOp::FAddFtz,
+                true,
+                false,
+                vec![Some(1.0f32.to_bits())],
+            ),
+            (
+                "atom.global.add.f32 %f2, [%rd0], %f0;",
+                AtomOp::FAddFtz,
+                true,
+                true,
+                vec![Some(1.0f32.to_bits())],
+            ),
+            (
+                "red.global.add.f32 [%rd0], %f0;",
+                AtomOp::FAddFtz,
+                false,
+                false,
+                vec![Some(1.0f32.to_bits())],
+            ),
+            (
+                "atom.global.add.v2.f32 {%f2,%f3}, [%rd0], {%f0,%f1};",
+                AtomOp::FAddFtz,
+                true,
+                true,
+                vec![Some(1.0f32.to_bits()), Some(10.0f32.to_bits())],
+            ),
+            (
+                "red.global.add.v2.f32 [%rd0], {%f0,%f1};",
+                AtomOp::FAddFtz,
+                false,
+                false,
+                vec![Some(1.0f32.to_bits()), Some(10.0f32.to_bits())],
+            ),
+            (
+                "atom.global.add.noftz.bf16x2 %r0, [%rd0], 1092632448;",
+                AtomOp::AddBf16,
+                true,
+                true,
+                vec![None, None],
+            ),
+            (
+                "atom.global.add.f64 %rd1, [%rd0], 0d3ff0000000000000;",
+                AtomOp::FAdd64,
+                true,
+                false,
+                vec![None],
+            ),
+        ] {
+            let (machine, findings) = run_logged(machine(text, acquire));
+            assert!(findings.is_empty(), "{text}: {findings:?}");
+            let log = machine.wlog.0.as_ref().unwrap();
+            assert_eq!(log.strong.len(), operands.len() * 2, "{text}");
+            for (component, expected) in operands.iter().enumerate() {
+                let accesses: Vec<_> = log
+                    .strong
+                    .iter()
+                    .filter(|access| {
+                        access.lo == component as u64 * if op == AtomOp::AddBf16 { 2 } else { 4 }
+                    })
+                    .collect();
+                assert_eq!(accesses.len(), 2, "{text}: component{component}");
+                assert!(accesses.iter().any(|access| access.write));
+                assert!(accesses.iter().any(|access| !access.write));
+                if op == AtomOp::AddBf16 {
+                    let write = accesses.iter().find(|access| access.write).unwrap();
+                    assert_eq!(write.hi - write.lo, 2);
+                    assert_eq!(
+                        write.val,
+                        if component == 0 {
+                            vec![0x80, 0x3f]
+                        } else {
+                            vec![0x20, 0x41]
+                        }
+                    );
+                }
+                for access in accesses {
+                    assert_eq!(access.fadd, *expected, "{text}: component{component}");
+                    let Some((actual_op, actual_result, actual_acquire, _)) = access.rmw else {
+                        panic!("actual atomic access lost its classification");
+                    };
+                    assert_eq!(
+                        (actual_op, actual_result, actual_acquire),
+                        (op, result_used, acquire)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cancelled_integer_atomic_returns_require_defined_inputs_and_memory() {
+        let text = "atom.global.add.u32 %r0, [%rd0], 7; sub.u32 %r0, %r0, %r0;";
+        for undefined in [None, Some(0usize), Some(3usize)] {
+            let mut input = machine(text, false);
+            if let Some(byte) = undefined {
+                input.gmem[0].sh.get_mut(byte).undef = true;
+            }
+            let (finished, _) = run_logged(input);
+            let log = finished.wlog.0.as_ref().unwrap();
+            assert_eq!(log.strong.len(), 2);
+            for access in &log.strong {
+                assert_eq!(access.rmw.unwrap().1, undefined.is_some());
+            }
+        }
+        for text in [
+            "atom.global.add.u32 %r0, [%rd0], %r0; sub.u32 %r0, %r0, %r0;",
+            "atom.global.add.u32 %r0, [%rd0], 7; add.u32 %r0, %r0, 1;",
+            "atom.global.add.u32 %r0, [%rd0], 7; sub.u32 %r0, %r0, 7;",
+        ] {
+            let (finished, findings) = run_logged(machine(text, false));
+            assert_eq!(findings.is_empty(), !text.contains("], %r0;"));
+            assert!(finished
+                .wlog
+                .0
+                .as_ref()
+                .unwrap()
+                .strong
+                .iter()
+                .all(|access| access.rmw.unwrap().1));
+        }
+    }
+
+    #[test]
+    fn packed_ticket_exclusion_keeps_original_instruction_identity_for_every_half_and_lane() {
+        let (machine, findings) =
+            run_logged(crate::atomic_packed_tests::machine_with_shape(false, 2, 2));
+        assert!(findings.is_empty(), "{findings:?}");
+        let log = machine.wlog.0.as_ref().unwrap();
+        assert_eq!(log.strong.len(), 16);
+        for thread in 0..4 {
+            for offset in [0, 2] {
+                let accesses: Vec<_> = log
+                    .strong
+                    .iter()
+                    .filter(|access| access.ev.actor == thread && access.lo == offset)
+                    .collect();
+                assert_eq!(accesses.len(), 2);
+                for access in accesses {
+                    assert_eq!(access.hi - access.lo, 2);
+                    assert!(matches!(
+                        access.rmw,
+                        Some((AtomOp::AddBf16, true, false, _))
+                    ));
+                    assert!(matches!(
+                        machine.k.code[access.ev.pc as usize].op,
+                        Op::Atom {
+                            op: AtomOp::AddBf16x2,
+                            bytes: 4,
+                            ..
+                        }
+                    ));
+                }
+            }
+        }
+        let tickets =
+            super::ticket::analyze(&machine, log, &Default::default(), &Default::default());
+        assert!(tickets.words.is_empty(), "{:?}", tickets.words);
+    }
+
+    #[test]
+    fn unsupported_atomic_width_records_no_access() {
+        let mut machine = machine(
+            "atom.global.add.noftz.bf16x2 %r0, [%rd0], 1065369472;",
+            false,
+        );
+        for instruction in &mut Arc::make_mut(&mut machine.k).code {
+            if let Op::Atom { bytes, .. } = &mut instruction.op {
+                *bytes = 8;
+            }
+        }
+        let (machine, findings) = run_logged(machine);
+        assert!(!findings.is_empty());
+        assert!(machine.wlog.0.as_ref().unwrap().strong.is_empty());
     }
 }

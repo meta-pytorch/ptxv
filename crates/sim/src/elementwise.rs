@@ -1529,6 +1529,29 @@ mod tests {
     }
 
     #[test]
+    fn leaves_above_255_remain_distinct() {
+        let mut state = NumState::default();
+        let mut leaves = Vec::new();
+        for index in 0..=256 {
+            state.nodes.push(crate::num::Node {
+                kind: NodeKind::Input((0, index)),
+                hw: 0,
+                exact: vec![],
+                err: vec![],
+                pc: 0,
+            });
+            let extracted = tree(&state, index as u32, &mut leaves, 0).unwrap();
+            let mut dependencies = Vec::new();
+            extracted.leaves(&mut dependencies);
+            assert_eq!(dependencies, vec![index as usize]);
+            assert!(matches!(extracted.bind(index as usize), ETree::X));
+            if index == 256 {
+                assert!(matches!(extracted.bind(0), ETree::K(0)));
+            }
+        }
+    }
+
+    #[test]
     fn ulps_cross_zero() {
         assert_eq!(EType::F32.ulps_between(0x0000_0000, 0x8000_0000), 1);
         assert_eq!(EType::F32.ulps_between(0x0000_0001, 0x8000_0001), 3);

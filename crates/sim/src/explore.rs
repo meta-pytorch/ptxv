@@ -29,6 +29,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use ptxv_memory_write::cache;
 use serde::Serialize;
 
 use crate::machine::*;
@@ -44,6 +45,12 @@ pub enum Action {
         warp: u32,
         pc: u32,
         leader: Option<usize>,
+    },
+    AtomicComponent {
+        warp: u32,
+        pc: u32,
+        thread: usize,
+        component: ptxv_memory_write::atomic_components::Component,
     },
     Async(usize),
     /// Launch a CTA that has not launched (E-CLC).
@@ -132,6 +139,55 @@ impl Machine {
         let mut out = Vec::new();
         for (w, pc, members) in self.splits() {
             if self.split_enabled(&members, pc) {
+                if let Some(mut choices) = self.atomic_component_choices(w, pc, &members) {
+                    if self.atomic_scalar_supported(pc)
+                        && self.num.is_none()
+                        && !self.wlog.is_on()
+                        && self.perm.is_none()
+                        && self.gown.is_none()
+                        && self.ring.is_none()
+                        && self.prov.is_none()
+                        && self.l1.is_none()
+                        && self.fill.is_none()
+                    {
+                        if let Some((kernel, classes)) = &self.dead_atomic_lanes {
+                            if Arc::ptr_eq(kernel, &self.k) {
+                                let mask = choices.iter().fold(0, |mask, (thread, _)| {
+                                    mask | (1 << self.threads[*thread].lane)
+                                });
+                                let fixed: Vec<_> = self
+                                    .dead_probe
+                                    .iter()
+                                    .flat_map(|reads| reads.iter())
+                                    .filter(|(thread, _)| (*thread as usize) < self.threads.len())
+                                    .map(|(thread, _)| &self.threads[*thread as usize])
+                                    .filter(|thread| thread.warp == w)
+                                    .map(|thread| (0, thread.lane))
+                                    .collect();
+                                let representatives =
+                                    crate::elect_lanes::candidates(Some(classes), mask, &fixed);
+                                choices.retain(|(thread, _)| {
+                                    representatives.contains(&self.threads[*thread].lane)
+                                });
+                            }
+                        }
+                    }
+                    for (thread, component) in choices {
+                        out.push((
+                            Action::AtomicComponent {
+                                warp: w,
+                                pc,
+                                thread,
+                                component,
+                            },
+                            format!(
+                                "warp {w} t{thread} atomic {component:?} at {}",
+                                self.k.describe(pc as usize)
+                            ),
+                        ));
+                    }
+                    continue;
+                }
                 let sdesc = d!(
                     "warp {w} [{}] runs from {}",
                     lanes(self, &members),
@@ -354,15 +410,25 @@ impl Machine {
     }
 
     pub fn apply(&mut self, a: &Action) {
+        let recording = self.begin_action_effects();
         match a {
             Action::Split { warp, pc, leader } => {
                 self.elect_choice = *leader;
                 self.step_split(*warp, *pc);
                 self.elect_choice = None;
             }
+            Action::AtomicComponent {
+                warp,
+                pc,
+                thread,
+                component,
+            } => self.step_atomic_component(*warp, *pc, *thread, *component),
             Action::Async(i) => self.complete_async(*i),
             Action::Launch(c) => self.launch_unit(*c),
             Action::Clc(i, v) => self.complete_clc(*i, *v),
+        }
+        if recording {
+            self.finish_action_effects(false);
         }
     }
 
@@ -1330,9 +1396,10 @@ pub fn clc_eager(m0: Machine) -> Machine {
     // The deterministic run of `run_once`, stopped at the first try_cancel (a faulting step
     // may repeat forever) or after a step budget (then: lazy, the safe default).
     let mut probe = m.clone();
-    probe.fp = None;
+    probe.set_footprint(None);
     let mut sched = DetSched::default();
     let mut faults = FaultLoop::default();
+    let mut delivery = FindingDelivery::default();
     for _ in 0..50_000_000u64 {
         let Some(a) = sched.pick(&probe) else {
             // Eager only if the run ended with every thread exited: a deadlock or a stuck run
@@ -1345,16 +1412,17 @@ pub fn clc_eager(m0: Machine) -> Machine {
         };
         probe.apply(&a);
         // A step that faults forever: undecided, so lazy (the safe default).
-        if faults.repeats(&probe.findings).is_some() {
+        if faults.repeats(delivery.fresh(&probe)).is_some() {
             return m0;
         }
-        if probe
-            .findings
-            .drain(..)
+        if delivery
+            .fresh(&probe)
+            .iter()
             .any(|f| f.msg.contains("E-CLC eager launch"))
         {
             return m0;
         }
+        delivery.keep_context(&mut probe);
     }
     m0
 }
@@ -1371,7 +1439,9 @@ fn has_clc(m: &Machine) -> bool {
 /// The CTA an action belongs to.
 fn action_cta(m: &Machine, a: &Action) -> Option<u16> {
     match a {
-        Action::Split { warp, .. } => m.threads.iter().find(|t| t.warp == *warp).map(|t| t.cta),
+        Action::Split { warp, .. } | Action::AtomicComponent { warp, .. } => {
+            m.threads.iter().find(|t| t.warp == *warp).map(|t| t.cta)
+        }
         Action::Async(i) => Some(m.threads[m.pending[*i].issuer as usize].cta),
         Action::Launch(_) | Action::Clc(..) => None,
     }
@@ -1412,8 +1482,6 @@ fn cta_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)> 
 ///   plain-memory and async-issue operations only, whose conflicts are races found by vector
 ///   clocks in either order. (With other splits of the warp live, moving its pc could change
 ///   which splits merge, so it is not independent of them.)
-/// - a whole-warp plain `mbarrier.arrive` that cannot complete the phase, in a kernel without
-///   counted arrivals;
 /// - the completion of a TMA store or of an MMA (data movement only).
 ///
 /// One such action alone is an ample set; the state graph is acyclic, so no cycle proviso.
@@ -1453,16 +1521,24 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
             // Nor at a barrier more threads than its count may still arrive at (E-BAR-OVER):
             // which threads share a generation then depends on arrival order. Threads that
             // reach it only through an all-thread barrier do not count (E-BAR-CUT).
-            if matches!(
-                op,
-                ptxv_ir::Op::ClusterArrive { .. } | ptxv_ir::Op::ClusterWait
-            ) || matches!(op, ptxv_ir::Op::BarSync { arrive: false, .. })
-                && !m
-                    .k
-                    .code
-                    .iter()
-                    .any(|i| matches!(i.op, ptxv_ir::Op::BarSync { arrive: true, .. }))
-                && !bar_spills(m, *warp, *pc)
+            if matches!(op, ptxv_ir::Op::ClusterWait)
+                || matches!(op, ptxv_ir::Op::ClusterArrive { .. })
+                    && (!matches!(op, ptxv_ir::Op::ClusterArrive { release: true, .. })
+                        || !m.observes_barrier_memory()
+                        || !m.pending.iter().any(|o| {
+                            let issuer = &m.threads[o.issuer as usize];
+                            matches!(o.kind, AsyncKind::Remote { .. })
+                                && issuer.warp == *warp
+                                && issuer.pc == *pc
+                                && issuer.st == St::Run
+                        }))
+                || matches!(op, ptxv_ir::Op::BarSync { arrive: false, .. })
+                    && !m
+                        .k
+                        .code
+                        .iter()
+                        .any(|i| matches!(i.op, ptxv_ir::Op::BarSync { arrive: true, .. }))
+                    && !bar_spills(m, *warp, *pc)
             {
                 return true;
             }
@@ -1479,11 +1555,16 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                         th.warp == *warp && th.pc == *pc && th.st == St::Run
                     })
                     .collect();
-                if !m.pending.iter().any(|o| split.contains(&o.issuer)) {
+                if !m.pending.iter().any(|o| split.contains(&o.issuer))
+                    && (!m.observes_barrier_memory()
+                        || split
+                            .iter()
+                            .all(|&t| m.threads[t as usize].cp_pending.is_empty()))
+                {
                     return true;
                 }
             }
-            if !op.is_visible()
+            if !m.scheduling_visible(op)
                 && std::env::var("PTXV_NO_EXIT_BOUND").is_err()
                 && exit_bound(m, *warp, *pc)
             {
@@ -1528,7 +1609,7 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                 .all(|t| t.pc == *pc && t.st == St::Run);
             // Not whole, but the rest of the warp is parked at a BSYNC only this split releases.
             let whole_rel = !whole && whole_or_parked(m, *warp, *pc);
-            if whole_rel && !op.is_visible() {
+            if whole_rel && !m.scheduling_visible(op) {
                 return true;
             }
             let members = || wt.clone().map(|i| i as u32);
@@ -1539,74 +1620,19 @@ fn local_ample(m: &Machine, acts: Vec<(Action, String)>) -> Vec<(Action, String)
                 && (off()
                     || match op {
                         // Enabled once its own stores completed; nothing can disable it.
-                        ptxv_ir::Op::BulkWait { .. } => true,
+                        ptxv_ir::Op::BulkWait { cp, .. } => !*cp || !m.observes_barrier_memory(),
                         // Exit conflicts only with the completion of the exiting threads' own
                         // async operations (async-after-exit).
                         ptxv_ir::Op::Exit => {
                             !m.pending.iter().any(|o| members().any(|t| t == o.issuer))
+                                && (!m.observes_barrier_memory()
+                                    || members()
+                                        .all(|t| m.threads[t as usize].cp_pending.is_empty()))
                         }
                         ptxv_ir::Op::Elect { .. } => false,
-                        // A plain arrival that cannot complete the phase only decrements the
-                        // pending count: it commutes with the other arrivals and changes nothing
-                        // a try_wait reads. Not in a kernel with counted arrivals (`mbarrier
-                        // .arrive [a], count`): with two pending, a count-2 arrival completes
-                        // the phase alone, or overshoots after a count-1 one.
-                        //
-                        // Nor once an over-arrival was seen (`Machine::arv_over`, bit 0): with
-                        // more arrivals than expected before a completion that orders them,
-                        // arrivals into one phase do not commute (the one left over lands in
-                        // the next phase). The search then runs again without this rule
-                        // (`explore_one_model`); an over-arrival that this rule hides in one
-                        // order shows up in the order it picks (the arrivals it moves first
-                        // leave another one over).
-                        ptxv_ir::Op::MbarArrive {
-                            addr,
-                            tx: None,
-                            remote: false,
-                            count,
-                            ..
-                        } if !m.k.code.iter().any(|i| {
-                            matches!(i.op, ptxv_ir::Op::MbarArrive { count: Some(_), .. })
-                        }) && m
-                            .arv_over
-                            .as_ref()
-                            .is_some_and(|f| f.load(Ordering::Relaxed) & 1 == 0) =>
-                        {
-                            let active: Vec<usize> = members()
-                                .map(|t| t as usize)
-                                .filter(|&t| m.threads[t].pc == *pc && m.prd(t, guard))
-                                .collect();
-                            let mut per: std::collections::BTreeMap<(u16, u32), u32> =
-                                Default::default();
-                            let mut ok = true;
-                            for &t in &active {
-                                let n = match count {
-                                    Some(c) => m.rd(t, c).map(|n| n as u32),
-                                    None => Ok(1),
-                                };
-                                match (
-                                    n,
-                                    m.addr(t, addr)
-                                        .and_then(|a| m.resolve(t, ptxv_ir::Space::Shared, a, 8)),
-                                ) {
-                                    (Ok(n), Ok(crate::exec::Loc::Shared { cta, off })) => {
-                                        *per.entry((cta, off)).or_insert(0) += n
-                                    }
-                                    _ => ok = false,
-                                }
-                            }
-                            let ok = ok
-                                && per
-                                    .iter()
-                                    .all(|(k, n)| m.mbars.get(k).is_some_and(|b| b.pending > *n));
-                            if ok {
-                                if let Some(f) = &m.arv_over {
-                                    f.fetch_or(2, Ordering::Relaxed);
-                                }
-                            }
-                            ok
-                        }
-                        op => !op.is_visible(),
+                        // Even plain arrivals can cross a generation before this action
+                        // runs. A local pending-count check cannot certify their ample set.
+                        op => !m.scheduling_visible(op),
                     })
         }
         // ASSUME(E-PDL, E-CLC): launching a CTA whose gate is open (it is enabled) commutes with
@@ -1692,6 +1718,29 @@ fn whole_or_parked(m: &Machine, warp: u32, pc: u32) -> bool {
     run && (!parked || bsync_parked(m, warp).is_some())
 }
 
+struct ExitPredicateReader<'a> {
+    machine: &'a Machine,
+    members: &'a [usize],
+    wrote_predicate: bool,
+}
+
+impl ptxv_ir::predicate_read::KnownPredicate for ExitPredicateReader<'_> {
+    fn read(&mut self, register: ptxv_ir::Reg) -> Option<bool> {
+        if self.wrote_predicate {
+            return None;
+        }
+        let predicate = ptxv_ir::Pred {
+            reg: Some(register),
+            neg: false,
+        };
+        let value = self.machine.prd(self.members[0], predicate);
+        self.members
+            .iter()
+            .all(|&thread| self.machine.prd(thread, predicate) == value)
+            .then_some(value)
+    }
+}
+
 /// Is the split of `warp` at `pc` on its way out: does every path its threads can take from
 /// `pc` reach an unguarded exit through invisible instructions only (visible ones guarded off
 /// in every member are no-ops), writing no warp-shared (uniform) register, with none of the
@@ -1713,6 +1762,8 @@ fn exit_bound(m: &Machine, warp: u32, pc: u32) -> bool {
         })
         .collect();
     if members.is_empty()
+        || m.observes_barrier_memory()
+            && members.iter().any(|&t| !m.threads[t].cp_pending.is_empty())
         || m.pending
             .iter()
             .any(|o| members.contains(&(o.issuer as usize)))
@@ -1726,15 +1777,12 @@ fn exit_bound(m: &Machine, warp: u32, pc: u32) -> bool {
             return false;
         };
         let g = inst.guard;
-        // The guard's value in every member: Some(on) when uniform and still current.
-        let on = if g.is_always() {
-            Some(true)
-        } else if wrote_pred {
-            None
-        } else {
-            let v = m.prd(members[0], g);
-            members.iter().all(|&t| m.prd(t, g) == v).then_some(v)
+        let mut reader = ExitPredicateReader {
+            machine: m,
+            members: &members,
+            wrote_predicate: wrote_pred,
         };
+        let on = ptxv_ir::analysis_knowledge::predicate(&mut reader, m.k.front, g);
         let Some(on) = on else {
             return false;
         };
@@ -1757,7 +1805,7 @@ fn exit_bound(m: &Machine, warp: u32, pc: u32) -> bool {
             }
             // Control transfers we do not follow, and warp-collective operations (they read
             // the other lanes, which other splits move).
-            op if op.is_visible()
+            op if m.scheduling_visible(op)
                 || op.is_warp_aligned()
                 || matches!(
                     op,
@@ -1777,6 +1825,14 @@ fn exit_bound(m: &Machine, warp: u32, pc: u32) -> bool {
                 return false;
             }
             op => {
+                let reads_private =
+                    ptxv_ir::analysis_knowledge::direct_reads_are_thread_private(op)
+                        .unwrap_or_else(|| {
+                            ptxv_ir::analysis_knowledge::reads_are_thread_private(&op.src_regs())
+                        });
+                if !reads_private {
+                    return false;
+                }
                 for r in op.dst_regs() {
                     match r.file {
                         File::UR | File::UP => return false,
@@ -1801,7 +1857,7 @@ enum Ent {
 
 fn action_ent(m: &Machine, a: &Action) -> Option<Ent> {
     match a {
-        Action::Split { warp, .. } => Some(Ent::Warp(*warp)),
+        Action::Split { warp, .. } | Action::AtomicComponent { warp, .. } => Some(Ent::Warp(*warp)),
         Action::Async(i) => Some(Ent::Async(m.threads[m.pending[*i].issuer as usize].warp)),
         Action::Launch(_) | Action::Clc(..) => None,
     }
@@ -1955,86 +2011,81 @@ fn cfg_succ(
     fold: &[Option<bool>],
     rets: &[Vec<usize>],
 ) -> Vec<Vec<usize>> {
-    use ptxv_ir::Op;
-    let n = code.len();
-    code.iter()
-        .enumerate()
-        .map(|(pc, i)| {
-            let next = (pc + 1 < n).then_some(pc + 1);
-            let always = i.guard.is_always();
-            match &i.op {
-                Op::ClusterWait if cut & 1 != 0 => vec![],
-                Op::BarSync {
-                    count: None,
-                    arrive: false,
-                    ..
-                } if cut & 2 != 0 && always => vec![],
-                Op::Bra {
-                    target,
-                    tid0_falls: false,
-                    div: None,
-                    ..
-                } if always => vec![*target],
-                Op::Bra { target, .. } if fold.get(pc).copied().flatten().is_some() => {
-                    if fold[pc] == Some(true) {
-                        vec![*target]
-                    } else {
-                        next.into_iter().collect()
-                    }
-                }
-                Op::Bra { target, .. } => [Some(*target), next].into_iter().flatten().collect(),
-                Op::Call { target } => [Some(*target), next].into_iter().flatten().collect(),
-                // (No table: anywhere.)
-                Op::Ret { .. } if always => {
-                    rets.get(pc).cloned().unwrap_or_else(|| (0..n).collect())
-                }
-                Op::Ret { .. } => rets
-                    .get(pc)
-                    .cloned()
-                    .unwrap_or_else(|| (0..n).collect())
-                    .into_iter()
-                    .chain(next)
-                    .collect(),
-                Op::Brx { targets, .. } => targets.clone(),
-                Op::Exit | Op::Trap { .. } if always => vec![],
-                _ => next.into_iter().collect(),
-            }
-        })
-        .collect()
+    ptxv_ir::control_flow::graph_successors(code, cut, fold, rets)
 }
 
 /// Static control flow for `Machine::bar_oversub` (built once per machine).
-#[derive(Clone, Debug, Default, PartialEq)]
+///
+/// Semantic inputs remain immutable even when the outer config is uniquely owned:
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use ptxv_sim::explore::BarCfg;
+/// let mut config = Arc::new(BarCfg::default());
+/// Arc::get_mut(&mut config).unwrap().reach.push(1);
+/// ```
+#[derive(Clone, Debug, Default)]
 pub struct BarCfg {
-    /// Per pc, the named barriers (bit = id; all bits for a non-immediate id or an indirect
-    /// call) that a thread at that pc may still arrive at (`bar.sync` / `bar.arrive`).
-    pub reach: Vec<u32>,
-    succ: Vec<Vec<usize>>,
-    /// Registers each pc writes.
-    dsts: Vec<Vec<ptxv_ir::Reg>>,
-    /// Branches decided by launch constants (`const_guards`).
-    pub fold: Vec<Option<bool>>,
-    /// Where each return may land (`ret_table`).
-    pub rets: Vec<Vec<usize>>,
-    /// Named barriers (bit = id; all bits for a non-immediate id) some `bar.arrive` of which
-    /// may be followed by another arrival there (`exec.rs` `Op::BarSync`, E-BAR-ARRIVE).
-    pub arv_repeat: u32,
-    /// Named barriers (bit = id; all bits for a non-immediate id) whose `bar.sync` /
-    /// `bar.arrive` sites do not all name the same immediate thread count: the first arrival
-    /// of a generation fixes its count, so arrival order matters there (E-BAR-ARRIVE).
-    pub arv_mixed: u32,
+    program: crate::bar_program::BarProgram,
     /// Peeks run as blocking waits (`peekwait_set`): filled in by the explorer only.
     pub peekwait: BTreeSet<u32>,
     /// Peeks run as failed tests (`peekskip_set`): peek pc -> (pcs where its window ends,
     /// the blocking waits it skips). Filled in by the explorer only.
     pub peekskip: BTreeMap<u32, (BTreeSet<u32>, BTreeSet<u32>)>,
-    /// Some `bar.sync` / `bar.arrive` names its barrier with a register (E-BAR-OVER's
-    /// value-tracking walk is needed only then).
-    pub regid: bool,
-    /// Named barriers (bit = id) that are all-thread wait barriers at every site: each
-    /// `bar.sync` / `bar.arrive` naming the id is an immediate-id `bar.sync` / `bar.red`
-    /// without a thread count, and no site names a barrier by register (ASSUME(E-BAR-CUT)).
-    pub cut: u32,
+}
+
+impl PartialEq for BarCfg {
+    fn eq(&self, other: &Self) -> bool {
+        self.reach == other.reach
+            && self.succ == other.succ
+            && self.program.dsts() == other.program.dsts()
+            && self.fold == other.fold
+            && self.rets == other.rets
+            && self.arv_repeat == other.arv_repeat
+            && self.arv_mixed == other.arv_mixed
+            && self.peekwait == other.peekwait
+            && self.peekskip == other.peekskip
+            && self.regid == other.regid
+            && self.cut == other.cut
+    }
+}
+
+impl std::ops::Deref for BarCfg {
+    type Target = crate::bar_program::Inputs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.program
+    }
+}
+
+impl BarCfg {
+    /// Rebuild tables and their graph under a fresh identity, discarding explorer annotations.
+    #[doc(hidden)]
+    pub fn with_control_flow_tables(&self, fold: Vec<Option<bool>>, rets: Vec<Vec<usize>>) -> Self {
+        let builder =
+            crate::bar_program::ProgramBuilder::new(Arc::new(self.kernel().clone()), fold, rets);
+        let arv_repeat = builder.repeated_arrivals();
+        Self {
+            program: crate::bar_program::BarProgram::new(
+                builder,
+                crate::bar_program::Flags {
+                    arv_repeat,
+                    arv_mixed: self.arv_mixed,
+                    regid: self.regid,
+                    cut: self.cut,
+                },
+            ),
+            peekwait: BTreeSet::new(),
+            peekskip: BTreeMap::new(),
+        }
+    }
+
+    fn kernel(&self) -> &ptxv_ir::Kernel {
+        self.program.kernel()
+    }
+
+    fn cache_key(&self, pc: u32, bit: u32) -> cache::CacheKey {
+        self.program.cache_key(pc, bit)
+    }
 }
 
 /// Where each return may land (ASSUME(E-RET)), per pc (empty for other instructions): right
@@ -2081,11 +2132,17 @@ pub(crate) fn ret_table(k: &ptxv_ir::Kernel) -> Vec<Vec<usize>> {
                 Op::Bra {
                     target,
                     tid0_falls: false,
+                    cond: None,
                     div: None,
                     ..
                 } if always => stack.push(*target),
                 Op::Bra { target, .. } => stack.extend([*target, pc + 1]),
-                Op::Brx { targets, .. } => stack.extend(targets),
+                Op::Brx { targets, .. } => {
+                    stack.extend(targets);
+                    if !always {
+                        stack.push(pc + 1);
+                    }
+                }
                 Op::Exit | Op::Trap { .. } if always => {}
                 _ => stack.push(pc + 1),
             }
@@ -2096,6 +2153,17 @@ pub(crate) fn ret_table(k: &ptxv_ir::Kernel) -> Vec<Vec<usize>> {
         v.dedup();
     }
     out
+}
+
+struct ConstantBank<'a> {
+    machine: &'a Machine,
+    thread: usize,
+}
+
+impl ptxv_ir::guard_certificate::Constants for ConstantBank<'_> {
+    fn read(&self, offset: u32, bytes: u8) -> Option<u64> {
+        self.machine.cbank(self.thread, offset, bytes).ok()
+    }
 }
 
 /// ASSUME(E-CONST-BRA): branches decided by launch constants. Per pc, `Some(v)` when the
@@ -2109,12 +2177,10 @@ pub(crate) fn ret_table(k: &ptxv_ir::Kernel) -> Vec<Vec<usize>> {
 /// differs). `PTXV_NO_CONST_BRA=1` turns it off. (CUTLASS: `c[0x0][0x36c] == 1` picks the
 /// cluster barrier over `bar.sync 0` after the mbarrier inits.)
 pub(crate) fn const_guards(m: &Machine, rets: &[Vec<usize>]) -> Vec<Option<bool>> {
-    use ptxv_ir::Cmp;
-    use ptxv_ir::File;
     use ptxv_ir::Op;
-    use ptxv_ir::Pred;
     use ptxv_ir::Reg;
-    use ptxv_ir::Val;
+    use ptxv_ir::guard_certificate;
+    use ptxv_ir::guard_certificate::Fact;
     let code = &m.k.code;
     let n = code.len();
     // Per pc: None = no grid reaches it; Some(None) = differs or unknown; Some(Some(v)).
@@ -2131,24 +2197,9 @@ pub(crate) fn const_guards(m: &Machine, rets: &[Vec<usize>]) -> Vec<Option<bool>
         else {
             continue;
         };
-        let val = |env: &Env, v: &Val| -> Option<u64> {
-            match v {
-                Val::Imm(x) => Some(*x),
-                Val::Const(off, b) => m.cbank(t0, *off, *b).ok(),
-                Val::Reg(r, 1) if r.file != File::V => env.get(r).copied(),
-                Val::Reg(r, _) if r.file == File::V => env.get(r).copied(),
-                _ => None,
-            }
-        };
-        let pred = |env: &Env, p: Pred| -> Option<bool> {
-            let Some(r) = p.reg else {
-                return Some(!p.neg);
-            };
-            // SASS PT / UPT read true; a `.SIGN` register its bit 31 (`Reg::pred_bit`).
-            if r.is_pt(m.k.front) {
-                return Some(!p.neg);
-            }
-            env.get(&r).map(|&v| r.pred_bit(v) ^ p.neg)
+        let constants = ConstantBank {
+            machine: m,
+            thread: t0,
         };
         let mut st: Vec<Option<Env>> = vec![None; n];
         let entry = g.entry as usize;
@@ -2157,85 +2208,33 @@ pub(crate) fn const_guards(m: &Machine, rets: &[Vec<usize>]) -> Vec<Option<bool>
         }
         st[entry] = Some(Env::new());
         let mut work = vec![entry];
-        let mut guards: Vec<Option<Option<bool>>> = vec![None; n];
         while let Some(pc) = work.pop() {
             let env = st[pc].clone().unwrap();
             let i = &code[pc];
-            let gv = pred(&env, i.guard);
-            guards[pc] = Some(gv);
-            // The register state after `pc`.
-            let mut next = env.clone();
-            let dsts = i.op.dst_regs();
-            let mut set: Option<(Reg, u64)> = None;
-            match &i.op {
-                Op::Mov { d, a } => {
-                    let ok = match a {
-                        Val::Const(_, b) => d.file == File::V || *b <= 4,
-                        Val::Reg(_, k) => d.file == File::V || *k == 1,
-                        _ => true,
-                    };
-                    if let (true, Some(v)) = (ok, val(&env, a)) {
-                        let v = if d.file == File::V {
-                            v
-                        } else {
-                            v & 0xffff_ffff
-                        };
-                        set = Some((*d, v));
-                    }
-                }
-                Op::Setp {
-                    d,
-                    cmp,
-                    bits,
-                    a,
-                    b,
-                    and,
-                    or,
-                    ex: None,
-                    xor: false,
-                } => {
-                    if let (Some(x), Some(y), Some(c)) =
-                        (val(&env, a), val(&env, b), pred(&env, *and))
-                    {
-                        let w = (*bits as u32).clamp(1, 64);
-                        let mk = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
-                        let (x, y) = (x & mk, y & mk);
-                        let (sx, sy) = (
-                            ((x << (64 - w)) as i64) >> (64 - w),
-                            ((y << (64 - w)) as i64) >> (64 - w),
-                        );
-                        let r = match cmp {
-                            Cmp::Eq => x == y,
-                            Cmp::Ne => x != y,
-                            Cmp::LtU => x < y,
-                            Cmp::LeU => x <= y,
-                            Cmp::GtU => x > y,
-                            Cmp::GeU => x >= y,
-                            Cmp::LtS => sx < sy,
-                            Cmp::LeS => sx <= sy,
-                            Cmp::GtS => sx > sy,
-                            Cmp::GeS => sx >= sy,
-                        };
-                        set = Some((*d, (if *or { r || c } else { r && c }) as u64));
-                    }
-                }
-                _ => {}
-            }
-            for r in &dsts {
-                // A write under a guard that may be off keeps the old value as a possibility.
-                match (gv, set) {
-                    (Some(false), _) => {}
-                    (Some(true), Some((d, v))) if d == *r => {
-                        next.insert(d, v);
-                    }
-                    (None, Some((d, v))) if d == *r && env.get(&d) == Some(&v) => {}
-                    _ => {
-                        next.remove(r);
-                    }
+            let facts: Vec<_> = env
+                .iter()
+                .map(|(register, value)| Fact {
+                    register: *register,
+                    value: *value,
+                })
+                .collect();
+            let context = guard_certificate::Evaluation {
+                front: m.k.front,
+                instruction: i,
+                facts: &facts,
+                constants: &constants,
+            };
+            let gv = guard_certificate::decision(m.k.front, &facts, i.guard);
+            let mut next = Env::new();
+            for register in env.keys() {
+                if let Some(value) = guard_certificate::post_value(context, *register) {
+                    next.insert(*register, value);
                 }
             }
-            if gv == Some(false) {
-                next = env.clone();
+            if let Some(fact) = guard_certificate::assignment(m.k.front, i, &facts, &constants) {
+                if let Some(value) = guard_certificate::post_value(context, fact.register) {
+                    next.insert(fact.register, value);
+                }
             }
             let fall = (pc + 1 < n).then_some(pc + 1);
             let succ: Vec<(usize, bool)> = match &i.op {
@@ -2271,7 +2270,11 @@ pub(crate) fn const_guards(m: &Machine, rets: &[Vec<usize>]) -> Vec<Option<bool>
                     .map(|&q| (q, true))
                     .chain(fall.map(|f| (f, true)))
                     .collect(),
-                Op::Brx { targets, .. } => targets.iter().map(|&q| (q, false)).collect(),
+                Op::Brx { targets, .. } => targets
+                    .iter()
+                    .map(|&q| (q, false))
+                    .chain(fall.filter(|_| !i.guard.is_always()).map(|q| (q, false)))
+                    .collect(),
                 Op::Exit | Op::Trap { .. } if gv == Some(true) => vec![],
                 _ => fall.map(|f| (f, false)).into_iter().collect(),
             };
@@ -2291,33 +2294,36 @@ pub(crate) fn const_guards(m: &Machine, rets: &[Vec<usize>]) -> Vec<Option<bool>
                 }
             }
         }
-        for pc in 0..n {
-            if let Some(gv) = guards[pc] {
-                out[pc] = Some(match out[pc] {
-                    None => gv,
-                    Some(prev) if prev == gv => gv,
-                    Some(_) => None,
-                });
-            }
+        let states: Vec<_> = st
+            .iter()
+            .map(|state| {
+                state.as_ref().map(|env| {
+                    env.iter()
+                        .map(|(register, value)| Fact {
+                            register: *register,
+                            value: *value,
+                        })
+                        .collect()
+                })
+            })
+            .collect();
+        let Some(guards) = guard_certificate::validate(guard_certificate::Certificate {
+            front: m.k.front,
+            code,
+            states: &states,
+            entry,
+            returns: rets,
+            constants: &constants,
+        }) else {
+            return vec![None; n];
+        };
+        if !guard_certificate::merge_rows(&mut out, &guards) {
+            return vec![None; n];
         }
     }
-    let folds: Vec<Option<bool>> = code
-        .iter()
-        .zip(out)
-        .map(|(i, g)| match (&i.op, g) {
-            (
-                Op::Bra {
-                    any: false,
-                    tid0_falls: false,
-                    cond: None,
-                    div: None,
-                    ..
-                },
-                Some(Some(v)),
-            ) if !i.guard.is_always() => Some(v),
-            _ => None,
-        })
-        .collect();
+    let Some(folds) = guard_certificate::publish(code, &out) else {
+        return vec![None; n];
+    };
     if std::env::var("PTXV_POR_DEBUG").is_ok() {
         for (pc, f) in folds.iter().enumerate() {
             if let Some(v) = f {
@@ -2338,47 +2344,8 @@ pub(crate) fn bar_cfg(m: &Machine) -> BarCfg {
     let code = &m.k.code;
     let rets = ret_table(&m.k);
     let fold = const_guards(m, &rets);
-    let succ = cfg_succ(code, 0, &fold, &rets);
-    let mut r: Vec<u32> = code
-        .iter()
-        .map(|i| match &i.op {
-            Op::BarSync {
-                id: Val::Imm(v), ..
-            } if *v < 32 => 1 << v,
-            // An indirect call may run any code.
-            Op::BarSync { .. } | Op::CallAbs { .. } => u32::MAX,
-            _ => 0,
-        })
-        .collect();
-    loop {
-        let mut changed = false;
-        for pc in (0..code.len()).rev() {
-            let m = succ[pc].iter().fold(r[pc], |a, &q| a | r[q]);
-            if m != r[pc] {
-                r[pc] = m;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let mut arv_repeat = 0u32;
-    for (pc, i) in code.iter().enumerate() {
-        if let Op::BarSync {
-            id, arrive: true, ..
-        } = &i.op
-        {
-            let bit = match id {
-                Val::Imm(v) if *v < 32 => 1u32 << v,
-                _ => u32::MAX,
-            };
-            let after = succ[pc].iter().fold(0, |a, &q| a | r[q]);
-            if after & bit != 0 {
-                arv_repeat |= bit;
-            }
-        }
-    }
+    let builder = crate::bar_program::ProgramBuilder::new(m.k.clone(), fold, rets);
+    let arv_repeat = builder.repeated_arrivals();
     let mut arv_mixed = 0u32;
     let mut counts: BTreeMap<u32, Option<u32>> = BTreeMap::new();
     for i in code {
@@ -2425,19 +2392,16 @@ pub(crate) fn bar_cfg(m: &Machine) -> BarCfg {
     }
     let cut = if any_reg { 0 } else { cut & !not_cut };
     BarCfg {
-        reach: r,
-        succ,
-        dsts: code.iter().map(|i| i.op.dst_regs()).collect(),
-        fold,
-        rets,
-        arv_repeat,
-        arv_mixed,
+        program: crate::bar_program::BarProgram::new(builder, crate::bar_program::Flags {
+            arv_repeat,
+            arv_mixed,
+            regid: code.iter().any(|i| {
+                matches!(&i.op, ptxv_ir::Op::BarSync { id, .. } if !matches!(id, ptxv_ir::Val::Imm(_)))
+            }),
+            cut,
+        }),
         peekwait: BTreeSet::new(),
         peekskip: BTreeMap::new(),
-        regid: code.iter().any(|i| {
-            matches!(&i.op, ptxv_ir::Op::BarSync { id, .. } if !matches!(id, ptxv_ir::Val::Imm(_)))
-        }),
-        cut,
     }
 }
 
@@ -2514,7 +2478,12 @@ fn reg_live_at(code: &[ptxv_ir::Inst], pc: usize, r: ptxv_ir::Reg) -> Option<usi
             }
             Op::Ret { .. } if !calls => return Some(p),
             Op::Ret { .. } => {}
-            Op::Brx { targets, .. } => work.extend(targets.iter().copied()),
+            Op::Brx { targets, .. } => {
+                work.extend(targets.iter().copied());
+                if !always {
+                    work.push(p + 1);
+                }
+            }
             Op::CallAbs { .. } => return Some(p),
             _ => work.push(p + 1),
         }
@@ -3095,6 +3064,7 @@ pub(crate) fn peekskip_set(m: &Machine) -> BTreeMap<u32, (BTreeSet<u32>, BTreeSe
 
 /// A value `Machine::thread_may_arrive` read: a predicate, or an operand.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+
 enum BarKey {
     Pred(ptxv_ir::Reg),
     Val(ptxv_ir::Val),
@@ -3106,7 +3076,7 @@ enum BarKey {
     /// (the premise for reading a uniform register's current value, `Machine::bar_uw`).
     Conv,
 }
-type BarRead = (BarKey, u64);
+type BarRead = (BarKey, Option<u64>);
 
 /// `Machine::bar_read_c`: warp-level reads (`BarKey::Uni`, `BarKey::Conv`) already made in one
 /// query of an unchanged machine, per (warp, pc, key). Every lane of a warp at one pc reads the
@@ -3116,25 +3086,6 @@ type WarpReads = std::cell::RefCell<Vec<((u32, u32, BarKey), Option<u64>)>>;
 /// `Machine::bar_uw`: the uniform registers (UR / UP) some instruction reachable from a pc
 /// writes; `None` when an indirect call is reachable (any).
 type UwSet = Option<HashSet<ptxv_ir::Reg>>;
-
-/// `Machine::bar_mw`: per pc, a bitset over the registers the region writes (`ix`).
-struct MwSets {
-    ix: HashMap<ptxv_ir::Reg, usize>,
-    at: HashMap<usize, Vec<u64>>,
-}
-
-impl MwSets {
-    /// May some walked path write `r` before `pc` (yes for a pc outside the region)?
-    fn may(&self, pc: usize, r: &ptxv_ir::Reg) -> bool {
-        let Some(set) = self.at.get(&pc) else {
-            return true;
-        };
-        match self.ix.get(r) {
-            Some(&i) => set.get(i / 64).is_some_and(|w| w >> (i % 64) & 1 == 1),
-            None => false,
-        }
-    }
-}
 
 /// E-BAR-OVER's walks per input (`Machine::thread_may_arrive_c`): a trie over the values a walk
 /// read, each key once, in the order the walk first read it. A walk is deterministic and reads
@@ -3148,14 +3099,14 @@ struct WalkTrie {
 
 enum WalkNode {
     /// The walk reads this key next; per value read (sorted), the node after it.
-    Read(BarKey, Vec<(u64, u32)>),
+    Read(BarKey, Vec<(Option<u64>, u32)>),
     /// The walk ends here with this result.
     Done(bool),
 }
 
 impl WalkTrie {
     /// The result of the walk whose reads all agree with thread `t`'s values, and those reads.
-    /// A failed read (`None`) matches nothing, as in the per-call memos.
+    /// A failed read (`None`) matches only another failed read.
     fn find(&self, m: &Machine, t: usize, wc: &WarpReads) -> Option<(bool, Vec<BarRead>)> {
         let mut n = 0usize;
         let mut path = Vec::new();
@@ -3163,7 +3114,7 @@ impl WalkTrie {
             match self.nodes.get(n)? {
                 WalkNode::Done(may) => return Some((*may, path)),
                 WalkNode::Read(k, kids) => {
-                    let v = m.bar_read_c(t, k, wc)?;
+                    let v = m.bar_read_c(t, k, wc);
                     let i = kids.binary_search_by_key(&v, |e| e.0).ok()?;
                     path.push((k.clone(), v));
                     n = kids[i].1 as usize;
@@ -3199,7 +3150,7 @@ impl WalkTrie {
                         unreachable!()
                     };
                     kids.insert(i, (*v, next));
-                    return bytes + std::mem::size_of::<(u64, u32)>();
+                    return bytes + std::mem::size_of::<(Option<u64>, u32)>();
                 }
             }
         }
@@ -3215,7 +3166,7 @@ impl WalkTrie {
         }
         self.nodes.push(WalkNode::Done(may));
         (reads.len() + 1) * std::mem::size_of::<WalkNode>()
-            + reads.len() * std::mem::size_of::<(u64, u32)>()
+            + reads.len() * std::mem::size_of::<(Option<u64>, u32)>()
     }
 }
 
@@ -3344,6 +3295,19 @@ static WALK_IDS: std::sync::LazyLock<Mutex<WalkIds>> = std::sync::LazyLock::new(
 /// `BarCfg`, and of the kernel the front and each instruction's guard and operation.
 fn walk_same(a: (&BarCfg, &ptxv_ir::Kernel), b: (&BarCfg, &ptxv_ir::Kernel)) -> bool {
     a.0 == b.0
+        && match (a.0.program.kernel_option(), b.0.program.kernel_option()) {
+            (None, None) => true,
+            (Some(left), Some(right)) => {
+                left.front == right.front
+                    && left.code.len() == right.code.len()
+                    && left
+                        .code
+                        .iter()
+                        .zip(&right.code)
+                        .all(|(x, y)| x.guard == y.guard && x.op == y.op)
+            }
+            _ => false,
+        }
         && a.1.front == b.1.front
         && a.1.code.len() == b.1.code.len()
         && a.1
@@ -3471,6 +3435,38 @@ pub fn set_bar_cut(on: Option<bool>) {
     );
 }
 
+struct WalkPredicateReader<'a> {
+    machine: &'a Machine,
+    thread: usize,
+    environment: &'a [(ptxv_ir::Reg, bool)],
+    unknown: &'a [ptxv_ir::Reg],
+    current: &'a dyn Fn(&ptxv_ir::Reg) -> bool,
+    clean: Option<&'a dyn Fn(&ptxv_ir::Reg) -> bool>,
+    used: &'a mut Vec<ptxv_ir::Reg>,
+    reads: &'a mut Vec<BarRead>,
+}
+
+impl ptxv_ir::predicate_read::KnownPredicate for WalkPredicateReader<'_> {
+    fn read(&mut self, register: ptxv_ir::Reg) -> Option<bool> {
+        if let Some(&(_, value)) = self.environment.iter().find(|entry| entry.0 == register) {
+            return Some(value);
+        }
+        if !(self.current)(&register) {
+            return None;
+        }
+        if !self.clean.is_some_and(|clean| clean(&register)) {
+            if self.unknown.contains(&register) {
+                return None;
+            }
+            self.used.push(register);
+        }
+        let key = BarKey::Pred(register);
+        let value = self.machine.bar_read(self.thread, &key);
+        self.reads.push((key, value));
+        value.map(|value| value != 0)
+    }
+}
+
 /// Is the bar.sync at `pc` an arrival at a barrier that may receive more arrivals than its
 /// count (`Machine::bar_oversub`), for any of warp `w`'s threads there? Operands that cannot
 /// be read: conservatively yes.
@@ -3575,7 +3571,7 @@ impl Machine {
                     *pc == th.pc
                         && reads
                             .iter()
-                            .all(|r| self.bar_read_c(u, &r.0, &wc) == Some(r.1))
+                            .all(|r| cache::same_observation(r.1, self.bar_read_c(u, &r.0, &wc)))
                 })
                 .map(|e| e.2);
             let may = hit.unwrap_or_else(|| {
@@ -3644,7 +3640,7 @@ impl Machine {
                     *pc == th.pc
                         && reads
                             .iter()
-                            .all(|r| self.bar_read_c(t, &r.0, &wc) == Some(r.1))
+                            .all(|r| cache::same_observation(r.1, self.bar_read_c(t, &r.0, &wc)))
                 })
                 .map(|e| e.2);
             let may = hit.unwrap_or_else(|| {
@@ -3669,9 +3665,9 @@ impl Machine {
     /// its pc that decides guarded branches and exits where it can: by predicates a
     /// comparison on the walked path set from values it can compute, or else by the thread's
     /// current predicate values. A register value is only used when no instruction in the
-    /// walked region writes it (it keeps its value while the thread stays there, and the
-    /// thread can leave only by edges walked); one found written is treated as unknown and the
-    /// walk redone.
+    /// walked region writes it and it is private to the thread; another lane can change
+    /// uniform registers even while this thread stays at the same pc. A private register
+    /// found written is treated as unknown and the walk redone.
     fn bar_read(&self, t: usize, k: &BarKey) -> Option<u64> {
         match k {
             BarKey::Pred(r) => Some(self.prd(
@@ -3748,9 +3744,9 @@ impl Machine {
                 continue;
             }
             seen[pc] = true;
-            any |= matches!(self.k.code[pc].op, Op::CallAbs { .. });
+            any |= matches!(cfg.kernel().code[pc].op, Op::CallAbs { .. });
             w.extend(
-                cfg.dsts[pc]
+                cfg.program.dsts()[pc]
                     .iter()
                     .filter(|d| matches!(d.file, File::UR | File::UP)),
             );
@@ -3803,14 +3799,8 @@ impl Machine {
     ///   and the PTX front has none.
     ///
     /// No learned footprint, round, model switch (E-POLL-ANY, peeks, leader policy, the GB300
-    /// profile) or time enters a walk otherwise; `VDEPTH` and `VSTATES` are constants. A
-    /// failed read is recorded as 0 and matches only `Some(0)`, as in the per-call memos; a
-    /// walk that read nothing there is valid for any value. Within one launch reads of one key
-    /// at one pc fail alike for every thread there, except constant-bank reads of the cluster
-    /// table, whose values are never 0 (`Machine::cbank`); so a cached result is the walk's
-    /// own for every thread it matches. A later check of the process whose kernel has the same
-    /// walk identity and another parameter layout can read 0 where a cached walk's read
-    /// failed: it reuses that walk, which knew less (conservative).
+    /// profile) or time enters a walk otherwise; `VDEPTH` and `VSTATES` are constants.
+    /// Unknown reads are recorded as `None` and only match another unknown read.
     /// `cut`: all-thread barriers (`BarCfg::cut`) at which a walked path stops when the thread
     /// arrives there (E-BAR-CUT; 0: none).
     fn thread_may_arrive_c(
@@ -3859,8 +3849,15 @@ impl Machine {
             .get(&key)
             .and_then(|tr| tr.find(self, t, wc));
         if let Some((may, rs)) = hit {
-            *reads = rs;
-            return may;
+            let identity = cache::make_key(key.0, key.1, key.2);
+            let mut replay = cache::begin_replay(identity, identity);
+            for (recorded, observation) in &rs {
+                replay = cache::observe(replay, *observation, self.bar_read_c(t, recorded, wc));
+            }
+            if let Some(may) = cache::finish_replay(replay, may) {
+                *reads = rs;
+                return may;
+            }
         }
         let may = self.thread_may_arrive_walk(t, bit, cut, values, reads);
         // One entry per value read (a walk reads the same register on many paths).
@@ -3912,8 +3909,8 @@ impl Machine {
         // ids are all immediates keep the plain walk (same answers there, cheaper memo).
         let regid = self.bar_cfg.regid;
         // (`bar_ucur`'s premise, read once per walk.)
-        if self.k.front == ptxv_ir::Front::Sass {
-            let c = self.bar_read(t, &BarKey::Conv).unwrap_or(0);
+        if self.bar_cfg.kernel().front == ptxv_ir::Front::Sass {
+            let c = self.bar_read(t, &BarKey::Conv);
             reads.push((BarKey::Conv, c));
         }
         if regid {
@@ -3926,62 +3923,33 @@ impl Machine {
     /// Registers some walked path from `start` may write before each pc: forward may-write
     /// dataflow over the region that can still reach a barrier in `bit` (every successor, no
     /// branch decided). Memoized per worker thread: it depends only on the code, `start` and
-    /// `bit` (keyed by the address of `bar_cfg`, pinned by a weak reference as in
-    /// `thread_may_arrive`).
-    fn bar_mw(&self, start: usize, bit: u32) -> Arc<MwSets> {
-        type MwCache = HashMap<(usize, usize, u32), (std::sync::Weak<BarCfg>, Arc<MwSets>)>;
+    /// `bit`, using the immutable program identity as in `thread_may_arrive`.
+    fn bar_mw(&self, start: u32, bit: u32) -> Arc<ptxv_memory_write::cache_graph::MayWriteSets> {
+        type Mw = Arc<ptxv_memory_write::cache_graph::MayWriteSets>;
+        type MwCache = HashMap<cache::CacheKey, (std::sync::Weak<BarCfg>, Mw)>;
         thread_local! {
+            // The dataflow depends only on the immutable program, the start pc and `bit`.
             static MW: std::cell::RefCell<MwCache> = Default::default();
         }
-        let cfg = &self.bar_cfg;
-        let key = (Arc::as_ptr(&self.bar_cfg) as usize, start, bit);
-        if let Some(m) = MW.with(|c| c.borrow().get(&key).map(|e| e.1.clone())) {
-            return m;
-        }
-        let mut ix: HashMap<ptxv_ir::Reg, usize> = HashMap::new();
-        let mut at: HashMap<usize, Vec<u64>> = HashMap::new();
-        let mut work = vec![start];
-        at.insert(start, Vec::new());
-        while let Some(pc) = work.pop() {
-            if pc >= cfg.reach.len() || cfg.reach[pc] & bit == 0 {
-                continue;
-            }
-            let mut out = at[&pc].clone();
-            for &d in &cfg.dsts[pc] {
-                let n = ix.len();
-                let i = *ix.entry(d).or_insert(n);
-                if out.len() <= i / 64 {
-                    out.resize(i / 64 + 1, 0);
-                }
-                out[i / 64] |= 1 << (i % 64);
-            }
-            for &q in &cfg.succ[pc] {
-                let fresh = !at.contains_key(&q);
-                let e = at.entry(q).or_default();
-                if e.len() < out.len() {
-                    e.resize(out.len(), 0);
-                }
-                let mut grew = false;
-                for (x, y) in e.iter_mut().zip(&out) {
-                    if *x | *y != *x {
-                        *x |= *y;
-                        grew = true;
+        let key = self.bar_cfg.cache_key(start, bit);
+        match MW.with(|c| {
+            c.borrow().get_key_value(&key).and_then(|(recorded, e)| {
+                cache::finish_replay(cache::begin_replay(*recorded, key), true).map(|_| e.1.clone())
+            })
+        }) {
+            Some(m) => m,
+            None => {
+                let m = Arc::new(self.bar_cfg.program.may_write_sets(start as usize, bit));
+                MW.with(|c| {
+                    let mut c = c.borrow_mut();
+                    if c.len() > 4096 {
+                        c.clear();
                     }
-                }
-                if fresh || grew {
-                    work.push(q);
-                }
+                    c.insert(key, (Arc::downgrade(&self.bar_cfg), m.clone()));
+                });
+                m
             }
         }
-        let m = Arc::new(MwSets { ix, at });
-        MW.with(|c| {
-            let mut c = c.borrow_mut();
-            if c.len() > 4096 {
-                c.clear();
-            }
-            c.insert(key, (Arc::downgrade(&self.bar_cfg), m.clone()));
-        });
-        m
     }
 
     /// `values`: track integer values on the walked path (`bar_values`).
@@ -4010,58 +3978,92 @@ impl Machine {
         type VEnv = Vec<(Reg, u64, u8)>;
         const VDEPTH: u8 = 2;
         const VSTATES: usize = 1 << 14;
-        let cfg = &self.bar_cfg;
-        let mut unknown: Vec<Reg> = Vec::new();
-        // With values: registers no walked path writes before a pc hold their current value
-        // there (`bar_mw`), whatever the rest of the region writes.
-        let mw = values.then(|| self.bar_mw(self.threads[t].pc as usize, bit));
-        let clean = |pc: usize, r: &Reg| mw.as_ref().is_some_and(|m| !m.may(pc, r));
-        let conv = self.bar_read(t, &BarKey::Conv) == Some(1);
-        let uw = self.bar_uw(self.threads[t].pc as usize);
-        let ucur = |r: &Reg| self.bar_ucur(r, conv, &uw);
-        loop {
-            let mut seen: HashSet<(usize, Env, VEnv), BuildHasherDefault<WalkHasher>> =
-                HashSet::default();
-            let mut stack: Vec<(usize, Env, VEnv)> =
-                vec![(self.threads[t].pc as usize, vec![], vec![])];
-            let mut used: Vec<Reg> = Vec::new();
-            let mut written: Vec<Reg> = Vec::new();
-            let mut hit = false;
-            while let Some((pc, env, venv)) = stack.pop() {
+        use ptxv_memory_write::arrival_walk::Expansion;
+        use ptxv_memory_write::arrival_walk::Frontier;
+        use ptxv_memory_write::arrival_walk::Walker;
+        struct Walk<'a> {
+            machine: &'a Machine,
+            thread: usize,
+            bit: u32,
+            cut: u32,
+            values: bool,
+            mw: Option<Arc<ptxv_memory_write::cache_graph::MayWriteSets>>,
+            uw: Arc<UwSet>,
+            converged: bool,
+            reads: &'a mut Vec<BarRead>,
+            unknown: Vec<Reg>,
+            seen: HashSet<(usize, Env, VEnv), BuildHasherDefault<WalkHasher>>,
+            used: Vec<Reg>,
+            written: Vec<Reg>,
+        }
+        impl Walker<(usize, Env, VEnv)> for Walk<'_> {
+            fn begin(&mut self) -> (usize, Env, VEnv) {
+                self.seen.clear();
+                self.used.clear();
+                self.written.clear();
+                (
+                    self.machine.threads[self.thread].pc as usize,
+                    vec![],
+                    vec![],
+                )
+            }
+            fn fresh(&mut self, state: &(usize, Env, VEnv)) -> bool {
+                self.seen.insert(state.clone())
+            }
+            fn expand(&mut self, state: (usize, Env, VEnv)) -> Expansion<(usize, Env, VEnv)> {
+                let seen_len = self.seen.len();
+                let Self {
+                    machine,
+                    thread,
+                    bit,
+                    cut,
+                    values,
+                    mw,
+                    uw,
+                    converged,
+                    reads,
+                    unknown,
+                    used,
+                    written,
+                    ..
+                } = self;
+                let machine = *machine;
+                let t = *thread;
+                let bit = *bit;
+                let cut = *cut;
+                let values = *values;
+                let ucur = |r: &Reg| machine.bar_ucur(r, *converged, uw);
+                let clean = |pc: usize, r: &Reg| {
+                    mw.as_ref()
+                        .is_some_and(|m| !machine.bar_cfg.program.may_write(m, pc, r))
+                };
+                let reads = &mut **reads;
+                let cfg = &machine.bar_cfg;
+                let (pc, env, venv) = state;
                 if pc >= cfg.reach.len() || cfg.reach[pc] & bit == 0 {
-                    continue;
+                    return Expansion::Miss;
                 }
-                if !seen.insert((pc, env.clone(), venv.clone())) {
-                    continue;
+                if values && seen_len > VSTATES {
+                    return Expansion::Hit;
                 }
-                if values && seen.len() > VSTATES {
-                    return true;
-                }
-                let i = &self.k.code[pc];
-                written.extend(cfg.dsts[pc].iter().copied());
+                let i = &cfg.kernel().code[pc];
+                written.extend(cfg.program.dsts()[pc].iter().copied());
                 let pred =
                     |p: Pred, used: &mut Vec<Reg>, reads: &mut Vec<BarRead>| -> Option<bool> {
-                        let Some(r) = p.reg else {
-                            return Some(true);
+                        let clean_here = |register: &Reg| clean(pc, register);
+                        let mut reader = WalkPredicateReader {
+                            machine,
+                            thread: t,
+                            environment: &env,
+                            unknown,
+                            current: &ucur,
+                            clean: Some(&clean_here),
+                            used,
+                            reads,
                         };
-                        if let Some(&(_, v)) = env.iter().find(|e| e.0 == r) {
-                            return Some(v ^ p.neg);
-                        }
-                        if !ucur(&r) {
-                            return None;
-                        }
-                        if !clean(pc, &r) {
-                            if unknown.contains(&r) {
-                                return None;
-                            }
-                            used.push(r);
-                        }
-                        let k = BarKey::Pred(r);
-                        let v = self.bar_read(t, &k);
-                        reads.push((k, v.unwrap_or(0)));
-                        v.map(|v| (v != 0) ^ p.neg)
+                        ptxv_ir::analysis_knowledge::predicate(&mut reader, cfg.kernel().front, p)
                     };
-                let guard = pred(i.guard, &mut used, reads);
+                let guard = pred(i.guard, used, reads);
                 // (With values, an arrival guarded off on this path is not one.)
                 if (!values || guard != Some(false))
                     && match &i.op {
@@ -4072,8 +4074,7 @@ impl Machine {
                         _ => false,
                     }
                 {
-                    hit = true;
-                    break;
+                    return Expansion::Hit;
                 }
                 // A 32-bit value operand: from the path, an immediate, or the current value of
                 // a register no walked path writes before `pc`, or else that the walked region
@@ -4096,8 +4097,8 @@ impl Machine {
                                     used.push(*r);
                                 }
                                 let k = BarKey::Val(v.clone());
-                                let x = self.bar_read(t, &k);
-                                reads.push((k, x.unwrap_or(0)));
+                                let x = machine.bar_read(t, &k);
+                                reads.push((k, x));
                                 x.map(|x| (x, 0))
                             }
                             _ => None,
@@ -4108,17 +4109,17 @@ impl Machine {
                 if guard == Some(true)
                     && matches!(&i.op, Op::BarSync { id: Val::Imm(v), .. } if *v < 32 && cut >> v & 1 == 1)
                 {
-                    continue;
+                    return Expansion::Miss;
                 }
                 let mut next = env.clone();
-                next.retain(|e| !cfg.dsts[pc].contains(&e.0));
+                next.retain(|e| !cfg.program.dsts()[pc].contains(&e.0));
                 let mut vnext = venv.clone();
-                vnext.retain(|e| !cfg.dsts[pc].contains(&e.0));
+                vnext.retain(|e| !cfg.program.dsts()[pc].contains(&e.0));
                 // (SASS PT / UPT: writes are discarded.)
-                let sass = self.k.front == ptxv_ir::Front::Sass;
+                let sass = cfg.kernel().front == ptxv_ir::Front::Sass;
                 if values && guard == Some(true) {
                     let v = match &i.op {
-                        Op::Mov { d, a } => cval(a, &mut used, reads).map(|(x, n)| (*d, x, n + 1)),
+                        Op::Mov { d, a } => cval(a, used, reads).map(|(x, n)| (*d, x, n + 1)),
                         // The first active lane's value: of an immediate, or of a register no
                         // walked path writes before here when every live lane is where the
                         // thread is and holds its value (every lane's paths from there are in
@@ -4135,14 +4136,14 @@ impl Machine {
                                     if (*n == 1 || r.file == ptxv_ir::File::V) && clean(pc, r) =>
                                 {
                                     let k = BarKey::Uni(a.clone());
-                                    let u = self.bar_read(t, &k).unwrap_or(0);
+                                    let u = machine.bar_read(t, &k);
                                     reads.push((k, u));
-                                    u == 1
+                                    u == Some(1)
                                 }
                                 _ => false,
                             };
                             if uni {
-                                cval(a, &mut used, reads).map(|(x, n)| (*d, x, n + 1))
+                                cval(a, used, reads).map(|(x, n)| (*d, x, n + 1))
                             } else {
                                 None
                             }
@@ -4160,7 +4161,7 @@ impl Machine {
                         } if cout.is_empty() && cin.is_empty() => {
                             let mut sum = Some((0u64, 0u8));
                             for (k, x) in [a, b, c].into_iter().enumerate() {
-                                let x = cval(x, &mut used, reads).map(|(x, n)| {
+                                let x = cval(x, used, reads).map(|(x, n)| {
                                     let x = if not[k] { !x } else { x };
                                     (if neg[k] { x.wrapping_neg() } else { x }, n)
                                 });
@@ -4178,8 +4179,8 @@ impl Machine {
                             b,
                         } => {
                             use ptxv_ir::IntOp;
-                            let x = cval(a, &mut used, reads);
-                            let y = cval(b, &mut used, reads);
+                            let x = cval(a, used, reads);
+                            let y = cval(b, used, reads);
                             x.zip(y).and_then(|((x, n), (y, m))| {
                                 let (x, y) = (x as u32, y as u32);
                                 let v = match op {
@@ -4217,13 +4218,13 @@ impl Machine {
                         d2,
                     } = &i.op
                     {
-                        let x = pred(*a, &mut used, reads);
-                        let y = pred(*b, &mut used, reads);
-                        let z = pred(*c, &mut used, reads);
+                        let x = pred(*a, used, reads);
+                        let y = pred(*b, used, reads);
+                        let z = pred(*c, used, reads);
                         if let (Some(x), Some(y), Some(z)) = (x, y, z) {
                             let ix = (x as u8) << 2 | (y as u8) << 1 | z as u8;
                             for (d, l) in std::iter::once((*d, *lut)).chain(*d2) {
-                                if !d.is_pt(self.k.front) {
+                                if !d.is_pt(cfg.kernel().front) {
                                     next.retain(|e| e.0 != d);
                                     next.push((d, l >> ix & 1 == 1));
                                 }
@@ -4248,6 +4249,9 @@ impl Machine {
                 ) = (guard, &i.op)
                 {
                     let val = |v: &Val, used: &mut Vec<Reg>, reads: &mut Vec<BarRead>| {
+                        if !ptxv_ir::analysis_knowledge::value_is_thread_private(v) {
+                            return None;
+                        }
                         if let Val::Reg(r, _) = v {
                             if let Some(&(_, x, _)) = venv.iter().find(|e| e.0 == *r) {
                                 return Some(x);
@@ -4263,17 +4267,15 @@ impl Machine {
                             }
                         }
                         let k = BarKey::Val(v.clone());
-                        let x = self.bar_read(t, &k);
-                        // (A failed read is recorded as 0: a thread reading 0 there reuses a
-                        // walk that knew less, which is conservative.)
-                        reads.push((k, x.unwrap_or(0)));
+                        let x = machine.bar_read(t, &k);
+                        reads.push((k, x));
                         x
                     };
-                    let x = val(a, &mut used, reads);
-                    let y = val(b, &mut used, reads);
-                    let c = pred(*and, &mut used, reads);
+                    let x = val(a, used, reads);
+                    let y = val(b, used, reads);
+                    let c = pred(*and, used, reads);
                     // (SASS PT / UPT: writes are discarded.)
-                    let pt = d.is_pt(self.k.front);
+                    let pt = d.is_pt(cfg.kernel().front);
                     if let (Some(x), Some(y), Some(c), false) = (x, y, c, pt) {
                         let w = (*bits as u32).clamp(1, 64);
                         let mk = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
@@ -4313,24 +4315,72 @@ impl Machine {
                 let fwd = |q: usize| if q > pc { vnext.clone() } else { Vec::new() };
                 match (decided, &i.op) {
                     (Some(true), Op::Bra { target, .. }) => {
-                        stack.push((*target, next, fwd(*target)))
+                        return Expansion::Next((*target, next, fwd(*target)));
                     }
-                    (Some(true), _) => {}
-                    (Some(false), _) => stack.push((pc + 1, next, vnext.clone())),
-                    (None, _) => {
-                        stack.extend(cfg.succ[pc].iter().map(|&q| (q, next.clone(), fwd(q))))
+                    (Some(true), _) => return Expansion::Miss,
+                    (Some(false), _) => return Expansion::Next((pc + 1, next, vnext.clone())),
+                    (None, _) => {}
+                }
+                match cfg.succ[pc].as_slice() {
+                    [] => return Expansion::Miss,
+                    &[q] => return Expansion::Next((q, next, fwd(q))),
+                    _ => {}
+                }
+                let mut children = Frontier::new();
+                for &q in cfg.succ[pc].iter().rev() {
+                    if !children.push((q, next.clone(), fwd(q))) {
+                        return Expansion::Hit;
                     }
                 }
+                Expansion::Children(children)
             }
-            if hit {
-                return true;
+            fn retry(&mut self) -> bool {
+                struct Dependencies<'a> {
+                    used: &'a [Reg],
+                    written: &'a Vec<Reg>,
+                }
+                impl ptxv_memory_write::arrival_walk::ReadDependencies for Dependencies<'_> {
+                    fn count(&self) -> usize {
+                        self.used.len()
+                    }
+                    fn conflict(&self, index: usize) -> bool {
+                        self.written.contains(&self.used[index])
+                    }
+                }
+                if !ptxv_memory_write::arrival_walk::has_conflict(&Dependencies {
+                    used: &self.used,
+                    written: &self.written,
+                }) {
+                    return false;
+                }
+                let used = std::mem::take(&mut self.used);
+                let bad: Vec<_> = used
+                    .into_iter()
+                    .filter(|r| self.written.contains(r))
+                    .collect();
+                self.unknown.extend(bad);
+                true
             }
-            let bad: Vec<_> = used.into_iter().filter(|r| written.contains(r)).collect();
-            if bad.is_empty() {
-                return false;
-            }
-            unknown.extend(bad);
         }
+        let mut walk = Walk {
+            machine: self,
+            thread: t,
+            bit,
+            cut,
+            values,
+            mw: values.then(|| self.bar_mw(self.threads[t].pc, bit)),
+            uw: self.bar_uw(self.threads[t].pc as usize),
+            converged: self.bar_read(t, &BarKey::Conv) == Some(1),
+            reads,
+            unknown: Vec::new(),
+            seen: HashSet::default(),
+            used: Vec::new(),
+            written: Vec::new(),
+        };
+        ptxv_memory_write::arrival_walk::may_arrive(
+            &mut walk,
+            ptxv_memory_write::arrival_walk::DEFAULT_BUDGET,
+        )
     }
 
     fn thread_may_arrive_walk_regs(
@@ -4355,51 +4405,94 @@ impl Machine {
         // only when a decision uses it, so lanes that differ only in an unused %tid share
         // the walk's memo.
         type REnv = Vec<(Reg, Val)>;
-        let cfg = &self.bar_cfg;
         // Registers some walked path from the thread's pc may write before each pc
         // (`bar_mw`). A register outside both this and the path's `REnv` still holds its
         // current value.
         let start = self.threads[t].pc as usize;
-        let mw = self.bar_mw(start, bit);
+        let mw = self.bar_mw(self.threads[t].pc, bit);
         let conv = self.bar_read(t, &BarKey::Conv) == Some(1);
         let uw = self.bar_uw(start);
-        let ucur = |r: &Reg| self.bar_ucur(r, conv, &uw);
-        let mut unknown: Vec<Reg> = Vec::new();
-        loop {
-            let mut seen: HashSet<(usize, Env, REnv), BuildHasherDefault<WalkHasher>> =
-                HashSet::default();
-            let mut stack: Vec<(usize, Env, REnv)> =
-                vec![(self.threads[t].pc as usize, vec![], vec![])];
-            let mut used: Vec<Reg> = Vec::new();
-            let mut written: HashSet<Reg, BuildHasherDefault<WalkHasher>> = HashSet::default();
-            let mut hit = false;
-            while let Some(st) = stack.pop() {
-                if st.0 >= cfg.reach.len() || cfg.reach[st.0] & bit == 0 {
-                    continue;
+        type Mw = Arc<ptxv_memory_write::cache_graph::MayWriteSets>;
+        use ptxv_memory_write::arrival_walk::Expansion;
+        use ptxv_memory_write::arrival_walk::Frontier;
+        use ptxv_memory_write::arrival_walk::Walker;
+        struct Walk<'a> {
+            machine: &'a Machine,
+            thread: usize,
+            bit: u32,
+            cut: u32,
+            uw: Arc<UwSet>,
+            converged: bool,
+            reads: &'a mut Vec<BarRead>,
+            unknown: Vec<Reg>,
+            seen: HashSet<(usize, Env, REnv), BuildHasherDefault<WalkHasher>>,
+            used: Vec<Reg>,
+            written: HashSet<Reg, BuildHasherDefault<WalkHasher>>,
+            mw: Mw,
+        }
+        impl Walker<(usize, Env, REnv)> for Walk<'_> {
+            fn begin(&mut self) -> (usize, Env, REnv) {
+                self.seen.clear();
+                self.used.clear();
+                self.written.clear();
+                (
+                    self.machine.threads[self.thread].pc as usize,
+                    vec![],
+                    vec![],
+                )
+            }
+            fn fresh(&mut self, state: &(usize, Env, REnv)) -> bool {
+                self.seen.insert(state.clone())
+            }
+            fn expand(&mut self, state: (usize, Env, REnv)) -> Expansion<(usize, Env, REnv)> {
+                let Self {
+                    machine,
+                    thread,
+                    bit,
+                    cut,
+                    uw,
+                    converged,
+                    reads,
+                    unknown,
+                    used,
+                    written,
+                    mw,
+                    ..
+                } = self;
+                let machine = *machine;
+                let t = *thread;
+                let bit = *bit;
+                let cut = *cut;
+                let ucur = |r: &Reg| machine.bar_ucur(r, *converged, uw);
+                let reads = &mut **reads;
+                let cfg = &machine.bar_cfg;
+                let (pc, env, renv) = state;
+                if pc >= cfg.reach.len() || cfg.reach[pc] & bit == 0 {
+                    return Expansion::Miss;
                 }
-                // Most states popped were seen: test before storing (a state is stored once
-                // processed, below; nothing in between pops another).
-                if seen.contains(&st) {
-                    continue;
-                }
-                let (pc, env, renv) = st;
-                let i = &self.k.code[pc];
+                let i = &cfg.kernel().code[pc];
                 // A value operand: from the path's environment, a thread constant (recorded
                 // in `reads`, as the walk's result depends on it), or a register the walked
                 // region must not write (`used`).
                 let rval =
                     |v: &Val, used: &mut Vec<Reg>, reads: &mut Vec<BarRead>| -> Option<u64> {
+                        if !ptxv_ir::analysis_knowledge::value_is_thread_private(v) {
+                            return None;
+                        }
                         match v {
                             Val::Reg(r, _) => {
                                 // Path-sensitive: a register not written on the path from the
                                 // thread's pc still holds its current value.
                                 if let Some((_, src)) = renv.iter().find(|e| e.0 == *r) {
+                                    if !ptxv_ir::analysis_knowledge::value_is_thread_private(src) {
+                                        return None;
+                                    }
                                     let k = BarKey::Val(src.clone());
-                                    let x = self.bar_read(t, &k);
-                                    reads.push((k, x.unwrap_or(0)));
+                                    let x = machine.bar_read(t, &k);
+                                    reads.push((k, x));
                                     return x;
                                 }
-                                if mw.may(pc, r) || !ucur(r) {
+                                if cfg.program.may_write(mw, pc, r) || !ucur(r) {
                                     return None;
                                 }
                                 let _ = &used;
@@ -4408,8 +4501,8 @@ impl Machine {
                             _ => {}
                         }
                         let k = BarKey::Val(v.clone());
-                        let x = self.bar_read(t, &k);
-                        reads.push((k, x.unwrap_or(0)));
+                        let x = machine.bar_read(t, &k);
+                        reads.push((k, x));
                         x
                     };
                 if match &i.op {
@@ -4417,54 +4510,52 @@ impl Machine {
                         id: Val::Imm(v), ..
                     } => *v >= 32 || (1u32 << v) & bit != 0,
                     Op::BarSync { packed: true, .. } => true,
-                    Op::BarSync { id, .. } if bit != u32::MAX => match rval(id, &mut used, reads) {
+                    Op::BarSync { id, .. } if bit != u32::MAX => match rval(id, used, reads) {
                         Some(v) => v >= 32 || (1u32 << v) & bit != 0,
                         None => true,
                     },
                     Op::BarSync { .. } | Op::CallAbs { .. } => true,
                     _ => false,
                 } {
-                    hit = true;
-                    break;
+                    return Expansion::Hit;
                 }
-                written.extend(cfg.dsts[pc].iter().copied());
+                written.extend(cfg.program.dsts()[pc].iter().copied());
                 let pred =
                     |p: Pred, used: &mut Vec<Reg>, reads: &mut Vec<BarRead>| -> Option<bool> {
-                        let Some(r) = p.reg else {
-                            return Some(true);
+                        let mut reader = WalkPredicateReader {
+                            machine,
+                            thread: t,
+                            environment: &env,
+                            unknown,
+                            current: &ucur,
+                            clean: None,
+                            used,
+                            reads,
                         };
-                        if let Some(&(_, v)) = env.iter().find(|e| e.0 == r) {
-                            return Some(v ^ p.neg);
-                        }
-                        if unknown.contains(&r) || !ucur(&r) {
-                            return None;
-                        }
-                        used.push(r);
-                        let k = BarKey::Pred(r);
-                        let v = self.bar_read(t, &k);
-                        reads.push((k, v.unwrap_or(0)));
-                        v.map(|v| (v != 0) ^ p.neg)
+                        ptxv_ir::analysis_knowledge::predicate(&mut reader, cfg.kernel().front, p)
                     };
-                let guard = pred(i.guard, &mut used, reads);
+                let guard = pred(i.guard, used, reads);
                 // E-BAR-CUT: the thread arrives at an all-thread barrier it cannot pass
                 // before the held generation completes.
                 if guard == Some(true)
                     && matches!(&i.op, Op::BarSync { id: Val::Imm(v), .. } if *v < 32 && cut >> v & 1 == 1)
                 {
-                    seen.insert((pc, env, renv));
-                    continue;
+                    return Expansion::Miss;
                 }
                 let mut next = env.clone();
-                next.retain(|e| !cfg.dsts[pc].contains(&e.0));
+                next.retain(|e| !cfg.program.dsts()[pc].contains(&e.0));
                 let mut rnext = renv.clone();
-                rnext.retain(|e| !cfg.dsts[pc].contains(&e.0));
+                rnext.retain(|e| !cfg.program.dsts()[pc].contains(&e.0));
                 if guard == Some(true) {
                     // The source of an operand, without evaluating it.
                     let src = |v: &Val| -> Option<Val> {
+                        if !ptxv_ir::analysis_knowledge::value_is_thread_private(v) {
+                            return None;
+                        }
                         match v {
                             Val::Reg(r, _) => match renv.iter().find(|e| e.0 == *r) {
                                 Some((_, s)) => Some(s.clone()),
-                                None if mw.may(pc, r) || !ucur(r) => None,
+                                None if cfg.program.may_write(mw, pc, r) || !ucur(r) => None,
                                 None => Some(v.clone()),
                             },
                             Val::SReg(ptxv_ir::SReg::SharedAddr(_)) => None,
@@ -4473,7 +4564,7 @@ impl Machine {
                     };
                     let v = match &i.op {
                         Op::Mov { d, a } => src(a).map(|x| (*d, x)),
-                        Op::Sel { d, a, b, p } => match pred(*p, &mut used, reads) {
+                        Op::Sel { d, a, b, p } => match pred(*p, used, reads) {
                             Some(true) => src(a).map(|x| (*d, x)),
                             Some(false) => src(b).map(|x| (*d, x)),
                             None => None,
@@ -4481,10 +4572,7 @@ impl Machine {
                         _ => None,
                     };
                     if let Some((d, x)) = v {
-                        if matches!(
-                            d.file,
-                            ptxv_ir::File::R | ptxv_ir::File::UR | ptxv_ir::File::V
-                        ) {
+                        if matches!(d.file, ptxv_ir::File::R | ptxv_ir::File::V) {
                             rnext.push((d, x));
                             rnext.sort_by_key(|e| (e.0.file as u8, e.0.idx));
                         }
@@ -4505,16 +4593,14 @@ impl Machine {
                     },
                 ) = (guard, &i.op)
                 {
-                    // (A failed read is recorded as 0: a thread reading 0 there reuses a walk
-                    // that knew less, which is conservative.)
                     let val = |v: &Val, used: &mut Vec<Reg>, reads: &mut Vec<BarRead>| {
                         rval(v, used, reads)
                     };
-                    let x = val(a, &mut used, reads);
-                    let y = val(b, &mut used, reads);
-                    let c = pred(*and, &mut used, reads);
+                    let x = val(a, used, reads);
+                    let y = val(b, used, reads);
+                    let c = pred(*and, used, reads);
                     // (SASS PT / UPT: writes are discarded.)
-                    let pt = d.is_pt(self.k.front);
+                    let pt = d.is_pt(cfg.kernel().front);
                     if let (Some(x), Some(y), Some(c), false) = (x, y, c, pt) {
                         let w = (*bits as u32).clamp(1, 64);
                         let mk = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
@@ -4552,29 +4638,74 @@ impl Machine {
                     _ => None,
                 };
                 match (decided, &i.op) {
-                    (Some(true), Op::Bra { target, .. }) => stack.push((*target, next, rnext)),
-                    (Some(true), _) => {}
-                    (Some(false), _) => stack.push((pc + 1, next, rnext)),
-                    (None, _) => {
-                        if let Some((&last, rest)) = cfg.succ[pc].split_last() {
-                            stack.extend(rest.iter().map(|&q| (q, next.clone(), rnext.clone())));
-                            stack.push((last, next, rnext));
-                        }
+                    (Some(true), Op::Bra { target, .. }) => {
+                        return Expansion::Next((*target, next, rnext));
+                    }
+                    (Some(true), _) => return Expansion::Miss,
+                    (Some(false), _) => return Expansion::Next((pc + 1, next, rnext)),
+                    (None, _) => {}
+                }
+                match cfg.succ[pc].as_slice() {
+                    [] => return Expansion::Miss,
+                    &[q] => return Expansion::Next((q, next, rnext)),
+                    _ => {}
+                }
+                let mut children = Frontier::new();
+                for &q in cfg.succ[pc].iter().rev() {
+                    if !children.push((q, next.clone(), rnext.clone())) {
+                        return Expansion::Hit;
                     }
                 }
-                seen.insert((pc, env, renv));
+                Expansion::Children(children)
             }
-            if hit {
-                return true;
+            fn retry(&mut self) -> bool {
+                self.used.sort_by_key(|r| (r.file as u8, r.idx));
+                self.used.dedup();
+                struct Dependencies<'a> {
+                    used: &'a [Reg],
+                    written: &'a HashSet<Reg, BuildHasherDefault<WalkHasher>>,
+                }
+                impl ptxv_memory_write::arrival_walk::ReadDependencies for Dependencies<'_> {
+                    fn count(&self) -> usize {
+                        self.used.len()
+                    }
+                    fn conflict(&self, index: usize) -> bool {
+                        self.written.contains(&self.used[index])
+                    }
+                }
+                if !ptxv_memory_write::arrival_walk::has_conflict(&Dependencies {
+                    used: &self.used,
+                    written: &self.written,
+                }) {
+                    return false;
+                }
+                let used = std::mem::take(&mut self.used);
+                let bad: Vec<_> = used
+                    .into_iter()
+                    .filter(|r| self.written.contains(r))
+                    .collect();
+                self.unknown.extend(bad);
+                true
             }
-            used.sort_by_key(|r| (r.file as u8, r.idx));
-            used.dedup();
-            let bad: Vec<_> = used.into_iter().filter(|r| written.contains(r)).collect();
-            if bad.is_empty() {
-                return false;
-            }
-            unknown.extend(bad);
         }
+        let mut walk = Walk {
+            machine: self,
+            thread: t,
+            bit,
+            cut,
+            uw,
+            converged: conv,
+            reads,
+            unknown: Vec::new(),
+            seen: HashSet::default(),
+            used: Vec::new(),
+            written: HashSet::default(),
+            mw,
+        };
+        ptxv_memory_write::arrival_walk::may_arrive(
+            &mut walk,
+            ptxv_memory_write::arrival_walk::DEFAULT_BUDGET,
+        )
     }
 }
 
@@ -4801,6 +4932,7 @@ fn blocked_sync(m: &Machine, all: &[(Action, String)]) -> Vec<(Ent, u32, Footpri
                     {
                         let base = (off as u64) << 20;
                         f.add(12, cta as u32, base, base + (1 << 20), false);
+                        f.add(15, cta as u32, off as u64, off as u64 + 1, false);
                     }
                 }
             }
@@ -4844,7 +4976,7 @@ fn blocked_sync(m: &Machine, all: &[(Action, String)]) -> Vec<(Ent, u32, Footpri
 /// The pc an action starts at, as `Learned` keys it.
 fn action_pc(m: &Machine, a: &Action) -> u32 {
     match a {
-        Action::Split { pc, .. } => *pc,
+        Action::Split { pc, .. } | Action::AtomicComponent { pc, .. } => *pc,
         Action::Async(i) => m.pending[*i].pc,
         _ => 0,
     }
@@ -4974,10 +5106,11 @@ fn sync_ample(
     // conflict found with them is re-checked against what the entity can still do from this
     // state:
     // - mbarrier phases only grow until the next init / inval of that mbarrier, so the
-    //   future arrivals (space 7 reads), polls and phase completions (space 12) of an mbarrier
-    //   whose current phase is k touch keys >= k, and future completions write arrival keys
+    //   future arrivals (space 7 reads), polls and completions (space 12), and membership
+    //   accesses (space 18) touch keys >= k, and future completions write arrival keys
     //   >= k + 1. Not for an mbarrier that some live footprint may still (re)initialize (a
-    //   write of all its phase keys), nor one not materialized yet (`mbars`);
+    //   write of all its phase keys), nor one not materialized yet (`mbars`). Late-update
+    //   keys (space 25) read the current phase and may write the preceding phase;
     // - an async unit whose warp can no longer issue at that pc (or whose warp is the
     //   candidate's: it issues nothing before the candidate) only completes the operations
     //   already pending there, which arrive at the mbarriers they name.
@@ -5059,7 +5192,7 @@ fn sync_ample(
             };
             for (write, items) in [(false, &f.r), (true, &f.w)] {
                 for &(sp, id, lo, hi) in items {
-                    if sp != 7 && sp != 12 || hi <= lo {
+                    if !matches!(sp, 7 | 12 | 18 | 25) || hi <= lo {
                         g.add(sp, id, lo, hi, write);
                         continue;
                     }
@@ -5083,7 +5216,11 @@ fn sync_ample(
                         }
                         let lo2 = match phase {
                             Some(k) => {
-                                let kmin = k + (sp == 7 && write) as u64;
+                                let kmin = if sp == 25 && write {
+                                    k.saturating_sub(1)
+                                } else {
+                                    k + (sp == 7 && write) as u64
+                                };
                                 if kmin > 0xf_ffff {
                                     sl
                                 } else {
@@ -5118,8 +5255,10 @@ fn sync_ample(
     // without the candidate, that leaves a gated region; it passes a stopping poll, so that
     // mbarrier completed a phase, so someone arrived at (or re-initialized) it earlier, at a
     // pc in its region: then the mbarrier was completable.
-    let gate_on = std::env::var("PTXV_NO_GATE").is_err();
-    let valtrack_on = std::env::var("PTXV_NO_VALTRACK").is_err();
+    // The look-ahead executes whole instructions; partially retired atomics keep frozen
+    // operands that it cannot reconstruct from the threads' current registers.
+    let gate_on = m.atomic_components.is_empty() && std::env::var("PTXV_NO_GATE").is_err();
+    let valtrack_on = m.atomic_components.is_empty() && std::env::var("PTXV_NO_VALTRACK").is_err();
     let la_debug = std::env::var("PTXV_LA_DEBUG").is_ok();
     // Per warp: the pcs of its gated region, and the polls it stops at; and the mbarriers
     // that stopped some warp.
@@ -5128,10 +5267,14 @@ fn sync_ample(
     let gates: std::cell::RefCell<HashMap<(u32, usize), std::rc::Rc<Gate>>> = Default::default();
     let gate_used: std::cell::RefCell<Vec<(u32, u64)>> = Default::default();
     let bars_of = |f: &Footprint, only: Option<&Vec<(u32, u64)>>, out: &mut HashSet<(u32, u64)>| {
-        for &(sp, id, lo, hi) in f.r.iter().chain(&f.w) {
+        for (write, &(sp, id, lo, hi)) in
+            f.r.iter()
+                .map(|x| (false, x))
+                .chain(f.w.iter().map(|x| (true, x)))
+        {
             let (b0, b1) = match sp {
                 7 if hi > lo => (lo >> 20, (hi - 1) >> 20),
-                15 if hi > lo => (lo, hi - 1),
+                15 if write && hi > lo => (lo, hi - 1),
                 _ => continue,
             };
             if b1 - b0 > 4096 {
@@ -5140,7 +5283,8 @@ fn sync_ample(
                 continue;
             }
             for b in b0..=b1 {
-                if only.is_none_or(|v| v.contains(&(id, b))) {
+                // Data landings can create a different barrier than the one they signal.
+                if sp == 15 || only.is_none_or(|v| v.contains(&(id, b))) {
                     out.insert((id, b));
                 }
             }
@@ -5424,7 +5568,7 @@ fn sync_ample(
         let mut used = Vec::new();
         for (write, items) in [(false, &f.r), (true, &f.w)] {
             for &(sp, id, lo, hi) in items {
-                if sp != 7 && sp != 12 || hi <= lo || (lo >> 20) != ((hi - 1) >> 20) {
+                if !matches!(sp, 7 | 12 | 18 | 25) || hi <= lo || (lo >> 20) != ((hi - 1) >> 20) {
                     out.add(sp, id, lo, hi, write);
                     continue;
                 }
@@ -5524,6 +5668,9 @@ fn sync_ample(
     let arrives_at = |f: &Footprint, (cta, off): (u16, u32)| {
         let (lo, hi) = ((off as u64) << 20, (off as u64 + 1) << 20);
         f.all
+            || f.w
+                .iter()
+                .any(|x| x.0 == 15 && x.1 == cta as u32 && x.2 <= off as u64 && (off as u64) < x.3)
             || f.r
                 .iter()
                 .chain(&f.w)
@@ -5559,6 +5706,7 @@ fn sync_ample(
                     ws.insert(*x);
                     for &(cta, off) in bars {
                         rel.push((7, cta as u32, (off as u64) << 20, (off as u64 + 1) << 20));
+                        rel.push((15, cta as u32, off as u64, off as u64 + 1));
                     }
                 }
             }
@@ -5710,8 +5858,21 @@ fn sync_ample(
             gate_used.borrow_mut().clear();
             return bad.is_none();
         }
-        let Action::Split { warp, pc, leader } = a else {
-            return false;
+        let (warp, pc, leader) = match a {
+            Action::Split { warp, pc, leader } => (warp, pc, *leader),
+            Action::AtomicComponent { warp, pc, .. } => {
+                // The warp cannot pass this instruction until every component retires.
+                // Its other components can precede this one, so retain their byte conflicts.
+                if acts.iter().enumerate().any(|(j, (other, _))| {
+                    i != j
+                        && action_ent(m, other) == Some(Ent::Warp(*warp))
+                        && fps[i].conflicts(&fps[j])
+                }) {
+                    return false;
+                }
+                (warp, pc, None)
+            }
+            _ => return false,
         };
         // One action for this warp (an elect with several leader choices is not one).
         if leader.is_some()
@@ -5815,13 +5976,104 @@ fn sync_ample(
 }
 
 pub fn explore(m0: Machine, max_states: usize) -> Verdict {
+    run_with_finalization(m0, |m| {
+        crate::smem::two_pass(m, |m| explore_slice(m, max_states, None))
+    })
+}
+
+fn run_with_finalization(m0: Machine, run: impl FnOnce(Machine) -> Verdict) -> Verdict {
     let note = crate::residency::reliance_note(&m0);
     let base = m0.clone();
-    let mut v = crate::smem::two_pass(m0, |m| explore_slice(m, max_states, None));
+    let mut v = match certify_cancelled_returns(&m0) {
+        Some((mut certified, steps)) => {
+            certified.notes.push(format!(
+                "fresh initial-state certificate completed the straight-line integer-add kernel with cancelled private returns ({steps} certificate steps)"
+            ));
+            certified
+        }
+        None => run(m0),
+    };
+    v = complete_cancelled_returns(&base, v);
     v.notes.extend(note);
     // S-INIT-FILLS: undefined values that reach only output data.
     crate::fills::check(&base, &mut v);
     v
+}
+
+fn complete_cancelled_returns(initial: &Machine, partial: Verdict) -> Verdict {
+    if partial.complete || !partial.findings.is_empty() || partial.distinct_outputs > 1 {
+        return partial;
+    }
+    let Some((mut certified, steps)) = certify_cancelled_returns(initial) else {
+        return partial;
+    };
+    if partial
+        .outputs
+        .iter()
+        .any(|output| output != &certified.outputs[0])
+    {
+        return partial;
+    }
+    certified.notes.extend(partial.notes);
+    certified.notes.push(format!(
+        "bounded exploration visited {} states; the fresh initial-state certificate completed the straight-line integer-add kernel with cancelled private returns ({} certificate steps)",
+        partial.states, steps
+    ));
+    certified.assumptions.extend(partial.assumptions);
+    certified.assumptions.sort();
+    certified.assumptions.dedup();
+    certified.seconds += partial.seconds;
+    certified
+}
+
+fn certify_cancelled_returns(initial: &Machine) -> Option<(Verdict, usize)> {
+    if !initial.findings.is_empty()
+        || initial.launch.grids.len() != 1
+        || initial.launch.env.residency.is_some()
+        || initial.launch.env.tmem_cotenant
+        || initial.nic.is_some()
+        || initial.launch.nic.is_some()
+        || !initial.launch.mcast.is_empty()
+        || !initial.pending.is_empty()
+        || !initial.atomic_components.is_empty()
+        || !initial.completed.is_empty()
+        || !initial.remote_obs.is_empty()
+        || !initial.remote.is_empty()
+        || initial.wlog.is_on()
+        || initial.ring.is_some()
+        || initial.l1.is_some()
+        || initial.num.is_some()
+        || initial.prov.is_some()
+        || initial.fill.is_some()
+        || initial.dead_probe.is_some()
+        || initial.race_log.is_some()
+        || initial.fp.is_some()
+        || initial.atomic_operand.is_some()
+        || initial.vip.is_some()
+        || initial.live != (0..initial.threads.len())
+        || initial.threads.iter().enumerate().any(|(actor, thread)| {
+            let mut fresh_clock = crate::machine::VC::new();
+            crate::machine::vc_tick(&mut fresh_clock, actor as u32);
+            thread.st != St::Run
+                || thread.pc != initial.launch.grids[0].entry
+                || thread.vc != fresh_clock
+        })
+        || !ptxv_ir::atomic_cancel::certificate_candidate(initial.k.front, &initial.k.code)
+    {
+        return None;
+    }
+    // Cancellation removes a return-value observation, not observations of partial sums.
+    // C-ORDER must still reject every unordered memory observer.
+    let outcome = crate::wellsync::certify(initial.clone());
+    let certified = outcome.verdict?;
+    if !certified.complete
+        || !certified.findings.is_empty()
+        || certified.distinct_outputs != 1
+        || certified.outputs.len() != 1
+    {
+        return None;
+    }
+    Some((certified, outcome.steps))
 }
 
 /// `explore` with an explicit number of worker threads instead of `threads` (PTXV_THREADS):
@@ -5860,7 +6112,7 @@ pub fn explore_slice(m0: Machine, max_states: usize, cluster: Option<u32>) -> Ve
         for t in 0..m0.threads.len() {
             let cta = m0.threads[t].cta as u32;
             if m0.launch.cluster_of(cta).0 != c && m0.launch.grid_index(cta) >= cg {
-                m0.threads[t].make_mut().st = St::Exited;
+                m0.threads[t].make_mut().set_status(St::Exited);
             }
         }
         let live: Vec<usize> = (0..m0.threads.len())
@@ -6685,6 +6937,7 @@ fn explore_one_models_with(
     search: &mut dyn FnMut(Machine, bool, u8) -> Verdict,
 ) -> (Verdict, bool, u8) {
     let v = search(m0.clone(), true, 2);
+
     // A racy kernel's outcomes depend on orders of plain accesses that the reductions do
     // not keep (E-DRF); the peek changes remove branching that used to expose some of them.
     // So a search that finds a race is run again in the plain model. Likewise for
@@ -6964,7 +7217,12 @@ fn explore_one_model(
 /// incomplete. The sets learned until then are those of fewer or shorter walks, as with a
 /// smaller `PTXV_POR_SEED_WALKS` (0 included) or the step cap: the reduction does not rely
 /// on them (the last round decides with what it learned itself, `explore_one_model`).
-fn seed_learned(m0: &Machine, learned: &Learned, threads: usize, budget: bool) -> Option<String> {
+fn seed_learned(
+    m0: &Machine,
+    learned: &Learned,
+    threads: usize,
+    budget: bool,
+) -> Option<String> {
     let walks: usize = std::env::var("PTXV_POR_SEED_WALKS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -7043,8 +7301,14 @@ fn over_budget() -> bool {
 /// One random complete execution from `m`, learning the footprint of every step: the steps
 /// taken, and whether a budget stopped it (`budget`, `over_budget`) with an action still
 /// enabled.
-fn seed_walk(mut m: Machine, view: &mut LearnedView, rng: &mut u64, budget: bool) -> (u64, bool) {
+fn seed_walk(
+    mut m: Machine,
+    view: &mut LearnedView,
+    rng: &mut u64,
+    budget: bool,
+) -> (u64, bool) {
     let mut steps = 0;
+
     for _ in 0..1_000_000 {
         let acts = m.actions_bare();
         for (e, pc, f) in blocked_sync(&m, &acts) {
@@ -7062,13 +7326,13 @@ fn seed_walk(mut m: Machine, view: &mut LearnedView, rng: &mut u64, budget: bool
         *rng ^= *rng << 17;
         let (a, _) = &acts[(*rng % acts.len() as u64) as usize];
         let (ent, pc) = (action_ent(&m, a), action_pc(&m, a));
-        m.fp = Some(Box::new(Footprint {
+        m.set_footprint(Some(Box::new(Footprint {
             sync_only: true,
             ..Default::default()
-        }));
+        })));
         m.apply(a);
         m.findings.clear();
-        let mut fp = m.fp.take().map(|b| *b).unwrap_or_default();
+        let mut fp = m.take_footprint().map(|b| *b).unwrap_or_default();
         fp.normalize();
         if let Some(e) = ent {
             view.learn(e, pc, &fp);
@@ -7215,6 +7479,17 @@ struct Shared {
     stop: AtomicBool,
 }
 
+// An unwinding worker may leave counted work behind; stop its peers before joining them.
+struct StopOnUnwind<'a>(&'a AtomicBool);
+
+impl Drop for StopOnUnwind<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+}
+
 impl std::ops::Deref for Search<'_> {
     type Target = Shared;
     fn deref(&self) -> &Shared {
@@ -7354,6 +7629,7 @@ impl Search<'_> {
     }
 
     fn worker(&self, me: usize, m0: &Machine) -> usize {
+        let _stop_on_unwind = StopOnUnwind(&self.stop);
         let mut loc = Local {
             me,
             sigs: HashSet::new(),
@@ -7473,14 +7749,14 @@ impl Search<'_> {
         for (a, desc) in &acts {
             let mut n = m.clone();
             if loc.view.is_some() {
-                n.fp = Some(Box::new(Footprint {
+                n.set_footprint(Some(Box::new(Footprint {
                     sync_only: true,
                     ..Default::default()
-                }));
+                })));
             }
             n.apply(a);
             loc.transitions += 1;
-            let mut fp = n.fp.take().map(|b| *b).unwrap_or_default();
+            let mut fp = n.take_footprint().map(|b| *b).unwrap_or_default();
             fp.normalize();
             if let (Some(v), Some(e)) = (loc.view.as_mut(), action_ent(&m, a)) {
                 v.learn(e, action_pc(&m, a), &fp);
@@ -7697,6 +7973,7 @@ fn explore_round(
         search.worker(0, &m0)
     } else {
         std::thread::scope(|s| {
+            let _stop_on_unwind = StopOnUnwind(&search.stop);
             let hs: Vec<_> = (1..threads)
                 .map(|i| {
                     let (search, m0) = (&search, &m0);
@@ -7711,9 +7988,16 @@ fn explore_round(
                 s.spawn(move || d.comm(search))
             });
             let t = search.worker(0, &m0);
-            let t = t + hs.into_iter().map(|h| h.join().unwrap()).sum::<usize>();
+            let t = t + hs
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .sum::<usize>();
             if let Some(c) = comm {
-                c.join().unwrap();
+                c.join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
             }
             t
         })
@@ -7762,9 +8046,9 @@ fn explore_round(
 /// enabled split (lowest pc) for up to
 /// `DET_STREAK` steps; when it has none, complete the first async operation that can
 /// complete (in issue order, respecting the in-order pipes), else move to the next warp, in
-/// cyclic order, that has an enabled split; when nothing of that kind can move (or CTAs are
-/// unlaunched, a TMEM co-tenant chooses placements, or a cluster launch control response is
-/// pending), the first action of `Machine::actions`.
+/// cyclic order, that has an enabled split; when nothing of that kind can move, the first
+/// action of `Machine::actions`. With unlaunched CTAs or a TMEM co-tenant, keep the original
+/// first-split priority throughout.
 #[derive(Default)]
 pub struct DetSched {
     warp: u32,
@@ -7785,7 +8069,6 @@ impl DetSched {
             m.launch.env.tmem_cotenant || m.live_threads().any(|(_, t)| t.st == St::Unlaunched)
         });
         if full {
-            // Unlaunched CTAs may launch at any step: keep the original policy.
             let acts = m.actions();
             return acts
                 .iter()
@@ -7871,6 +8154,15 @@ fn det_split(m: &Machine, w: u32) -> Option<Action> {
         if !m.split_enabled(&members, pc) {
             continue;
         }
+        if let Some(choices) = m.atomic_component_choices(w, pc, &members) {
+            let (thread, component) = choices[0];
+            return Some(Action::AtomicComponent {
+                warp: w,
+                pc,
+                thread,
+                component,
+            });
+        }
         let inst = &m.k.code[pc as usize];
         let mut leader = None;
         // ASSUME(E-ELECT): as in `actions`.
@@ -7922,6 +8214,37 @@ fn det_async(m: &Machine) -> Option<usize> {
     None
 }
 
+/// Delivered non-fault findings remain available to execution probes until the run returns.
+#[derive(Default)]
+pub(crate) struct FindingDelivery {
+    retained: usize,
+}
+
+impl FindingDelivery {
+    pub(crate) fn fresh<'a>(&self, m: &'a Machine) -> &'a [Finding] {
+        m.findings
+            .get(self.retained..)
+            .expect("execution must preserve previously delivered finding context")
+    }
+
+    pub(crate) fn keep_context(&mut self, m: &mut Machine) {
+        // Faults must be reported afresh so FaultLoop can count consecutive faulting steps.
+        m.findings.retain(|f| !f.sig.starts_with("fault:"));
+        self.retained = m.findings.len();
+    }
+
+    pub(crate) fn collect(&mut self, m: &mut Machine, findings: &mut Vec<Finding>) {
+        findings.extend_from_slice(self.fresh(m));
+        self.keep_context(m);
+    }
+
+    pub(crate) fn finish(&mut self, m: &mut Machine, findings: &mut Vec<Finding>) {
+        self.collect(m, findings);
+        m.findings.clear();
+        self.retained = 0;
+    }
+}
+
 /// A deterministic run's guard against a step that faults again and again: a faulting step
 /// leaves its warp where it was, so a scheduler that keeps picking it never ends.
 #[derive(Default)]
@@ -7966,6 +8289,7 @@ pub fn run_once_until(
     stop: &mut dyn FnMut(&Machine) -> bool,
 ) -> (Machine, Vec<Finding>, bool, bool) {
     let mut fs = Vec::new();
+    let mut delivery = FindingDelivery::default();
     // Debugging: PTXV_RUN_ONCE_PROGRESS=n prints every n-th action.
     let every: usize = std::env::var("PTXV_RUN_ONCE_PROGRESS")
         .ok()
@@ -7997,24 +8321,26 @@ pub fn run_once_until(
             "the run continues on a copy of its machine"
         );
         if every > 0 && n.is_multiple_of(every) {
-            for f in &m.findings {
+            for f in delivery.fresh(&m) {
                 eprintln!("  finding: {}", f.msg.lines().next().unwrap_or(""));
             }
         }
-        stuck = faults.repeats(&m.findings).is_some();
-        fs.append(&mut m.findings);
+        stuck = faults.repeats(delivery.fresh(&m)).is_some();
+        delivery.collect(&mut m, &mut fs);
         if stuck {
             break;
         }
     }
     if stopped {
+        delivery.finish(&mut m, &mut fs);
         return (m, fs, false, true);
     }
     let ok = m.terminal();
     if ok {
         m.exit_checks();
-        fs.append(&mut m.findings);
-    } else if !stuck {
+    }
+    delivery.collect(&mut m, &mut fs);
+    if !ok && !stuck {
         let (sig, msg) = m.deadlock_report();
         fs.push(Finding {
             kind: "deadlock".into(),
@@ -8024,14 +8350,20 @@ pub fn run_once_until(
             ..Default::default()
         });
     }
+    delivery.finish(&mut m, &mut fs);
     (m, fs, ok, false)
 }
 
 /// One execution under a seeded random scheduler (uniform among the enabled actions), at most
 /// `cap` steps: (machine, findings, terminal). The certificate's cross-check
 /// (`wellsync::certify`, `PTXV_CERT_CROSSCHECK`) compares such runs with the certified one.
-pub fn random_run(mut m: Machine, seed: u64, cap: usize) -> (Machine, Vec<Finding>, bool) {
+pub fn random_run(
+    mut m: Machine,
+    seed: u64,
+    cap: usize,
+) -> (Machine, Vec<Finding>, bool) {
     let mut fs = Vec::new();
+    let mut delivery = FindingDelivery::default();
     let mut rng = seed | 1;
     let mut faults = FaultLoop::default();
     for _ in 0..cap {
@@ -8049,17 +8381,18 @@ pub fn random_run(mut m: Machine, seed: u64, cap: usize) -> (Machine, Vec<Findin
         rng ^= rng << 17;
         let (a, _) = &acts[(rng % acts.len() as u64) as usize];
         m.apply(a);
-        let stuck = faults.repeats(&m.findings).is_some();
-        fs.append(&mut m.findings);
+        let stuck = faults.repeats(delivery.fresh(&m)).is_some();
+        delivery.collect(&mut m, &mut fs);
         if stuck {
+            delivery.finish(&mut m, &mut fs);
             return (m, fs, false);
         }
     }
     let ok = m.terminal();
     if ok {
         m.exit_checks();
-        fs.append(&mut m.findings);
     }
+    delivery.finish(&mut m, &mut fs);
     (m, fs, ok)
 }
 
@@ -8079,6 +8412,18 @@ fn put_action(w: &mut W, a: &Action) {
             w.u32(*pc);
             w.u8(leader.is_some() as u8);
             w.u64(leader.unwrap_or(0) as u64);
+        }
+        Action::AtomicComponent {
+            warp,
+            pc,
+            thread,
+            component,
+        } => {
+            w.u8(5);
+            w.u32(*warp);
+            w.u32(*pc);
+            w.u64(*thread as u64);
+            w.u8(ptxv_memory_write::atomic_components::byte_offset(*component) / 4);
         }
         Action::Async(i) => {
             w.u8(2);
@@ -8111,6 +8456,18 @@ fn get_action(r: &mut R) -> Action {
         }
         2 => Action::Async(r.u64() as usize),
         3 => Action::Launch(r.u32() as u16),
+        5 => {
+            let warp = r.u32();
+            let pc = r.u32();
+            let thread = r.u64() as usize;
+            let component = crate::exec::atomic_components::COMPONENTS[r.u8() as usize];
+            Action::AtomicComponent {
+                warp,
+                pc,
+                thread,
+                component,
+            }
+        }
         _ => {
             let i = r.u64() as usize;
             let has = r.u8() != 0;
@@ -8431,6 +8788,7 @@ impl DistRound {
     /// The rank's communication loop during the round: send questions, report status, ask
     /// for work when idle; on rank 0 also decide termination and the state cap.
     fn comm(&self, search: &Search) {
+        let _stop_on_unwind = StopOnUnwind(&self.sh.stop);
         let mut wave = 0u64;
         let mut last_status = Instant::now();
         let mut last_steal = Instant::now();
@@ -9070,7 +9428,14 @@ impl LaWarp {
     }
 
     /// Load lane `i`'s values of the registers among `vals` into the scratch machine.
-    fn load(&mut self, m: &Machine, c: &LaCfg, s: &mut Machine, vals: &[ptxv_ir::Val], i: usize) {
+    fn load(
+        &mut self,
+        m: &Machine,
+        c: &LaCfg,
+        s: &mut Machine,
+        vals: &[ptxv_ir::Val],
+        i: usize,
+    ) {
         use ptxv_ir::File;
         let t = self.ts[i];
         for v in vals {
@@ -9375,6 +9740,47 @@ impl LaWarp {
         };
         if !matches!(inst.op, Op::MbarTryWait { .. }) {
             self.mark(pc);
+        }
+        let control = if matches!(inst.op, Op::Brx { .. } | Op::Call { .. } | Op::Ret { .. }) {
+            ptxv_ir::control_transfer::from_operation(
+                &ptxv_ir::control_transfer::Context {
+                    front: m.k.front,
+                    pc,
+                    entry: m.k.entry_of(pc as usize),
+                    returns: if m.bar_cfg.rets.is_empty() {
+                        None
+                    } else {
+                        Some(m.bar_cfg.rets.get(pc as usize).map_or(&[], Vec::as_slice))
+                    },
+                },
+                inst.guard,
+                &inst.op,
+                &mut LaControlReader {
+                    warp: self,
+                    machine: m,
+                    config: c,
+                },
+            )
+        } else {
+            None
+        };
+        if let Some(control) = control {
+            return match control {
+                ptxv_ir::control_transfer::Outcome::Next => LaStep::Next,
+                ptxv_ir::control_transfer::Outcome::Jump(target) => LaStep::Jump(target),
+                ptxv_ir::control_transfer::Outcome::Fork(targets) => {
+                    LaStep::Fork(targets.into_iter().map(Some).collect())
+                }
+                ptxv_ir::control_transfer::Outcome::Wild(fault) => wild(match fault {
+                    ptxv_ir::control_transfer::Fault::DivergentControl => {
+                        "divergent control transfer"
+                    }
+                    ptxv_ir::control_transfer::Fault::InvalidIndex => "brx.idx index",
+                    ptxv_ir::control_transfer::Fault::InvalidTarget => "indirect target",
+                    ptxv_ir::control_transfer::Fault::UnknownReturn => "unknown RET",
+                    ptxv_ir::control_transfer::Fault::PcOverflow => "control pc overflow",
+                }),
+            };
         }
         match &inst.op {
             Op::MbarTryWait {
@@ -9736,45 +10142,6 @@ impl LaWarp {
                     }
                 }
             }
-            Op::Brx { base, targets, .. } if m.k.front == ptxv_ir::Front::Ptx => {
-                match self.val(m, c, base) {
-                    Av::K(b) => match targets.get(b as u32 as usize) {
-                        Some(&to) => LaStep::Jump(to as u32),
-                        None => wild("brx.idx index"),
-                    },
-                    Av::U => LaStep::Fork(targets.iter().map(|&q| Some(q as u32)).collect()),
-                    _ => wild("divergent brx.idx"),
-                }
-            }
-            Op::Brx { base, off, targets } => match self.val(m, c, base) {
-                Av::K(b) => {
-                    let a = (b as i64).wrapping_add(*off);
-                    let to = (a >> 4) as usize + m.k.entry_of(pc as usize);
-                    if a & 15 != 0 || !targets.contains(&to) {
-                        return wild("BRX target");
-                    }
-                    LaStep::Jump(to as u32)
-                }
-                Av::U => LaStep::Fork(targets.iter().map(|&q| Some(q as u32)).collect()),
-                _ => wild("divergent BRX"),
-            },
-            Op::Call { target } => LaStep::Jump(*target as u32),
-            Op::Ret { addr } => {
-                let rets = m.bar_cfg.rets.get(pc as usize).cloned().unwrap_or_default();
-                match self.val(m, c, addr) {
-                    Av::K(a) => {
-                        let to = (a >> 4) as usize + m.k.entry_of(pc as usize);
-                        if !m.bar_cfg.rets.is_empty() && !rets.contains(&to) {
-                            return wild("RET target");
-                        }
-                        LaStep::Jump(to as u32)
-                    }
-                    Av::U if !rets.is_empty() => {
-                        LaStep::Fork(rets.iter().map(|&q| Some(q as u32)).collect())
-                    }
-                    _ => wild("unknown RET"),
-                }
-            }
             Op::Elect { d, lane, .. } => {
                 self.guarded(m, c, *d, Av::E, g);
                 if let Some(l) = lane {
@@ -9839,13 +10206,26 @@ impl LaWarp {
                         | Op::Qmul4 { .. }
                         | Op::Vhmnmx { .. }
                 );
-                let vals = op.src_vals();
+                let vals = match op {
+                    Op::Mov {
+                        a: ptxv_ir::Val::Const(off, 16),
+                        ..
+                    } => (0..4)
+                        .map(|word| {
+                            off.checked_add(4 * word)
+                                .map(|offset| ptxv_ir::Val::Const(offset, 4))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                        .unwrap_or_else(|| op.src_vals()),
+                    _ => op.src_vals(),
+                };
                 let out: Vec<(ptxv_ir::Reg, Av)> = if pure {
                     let dd = dsts.clone();
-                    let r = self.per_lane(m, c, s, &vals, &mut |s: &mut Machine, t: usize| {
-                        s.exec_pure(t, pc)
-                            .then(|| dd.iter().map(|&r| la_rd(s, t, r)).collect::<Vec<u64>>())
-                    });
+                    let r =
+                        self.per_lane(m, c, s, &vals, &mut |s: &mut Machine, t: usize| {
+                            s.exec_pure(t, pc)
+                                .then(|| dd.iter().map(|&r| la_rd(s, t, r)).collect::<Vec<u64>>())
+                        });
                     match r {
                         Some(v) if v.iter().all(|x| x.is_some()) => {
                             let v: Vec<Vec<u64>> = v.into_iter().map(|x| x.unwrap()).collect();
@@ -9930,7 +10310,11 @@ fn la_scc(m: &Machine) -> Vec<u32> {
                     }
                     _ => (0..n).collect(),
                 },
-                Op::Brx { targets, .. } => targets.clone(),
+                Op::Brx { targets, .. } => targets
+                    .iter()
+                    .copied()
+                    .chain(next.filter(|_| !always))
+                    .collect(),
                 Op::CallAbs { .. } => (0..n).collect(),
                 Op::Exit | Op::Trap { .. } if always => vec![],
                 _ => next.into_iter().collect(),
@@ -10209,7 +10593,12 @@ fn lookahead(
                 set(*target);
                 set(pc + 1);
             }
-            Op::Brx { targets, .. } => targets.iter().for_each(|&q| set(q)),
+            Op::Brx { targets, .. } => {
+                targets.iter().for_each(|&q| set(q));
+                if !i.guard.is_always() {
+                    set(pc + 1);
+                }
+            }
             Op::Ret { .. } | Op::Exit => set(pc + 1),
             _ => {}
         }
@@ -10416,6 +10805,201 @@ fn lookahead(
 }
 
 #[cfg(test)]
+mod wide_constant_lookahead_tests {
+    use ptxv_ir::File;
+    use ptxv_ir::Op;
+    use ptxv_ir::Reg;
+    use ptxv_ir::Val;
+
+    use super::*;
+
+    const OFFSET: u32 = 0x400;
+    const WORDS: [u32; 4] = [0x0102_0304, 0x1020_3040, 0x8081_8283, 0xf0f1_f2f3];
+
+    fn params() -> Vec<u8> {
+        WORDS.into_iter().flat_map(u32::to_le_bytes).collect()
+    }
+
+    fn step(file: File, offset: u32, params: Vec<u8>) -> Vec<Av> {
+        let instruction = if file == File::UR {
+            "LDCU.128 UR4, c[0x0][0x400]"
+        } else {
+            "NOP"
+        };
+        let mut machine = crate::dpor_uniform_tests::machine(instruction, "NOP", &[], 1);
+        Arc::make_mut(&mut machine.k).code[1].op = Op::Mov {
+            d: Reg { file, idx: 4 },
+            a: Val::Const(offset, 16),
+        };
+        let grid = &mut Arc::make_mut(&mut machine.launch).grids[0];
+        grid.param_cbank = offset;
+        grid.params = params;
+        assert!(machine.cbank(0, offset, 4).is_ok());
+        let mut scratch = machine.clone();
+        let mut simulation = LaWarp {
+            w: 0,
+            ts: vec![0],
+            init: Default::default(),
+            lv: Vec::new(),
+            lvi: HashMap::new(),
+            work: Vec::new(),
+            waiting: Vec::new(),
+            seen: Default::default(),
+            ids: 0,
+            exec: vec![0; machine.k.code.len().div_ceil(64)],
+            steps: 0,
+            wild: None,
+            wild_done: false,
+            cut: 0,
+            at: HashMap::new(),
+            trace: false,
+            scc: std::rc::Rc::new(la_scc(&machine)),
+            loops: HashSet::new(),
+            arr_at: HashMap::new(),
+        };
+        let mut config = LaCfg {
+            pc: 1,
+            env: LaEnv::default(),
+            obs: BTreeMap::new(),
+            lanes: 1,
+            body: None,
+            hist: LaHist::default(),
+        };
+        let mut result = LaResult {
+            exec: HashMap::new(),
+            arr: HashMap::new(),
+            inf: HashSet::new(),
+            inf_cta: HashSet::new(),
+            stopped: Vec::new(),
+            why: Vec::new(),
+        };
+        let mut changed = false;
+        assert!(matches!(
+            simulation.step(
+                &machine,
+                &mut scratch,
+                &mut config,
+                &mut result,
+                &|_, _, _| {},
+                &mut changed,
+            ),
+            LaStep::Next
+        ));
+        (0..4)
+            .map(|index| {
+                *config
+                    .env
+                    .get(&Reg {
+                        file,
+                        idx: 4 + index,
+                    })
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn wide_constant_moves_preserve_all_four_known_words() {
+        for file in [File::R, File::UR] {
+            assert_eq!(
+                step(file, OFFSET, params()),
+                WORDS.map(|word| Av::K(u64::from(word)))
+            );
+        }
+    }
+
+    #[test]
+    fn wide_constant_moves_with_missing_upper_words_stay_unknown() {
+        for file in [File::R, File::UR] {
+            let unknown = if file == File::UR { Av::U } else { Av::N };
+            for length in [8, 12, 15] {
+                assert_eq!(
+                    step(file, OFFSET, params()[..length].to_vec()),
+                    vec![unknown; 4]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wide_constant_moves_with_overflowing_offsets_stay_unknown() {
+        for file in [File::R, File::UR] {
+            let unknown = if file == File::UR { Av::U } else { Av::N };
+            assert_eq!(step(file, u32::MAX - 7, params()), vec![unknown; 4]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod worker_panic_tests {
+    use super::*;
+
+    fn machine() -> Machine {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let case = ptxv_case::Case::load(dir).unwrap();
+        let source = case.variant_ptx("good").unwrap();
+        let kernel = ptxv_ptx::parse_kernel(&source, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        Machine::new(Arc::new(kernel), Arc::new(launch))
+    }
+
+    fn search(pending: usize) -> Search<'static> {
+        Search {
+            max_states: 1,
+            indep: false,
+            stats: false,
+            weak_stop: 0,
+            learned: None,
+            sh: Arc::new(Shared {
+                visited: Visited::new(1),
+                deques: vec![Deque::default()],
+                states: AtomicUsize::new(0),
+                pending: AtomicUsize::new(pending),
+                stop: AtomicBool::new(false),
+            }),
+            dist: None,
+            terminal: AtomicUsize::new(0),
+            depth: AtomicUsize::new(0),
+            widths: None,
+            found: Mutex::new(Found {
+                findings: Vec::new(),
+                seen_sig: HashSet::new(),
+                outputs: Vec::new(),
+                out_seen: HashSet::new(),
+            }),
+            progress: Mutex::new(Progress::new("worker panic test".into(), 1)),
+            hist: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[test]
+    fn worker_panic_stops_idle_peers_before_cleanup() {
+        let machine = machine();
+        let search = search(1);
+        std::thread::scope(|scope| {
+            let idle_peer = scope.spawn(|| search.worker(0, &machine));
+            let failed = scope.spawn(|| search.worker(1, &machine)).join();
+            let stopped_on_panic = search.stop.load(Ordering::Acquire);
+            // Always release the peer, including when the guard regresses.
+            search.stop.store(true, Ordering::Release);
+            idle_peer.join().unwrap();
+            assert!(failed.is_err(), "the invalid worker index must panic");
+            assert!(stopped_on_panic, "the worker panic did not stop its peers");
+            assert_eq!(search.pending.load(Ordering::Acquire), 1);
+        });
+    }
+
+    #[test]
+    fn worker_normal_return_does_not_stop_the_search() {
+        let machine = machine();
+        let search = search(0);
+        assert_eq!(search.worker(0, &machine), 0);
+        assert!(!search.stop.load(Ordering::Acquire));
+    }
+}
+
+#[cfg(test)]
 mod bar_values_tests {
     use super::*;
 
@@ -10506,13 +11090,8 @@ mod bar_values_tests {
         }
     }
 
-    /// `bar_ucur`: a uniform predicate written by a lane group of the warp that has diverged
-    /// from the thread. fixtures/e_barwalk good on SASS, edited so that the producers' exit
-    /// test writes UP0 (`ISETP.GT.U32.AND UP0, PT, R0, 0x1`) and `BAR.SYNC 0x1, 0x80` is
-    /// guarded by it. Warp 4 with UP0 = 0: every lane at the barrier, nothing reachable from
-    /// there writes UP0, the walk with values decides the guard off (no arrival); lanes 16-31
-    /// still at the ISETP (they write UP0 = 1, then lanes 0-15 arrive), the walk must not use
-    /// UP0's current value.
+    /// Mutable uniform predicates stay unknown during lookahead, including in a converged
+    /// warp. Private predicates can still rule out an arrival.
     #[test]
     fn walk_uniform_register_written_by_another_lane_group() {
         let m0 = machine("good", "sass");
@@ -10535,17 +11114,30 @@ mod bar_values_tests {
         k.code[bar].guard.reg = Some(up0);
         let mut m = Machine::new(Arc::new(k), m0.launch.clone());
         for t in 128..160 {
-            m.threads[t].make_mut().pc = bar as u32;
+            m.threads[t].make_mut().set_pc(bar as u32);
         }
         m.wr(128, up0, 0, 1);
         let walk = |m: &Machine, values: bool| {
             let mut reads = Vec::new();
             m.thread_may_arrive_walk(128, 2, 0, values, &mut reads)
         };
-        // (Without values a `BAR.SYNC` guarded off still counts as an arrival.)
-        assert!(!walk(&m, true), "converged");
+        assert_eq!(m.bar_read(128, &BarKey::Conv), Some(1));
+        let mut reads = Vec::new();
+        assert!(m.thread_may_arrive_walk(128, 2, 0, true, &mut reads));
+        assert!(!reads.iter().any(|(key, _)| *key == BarKey::Pred(up0)));
+
+        let mut private = Machine::new(m0.k.clone(), m0.launch.clone());
+        let guard = private.k.code[bar].guard;
+        let register = guard.reg.expect("the private guarded BAR.SYNC");
+        assert!(ptxv_ir::register_owner::is_thread_private(register));
+        for t in 128..160 {
+            private.threads[t].make_mut().set_pc(bar as u32);
+            private.wr(t, register, u64::from(guard.neg), 1);
+        }
+        assert!(!walk(&private, true), "converged private predicate");
+        assert!(walk(&private, false), "without predicate values");
         for t in 144..160 {
-            m.threads[t].make_mut().pc = set as u32;
+            m.threads[t].make_mut().set_pc(set as u32);
         }
         assert_eq!(m.bar_read(128, &BarKey::Conv), Some(0));
         for values in [true, false] {
@@ -10673,9 +11265,1214 @@ mod bar_cut_tests {
     }
 }
 
+struct LaControlReader<'a> {
+    warp: &'a mut LaWarp,
+    machine: &'a Machine,
+    config: &'a LaCfg,
+}
+
+fn la_control_value(value: Av) -> ptxv_ir::control_transfer::AbstractValue {
+    match value {
+        Av::K(value) => ptxv_ir::control_transfer::AbstractValue::Known(value),
+        Av::U => ptxv_ir::control_transfer::AbstractValue::UniformUnknown,
+        _ => ptxv_ir::control_transfer::AbstractValue::Divergent,
+    }
+}
+
+impl ptxv_ir::control_transfer::ControlReader for LaControlReader<'_> {
+    fn predicate(&mut self, predicate: ptxv_ir::Pred) -> ptxv_ir::control_transfer::AbstractValue {
+        la_control_value(self.warp.pred(self.machine, self.config, predicate))
+    }
+
+    fn value(&mut self, value: &ptxv_ir::Val) -> ptxv_ir::control_transfer::AbstractValue {
+        la_control_value(self.warp.val(self.machine, self.config, value))
+    }
+}
+
 #[cfg(test)]
 mod walk_cache_tests {
+    use ptxv_ir::Op;
+
     use super::*;
+
+    #[test]
+    fn parsed_join_revisits_invalidate_downstream_guard_folds() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let instructions = [
+            "@P0 BRA `(.L_other)",
+            "MOV R0, 0x1",
+            "BRA `(.L_join)",
+            "NOP",
+            "MOV R0, 0x0",
+            "BRA `(.L_join)",
+            "NOP",
+            "ISETP.EQ.U32.AND P1, PT, R0, 0x1, PT",
+            "@P1 BRA `(.L_exit)",
+            "BPT.TRAP 0x1",
+            "EXIT",
+        ];
+        let mut text = String::from(".text.k:\n");
+        for (pc, instruction) in instructions.iter().enumerate() {
+            match pc {
+                4 => text.push_str(".L_other:\n"),
+                6 => text.push_str(".L_join:\n"),
+                10 => text.push_str(".L_exit:\n"),
+                _ => {}
+            }
+            let control = ptxv_sass::scoreboard::Ctrl {
+                stall: 15,
+                yld: false,
+                wbar: None,
+                rbar: None,
+                wait: 0,
+                reuse: 0,
+            };
+            text.push_str(&format!(
+                "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                pc * 16,
+                control.encode(0)
+            ));
+        }
+        let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        assert!(kernel.static_findings.is_empty());
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        assert_eq!(machine.bar_cfg.fold[8], None);
+    }
+
+    #[test]
+    fn parsed_private_constant_fold_is_certified() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let instructions = [
+            "MOV R0, 0x7",
+            "ISETP.EQ.U32.AND P0, PT, R0, 0x7, PT",
+            "@P0 BRA `(.L_exit)",
+            "BPT.TRAP 0x1",
+            "EXIT",
+        ];
+        let mut text = String::from(".text.k:\n");
+        for (pc, instruction) in instructions.iter().enumerate() {
+            if pc == 4 {
+                text.push_str(".L_exit:\n");
+            }
+            let control = ptxv_sass::scoreboard::Ctrl {
+                stall: 15,
+                yld: false,
+                wbar: None,
+                rbar: None,
+                wait: 0,
+                reuse: 0,
+            };
+            text.push_str(&format!(
+                "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                pc * 16,
+                control.encode(0)
+            ));
+        }
+        let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        assert!(kernel.static_findings.is_empty());
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        assert_eq!(machine.bar_cfg.fold[2], Some(true));
+        let whole_warp: Vec<_> = (0..32).collect();
+        for pc in 0..3 {
+            machine.exec_one(&whole_warp, pc).unwrap();
+        }
+        assert!(machine.threads.iter().all(|thread| thread.pc == 4));
+        assert!(machine.findings.is_empty());
+    }
+
+    #[test]
+    fn parsed_grid_constant_folds_require_all_reaching_grids_to_agree() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let instructions = [
+            "MOV R0, c[0x0][0x380]",
+            "ISETP.EQ.U32.AND P0, PT, R0, 0x7, PT",
+            "@P0 BRA `(.L_exit)",
+            "BPT.TRAP 0x1",
+            "EXIT",
+        ];
+        let mut text = String::from(".text.k:\n");
+        for (pc, instruction) in instructions.iter().enumerate() {
+            if pc == 4 {
+                text.push_str(".L_exit:\n");
+            }
+            let control = ptxv_sass::scoreboard::Ctrl {
+                stall: 15,
+                yld: false,
+                wbar: None,
+                rbar: None,
+                wait: 0,
+                reuse: 0,
+            };
+            text.push_str(&format!(
+                "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                pc * 16,
+                control.encode(0)
+            ));
+        }
+        let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        assert!(kernel.static_findings.is_empty());
+        for (second, expected) in [(Some(7u32), Some(true)), (Some(8), None), (None, None)] {
+            let mut launch = crate::build_launch(&case, &kernel).unwrap();
+            launch.grids[0].param_cbank = 0x380;
+            launch.grids[0].params = 7u32.to_le_bytes().to_vec();
+            let mut peer = launch.grids[0].clone();
+            peer.cta0 = launch.grids[0].ctas();
+            peer.params = second.map_or_else(Vec::new, |value| value.to_le_bytes().to_vec());
+            launch.grids.push(peer);
+            let machine = Machine::new(Arc::new(kernel.clone()), Arc::new(launch));
+            assert_eq!(machine.bar_cfg.fold[2], expected);
+        }
+    }
+
+    #[test]
+    fn certificate_folds_require_defined_private_sources_and_physical_frames() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let variants: [(&str, &[&str], Option<bool>, bool); 9] = [
+            (
+                "undefined move source",
+                &["MOV R2, R0", "ISETP.EQ.U32.AND P0, PT, R2, RZ, PT"],
+                None,
+                false,
+            ),
+            (
+                "undefined comparison source",
+                &["ISETP.EQ.U32.AND P0, PT, R0, RZ, PT"],
+                None,
+                false,
+            ),
+            (
+                "undefined overwrites known scalar",
+                &[
+                    "MOV R0, 0x7",
+                    "MOV R0, R2",
+                    "ISETP.EQ.U32.AND P0, PT, R0, 0x7, PT",
+                ],
+                None,
+                false,
+            ),
+            (
+                "undefined overwrites known predicate",
+                &[
+                    "ISETP.EQ.U32.AND P0, PT, RZ, RZ, PT",
+                    "ISETP.EQ.U32.AND P0, PT, R0, RZ, PT",
+                ],
+                None,
+                false,
+            ),
+            (
+                "wide move overwrites paired word",
+                &[
+                    "MOV R0, 0x1",
+                    "MOV R1, 0x7",
+                    "LDC.64 R0, c[0x0][0x380]",
+                    "ISETP.EQ.U32.AND P0, PT, R1, 0x7, PT",
+                ],
+                None,
+                true,
+            ),
+            (
+                "partial overwrite forgets high word",
+                &[
+                    "MOV R0, 0x1",
+                    "MOV R1, 0x7",
+                    "MOV R1, R2",
+                    "ISETP.EQ.U32.AND P0, PT, R1, 0x7, PT",
+                ],
+                None,
+                false,
+            ),
+            (
+                "undefined guard retains equal scalar bits",
+                &[
+                    "MOV R0, 0x7",
+                    "@P2 MOV R0, 0x7",
+                    "ISETP.EQ.U32.AND P0, PT, R0, 0x7, PT",
+                ],
+                None,
+                false,
+            ),
+            (
+                "undefined guard retains equal predicate bits",
+                &[
+                    "ISETP.EQ.U32.AND P0, PT, RZ, RZ, PT",
+                    "@P2 ISETP.EQ.U32.AND P0, PT, RZ, RZ, PT",
+                ],
+                None,
+                false,
+            ),
+            (
+                "partial overwrite preserves low word",
+                &[
+                    "MOV R0, 0x1",
+                    "MOV R1, 0x7",
+                    "MOV R1, R2",
+                    "ISETP.EQ.U32.AND P0, PT, R0, 0x1, PT",
+                ],
+                Some(true),
+                true,
+            ),
+        ];
+        let mut mismatches = Vec::new();
+        for (name, prefix, expected_fold, predicate_defined) in variants {
+            let mut instructions = prefix.to_vec();
+            let branch_pc = instructions.len();
+            instructions.extend(["@P0 BRA `(.L_exit)", "BPT.TRAP 0x1", "EXIT"]);
+            let mut text = String::from(".text.k:\n");
+            for (pc, instruction) in instructions.iter().enumerate() {
+                if pc == branch_pc + 2 {
+                    text.push_str(".L_exit:\n");
+                }
+                let control = ptxv_sass::scoreboard::Ctrl {
+                    stall: 15,
+                    yld: false,
+                    wbar: instruction.starts_with("LDC").then_some(0),
+                    rbar: None,
+                    wait: if pc > 0 && instructions[pc - 1].starts_with("LDC") {
+                        1
+                    } else {
+                        0
+                    },
+                    reuse: 0,
+                };
+                text.push_str(&format!(
+                    "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                    pc * 16,
+                    control.encode(0)
+                ));
+            }
+            let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+            assert!(
+                kernel.static_findings.is_empty(),
+                "{name}: {:?}",
+                kernel.static_findings
+            );
+            let mut launch = crate::build_launch(&case, &kernel).unwrap();
+            launch.grids[0].param_cbank = 0x380;
+            launch.grids[0].params = ((8u64 << 32) | 3).to_le_bytes().to_vec();
+            let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+            let whole_warp: Vec<_> = (0..32).collect();
+            for pc in 0..branch_pc as u32 {
+                machine.exec_one(&whole_warp, pc).unwrap();
+            }
+            let predicate = machine.k.code[branch_pc].guard.reg.unwrap();
+            assert_eq!(
+                machine.reg_umask(0, predicate) == 0,
+                predicate_defined,
+                "{name}: native predicate definedness"
+            );
+            eprintln!(
+                "{name}: actual fold={:?}, actual predicate defined={}",
+                machine.bar_cfg.fold[branch_pc],
+                machine.reg_umask(0, predicate) == 0
+            );
+            if machine.bar_cfg.fold[branch_pc] != expected_fold {
+                mismatches.push(name);
+            }
+            if let Some(expected) = expected_fold {
+                assert!(predicate_defined);
+                assert_eq!(
+                    machine.prd(0, machine.k.code[branch_pc].guard),
+                    expected,
+                    "{name}: actual guard"
+                );
+            }
+            if name == "wide move overwrites paired word" {
+                let high = ptxv_ir::Reg {
+                    file: ptxv_ir::File::R,
+                    idx: 1,
+                };
+                assert_eq!(machine.rd(0, &ptxv_ir::Val::Reg(high, 1)).unwrap(), 8);
+                assert_eq!(machine.reg_umask(0, high), 0);
+                assert!(!machine.prd(0, machine.k.code[branch_pc].guard));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "known folds from undefined or overwritten inputs: {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn parsed_peer_uniform_writes_invalidate_static_guard_folds() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let variants: [(&str, &str, &str, &[&str], usize); 5] = [
+            (
+                "direct UP",
+                "UISETP.EQ.U32.AND UP0, UPT, URZ, URZ, UPT",
+                "UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT",
+                &["@UP0 BRA `(.L_exit)"],
+                0,
+            ),
+            (
+                "negated UP",
+                "UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT",
+                "UISETP.EQ.U32.AND UP0, UPT, URZ, URZ, UPT",
+                &["@!UP0 BRA `(.L_exit)"],
+                0,
+            ),
+            (
+                "derived private P",
+                "UMOV UR0, 0x1",
+                "UMOV UR0, 0x0",
+                &[
+                    "ISETP.NE.U32.AND P1, PT, UR0, URZ, PT",
+                    "@P1 BRA `(.L_exit)",
+                ],
+                0,
+            ),
+            (
+                "computed UP",
+                "UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT",
+                "UISETP.EQ.U32.AND UP0, UPT, URZ, URZ, UPT",
+                &[
+                    "UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT",
+                    "@!UP0 BRA `(.L_exit)",
+                ],
+                1,
+            ),
+            (
+                "captured UR",
+                "UMOV UR0, 0x1",
+                "UMOV UR0, 0x0",
+                &[
+                    "MOV R2, UR0",
+                    "ISETP.NE.U32.AND P1, PT, R2, RZ, PT",
+                    "@P1 BRA `(.L_exit)",
+                ],
+                0,
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (name, init, peer, victim, before_peer) in variants {
+            let mut instructions = vec![
+                init,
+                "S2R R0, SR_LANEID",
+                "ISETP.EQ.U32.AND P0, PT, R0, RZ, PT",
+                "@P0 BRA `(.L_victim)",
+                peer,
+                "EXIT",
+            ];
+            instructions.extend_from_slice(victim);
+            let trap_pc = instructions.len() as u32;
+            let guard_pc = trap_pc - 1;
+            instructions.extend(["BPT.TRAP 0x1", "EXIT"]);
+            let mut text = String::from(".text.k:\n");
+            for (pc, instruction) in instructions.iter().enumerate() {
+                if pc == 6 {
+                    text.push_str(".L_victim:\n");
+                }
+                if pc as u32 == trap_pc + 1 {
+                    text.push_str(".L_exit:\n");
+                }
+                let control = ptxv_sass::scoreboard::Ctrl {
+                    stall: 15,
+                    yld: false,
+                    wbar: (pc == 1).then_some(0),
+                    rbar: None,
+                    wait: if pc == 2 { 1 } else { 0 },
+                    reuse: 0,
+                };
+                text.push_str(&format!(
+                    "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                    pc * 16,
+                    control.encode(0)
+                ));
+            }
+            let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+            assert!(
+                kernel.static_findings.is_empty(),
+                "{name}: {:?}",
+                kernel.static_findings
+            );
+            let launch = crate::build_launch(&case, &kernel).unwrap();
+            let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+            let whole_warp: Vec<_> = (0..32).collect();
+            for pc in 0..4 {
+                machine.exec_one(&whole_warp, pc).unwrap();
+            }
+            assert_eq!(machine.threads[0].pc, 6);
+            for pc in 6..6 + before_peer as u32 {
+                machine.exec_one(&[0], pc).unwrap();
+            }
+            let writer = machine
+                .actions()
+                .into_iter()
+                .find(|(action, _)| matches!(action, Action::Split { warp: 0, pc: 4, .. }))
+                .unwrap()
+                .0;
+            machine.apply(&writer);
+            for pc in machine.threads[0].pc..guard_pc {
+                machine.exec_one(&[0], pc).unwrap();
+            }
+            let folded = machine.bar_cfg.fold[guard_pc as usize];
+            let actual_guard = machine.prd(0, machine.k.code[guard_pc as usize].guard);
+            assert!(!actual_guard);
+            machine.exec_one(&[0], guard_pc).unwrap();
+            let actual_pc = machine.threads[0].pc;
+            assert_eq!(
+                actual_pc, trap_pc,
+                "actual execution still follows the guard"
+            );
+            eprintln!("{name}: findings={:?}", machine.findings);
+            eprintln!(
+                "{name}: fold={folded:?}, actual guard={actual_guard}, actual next={actual_pc}, required fallthrough={trap_pc}"
+            );
+            if actual_pc != trap_pc || folded.is_some() {
+                failures.push(name);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "static folds contradict actual false guards after enabled peer writes: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn exit_drain_preserves_constants_and_rejects_own_predicate_writes() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let programs = [
+            (
+                vec![
+                    "ISETP.EQ.U32.AND P0, PT, RZ, RZ, PT",
+                    "@!UPT BAR.SYNC 0",
+                    "EXIT",
+                ],
+                true,
+            ),
+            (
+                vec![
+                    "ISETP.EQ.U32.AND P0, PT, RZ, RZ, PT",
+                    "ISETP.NE.U32.AND P0, PT, RZ, RZ, PT",
+                    "@P0 BRA `(.L_exit)",
+                    "BPT.TRAP 0x1",
+                    "EXIT",
+                ],
+                false,
+            ),
+        ];
+        for (instructions, expected) in programs {
+            let mut text = String::from(".text.k:\n");
+            for (pc, instruction) in instructions.iter().enumerate() {
+                if pc + 1 == instructions.len() {
+                    text.push_str(".L_exit:\n");
+                }
+                text.push_str(&format!(
+                    "/*{:04x}*/ {instruction} ;\n/* 0x000fde0000000000 */\n",
+                    pc * 16
+                ));
+            }
+            let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+            assert!(
+                kernel.static_findings.is_empty(),
+                "{:?}",
+                kernel.static_findings
+            );
+            let launch = crate::build_launch(&case, &kernel).unwrap();
+            let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+            let members: Vec<_> = (0..32).collect();
+            if !expected {
+                machine.exec_one(&members, 0).unwrap();
+            }
+            let pc = machine.threads[0].pc;
+            assert_eq!(exit_bound(&machine, 0, pc), expected);
+        }
+    }
+
+    #[test]
+    fn parsed_peer_uniform_write_prevents_eager_exit_pruning() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let text = ".text.k:\n/*0000*/ S2UR UR0, SR_CTAID.X ;\n/* 0x000fc00000000000 */\n/*0010*/ UISETP.EQ.U32.AND UP0, UPT, UR0, URZ, UPT ;\n/* 0x000fc00000000000 */\n/*0020*/ S2R R0, SR_LANEID ;\n/* 0x000fc00000000000 */\n/*0030*/ ISETP.EQ.U32.AND P0, PT, R0, RZ, PT ;\n/* 0x000fc00000000000 */\n/*0040*/ @P0 BRA `(.L_victim) ;\n/* 0x000fc00000000000 */\n/*0050*/ UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT ;\n/* 0x000fc00000000000 */\n/*0060*/ EXIT ;\n/* 0x000fc00000000000 */\n.L_victim:\n/*0070*/ @UP0 BRA `(.L_exit) ;\n/* 0x000fc00000000000 */\n/*0080*/ BPT.TRAP 0x1 ;\n/* 0x000fc00000000000 */\n.L_exit:\n/*0090*/ EXIT ;\n/* 0x000fc00000000000 */\n";
+        let mut instruction = 0;
+        let scheduled = text
+            .lines()
+            .map(|line| {
+                if !line.starts_with("/* 0x") {
+                    return line.to_string();
+                }
+                let control = ptxv_sass::scoreboard::Ctrl {
+                    stall: 15,
+                    yld: false,
+                    wbar: matches!(instruction, 0 | 2).then_some(0),
+                    rbar: None,
+                    wait: if matches!(instruction, 1 | 3) { 1 } else { 0 },
+                    reuse: 0,
+                };
+                instruction += 1;
+                format!("/* 0x{:016x} */", control.encode(0))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let kernel = ptxv_sass::lower(&scheduled, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        assert!(
+            kernel.static_findings.is_empty(),
+            "{:?}",
+            kernel.static_findings
+        );
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        let whole_warp: Vec<_> = (0..32).collect();
+        for pc in 0..5 {
+            assert!(machine.split_enabled(&whole_warp, pc));
+            machine.exec_one(&whole_warp, pc).unwrap();
+        }
+        assert_eq!(machine.threads[0].pc, 7);
+        assert_eq!(machine.bar_cfg.fold[7], None);
+        let exits = exit_bound(&machine, 0, 7);
+        let actions = machine.actions();
+        assert_eq!(actions.len(), 2);
+        let ample = local_ample(&machine, actions.clone());
+        eprintln!(
+            "exit_bound={exits}; raw={:?}; ample={:?}",
+            actions.iter().map(|a| &a.1).collect::<Vec<_>>(),
+            ample.iter().map(|a| &a.1).collect::<Vec<_>>()
+        );
+        let writer = actions
+            .iter()
+            .find(|(a, _)| matches!(a, Action::Split { warp: 0, pc: 5, .. }))
+            .unwrap()
+            .0
+            .clone();
+        let victim = actions
+            .iter()
+            .find(|(a, _)| matches!(a, Action::Split { warp: 0, pc: 7, .. }))
+            .unwrap()
+            .0
+            .clone();
+        let verdict = explore_threads(machine.clone(), 10000, 1);
+        eprintln!(
+            "actual stateful explorer: classes={:?}, complete={}, states={}",
+            verdict.classes(),
+            verdict.complete,
+            verdict.states
+        );
+        eprintln!("actual stateful findings={:?}", verdict.findings);
+        let mut peer_first = machine.clone();
+        peer_first.apply(&writer);
+        for _ in 0..8 {
+            if peer_first.threads[0].st == St::Exited {
+                break;
+            }
+            let pc = peer_first.threads[0].pc;
+            let action = peer_first
+                .actions()
+                .into_iter()
+                .find(|(a, _)| matches!(a, Action::Split { warp: 0, pc: at, .. } if *at == pc))
+                .unwrap()
+                .0;
+            peer_first.apply(&action);
+        }
+        let mut victim_first = machine;
+        victim_first.apply(&victim);
+        for _ in 0..8 {
+            if victim_first.threads[0].st == St::Exited {
+                break;
+            }
+            let pc = victim_first.threads[0].pc;
+            let action = victim_first
+                .actions()
+                .into_iter()
+                .find(|(a, _)| matches!(a, Action::Split { warp: 0, pc: at, .. } if *at == pc))
+                .unwrap()
+                .0;
+            victim_first.apply(&action);
+        }
+        for _ in 0..8 {
+            let actions = victim_first.actions();
+            if actions.is_empty() {
+                break;
+            }
+            victim_first.apply(&actions[0].0);
+        }
+        eprintln!(
+            "peer-first findings={:?}; victim-first findings={:?}",
+            peer_first.findings, victim_first.findings
+        );
+        assert!(peer_first.findings.iter().any(|f| f.kind == "trap"));
+        assert!(!victim_first.findings.iter().any(|f| f.kind == "trap"));
+        assert!(verdict.complete);
+        assert_eq!(verdict.classes(), ["trap"]);
+        assert!(
+            !exits,
+            "a peer can change the UP guard before this split exits"
+        );
+        assert_eq!(
+            ample.len(),
+            2,
+            "eager pruning discarded the peer-first trap path"
+        );
+    }
+
+    #[test]
+    fn parsed_peer_uniform_write_changes_future_arrival() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        let variants: [(&str, &str, &str, &[&str], usize); 5] = [
+            (
+                "direct UP",
+                "UISETP.EQ.U32.AND UP0, UPT, URZ, URZ, UPT",
+                "UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT",
+                &["@UP0 EXIT"],
+                0,
+            ),
+            (
+                "negated UP",
+                "UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT",
+                "UISETP.EQ.U32.AND UP0, UPT, URZ, URZ, UPT",
+                &["@!UP0 EXIT"],
+                0,
+            ),
+            (
+                "UR operand",
+                "UMOV UR0, 0x1",
+                "UMOV UR0, 0x0",
+                &["ISETP.NE.U32.AND P1, PT, UR0, URZ, PT", "@P1 EXIT"],
+                0,
+            ),
+            (
+                "computed UP",
+                "UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT",
+                "UISETP.EQ.U32.AND UP0, UPT, URZ, URZ, UPT",
+                &["UISETP.NE.U32.AND UP0, UPT, URZ, URZ, UPT", "@!UP0 EXIT"],
+                1,
+            ),
+            (
+                "captured UR",
+                "UMOV UR0, 0x1",
+                "UMOV UR0, 0x0",
+                &[
+                    "MOV R2, UR0",
+                    "ISETP.NE.U32.AND P1, PT, R2, RZ, PT",
+                    "@P1 EXIT",
+                ],
+                0,
+            ),
+        ];
+        let mut failures = Vec::new();
+        for barrier in ["BAR.SYNC 0", "BAR.SYNC R1"] {
+            for (name, init, peer, victim, before_peer) in variants {
+                let mut instructions = vec![
+                    init,
+                    "S2R R0, SR_LANEID",
+                    "ISETP.EQ.U32.AND P0, PT, R0, RZ, PT",
+                    "@P0 BRA `(.L_victim)",
+                    peer,
+                    "EXIT",
+                ];
+                instructions.extend_from_slice(victim);
+                let barrier_pc = instructions.len() as u32;
+                instructions.extend([barrier, "EXIT"]);
+                let mut text = String::from(".text.k:\n");
+                for (pc, instruction) in instructions.iter().enumerate() {
+                    if pc == 6 {
+                        text.push_str(".L_victim:\n");
+                    }
+                    text.push_str(&format!(
+                        "/*{:04x}*/ {instruction} ;\n/* 0x000fc00000000000 */\n",
+                        pc * 16
+                    ));
+                }
+                let kernel =
+                    ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+                let launch = crate::build_launch(&case, &kernel).unwrap();
+                let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+                let whole_warp: Vec<_> = (0..32).collect();
+                for pc in 0..4 {
+                    assert!(machine.split_enabled(&whole_warp, pc));
+                    assert!(whole_warp.iter().all(|&t| machine.threads[t].pc == pc));
+                    machine.exec_one(&whole_warp, pc).unwrap();
+                }
+                assert_eq!(machine.threads[0].pc, 6);
+                assert_eq!(machine.threads[1].pc, 4);
+                assert_ne!(machine.bar_cfg.reach[6] & 1, 0);
+                let fresh = machine.thread_may_arrive_walk(0, 1, 0, bar_values(), &mut Vec::new());
+                let memoized = machine.thread_may_arrive(0, 1, 0, &mut Vec::new());
+                let repeated = machine.thread_may_arrive(0, 1, 0, &mut Vec::new());
+                for pc in 6..6 + before_peer as u32 {
+                    assert!(machine.split_enabled(&[0], pc));
+                    machine.exec_one(&[0], pc).unwrap();
+                }
+                let victim_pc = machine.threads[0].pc;
+                let actions = machine.actions();
+                let (writer, description) = actions
+                    .iter()
+                    .find(|(action, _)| matches!(action, Action::Split { warp: 0, pc: 4, .. }))
+                    .unwrap();
+                machine.apply(writer);
+                assert_eq!(machine.threads[0].pc, victim_pc);
+                assert_eq!(machine.threads[0].st, St::Run);
+                let after = machine.thread_may_arrive_walk(0, 1, 0, bar_values(), &mut Vec::new());
+                let cached_after = machine.thread_may_arrive(0, 1, 0, &mut Vec::new());
+                for pc in victim_pc..barrier_pc {
+                    assert!(machine.split_enabled(&[0], pc));
+                    machine.exec_one(&[0], pc).unwrap();
+                    assert_eq!(machine.threads[0].pc, pc + 1);
+                    assert_eq!(machine.threads[0].st, St::Run);
+                }
+                assert_eq!(machine.threads[0].pc, barrier_pc);
+                assert!(after && cached_after);
+                eprintln!(
+                    "{name}, {barrier}: enabled peer `{description}`; before fresh={fresh}, memoized={memoized}, repeated={repeated}; after fresh={after}, memoized={cached_after}; actual barrier PC{barrier_pc}"
+                );
+                if !(fresh && memoized && repeated) {
+                    failures.push(format!("{name}, {barrier}"));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "future arrivals lost across enabled peer uniform writes: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn parsed_peer_private_write_preserves_arrival_exclusion() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        for barrier in ["BAR.SYNC 0", "BAR.SYNC R1"] {
+            for (init, peer, victim) in [
+                (
+                    "ISETP.EQ.U32.AND P1, PT, RZ, RZ, PT",
+                    "ISETP.NE.U32.AND P1, PT, RZ, RZ, PT",
+                    vec!["@P1 EXIT"],
+                ),
+                (
+                    "MOV R3, 0x1",
+                    "MOV R3, 0x0",
+                    vec!["ISETP.NE.U32.AND P1, PT, R3, RZ, PT", "@P1 EXIT"],
+                ),
+            ] {
+                let mut instructions = vec![
+                    init,
+                    "S2R R0, SR_LANEID",
+                    "ISETP.EQ.U32.AND P0, PT, R0, RZ, PT",
+                    "@P0 BRA `(.L_victim)",
+                    peer,
+                    "EXIT",
+                ];
+                instructions.extend(victim.iter().copied());
+                instructions.extend([barrier, "EXIT"]);
+                let mut text = String::from(".text.k:\n");
+                for (pc, instruction) in instructions.iter().enumerate() {
+                    if pc == 6 {
+                        text.push_str(".L_victim:\n");
+                    }
+                    text.push_str(&format!(
+                        "/*{:04x}*/ {instruction} ;\n/* 0x000fc00000000000 */\n",
+                        pc * 16
+                    ));
+                }
+                let kernel =
+                    ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+                let launch = crate::build_launch(&case, &kernel).unwrap();
+                let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+                let whole_warp: Vec<_> = (0..32).collect();
+                for pc in 0..4 {
+                    machine.exec_one(&whole_warp, pc).unwrap();
+                }
+                assert!(!machine.thread_may_arrive_walk(0, 1, 0, bar_values(), &mut Vec::new()));
+                assert!(!machine.thread_may_arrive(0, 1, 0, &mut Vec::new()));
+                if victim.len() == 1 {
+                    assert!(exit_bound(&machine, 0, 6));
+                }
+                let writer = machine
+                    .actions()
+                    .into_iter()
+                    .find(|(action, _)| matches!(action, Action::Split { warp: 0, pc: 4, .. }))
+                    .unwrap()
+                    .0;
+                machine.apply(&writer);
+                assert!(!machine.thread_may_arrive_walk(0, 1, 0, bar_values(), &mut Vec::new()));
+                assert!(!machine.thread_may_arrive(0, 1, 0, &mut Vec::new()));
+                if victim.len() == 1 {
+                    assert!(exit_bound(&machine, 0, 6));
+                }
+                for pc in 6..6 + victim.len() as u32 {
+                    machine.exec_one(&[0], pc).unwrap();
+                }
+                assert_eq!(machine.threads[0].st, St::Exited);
+            }
+        }
+    }
+
+    #[test]
+    fn parsed_private_overwrite_needs_retried_arrival_walk() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        for barrier in ["BAR.SYNC 0", "BAR.SYNC R1"] {
+            let instructions = [
+                "MOV R2, R0",
+                "ISETP.EQ.U32.AND P0, PT, R2, 0x7, PT",
+                "@P0 EXIT",
+                barrier,
+                "EXIT",
+            ];
+            let mut text = String::from(".text.k:\n");
+            for (pc, instruction) in instructions.iter().enumerate() {
+                text.push_str(&format!(
+                    "/*{:04x}*/ {instruction} ;\n/* 0x000fc00000000000 */\n",
+                    pc * 16
+                ));
+            }
+            let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+            let launch = crate::build_launch(&case, &kernel).unwrap();
+            let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+            for (file, idx, value) in [
+                (ptxv_ir::File::R, 0, 0),
+                (ptxv_ir::File::R, 1, 0),
+                (ptxv_ir::File::R, 2, 7),
+                (ptxv_ir::File::P, 0, 1),
+            ] {
+                machine.wr(0, ptxv_ir::Reg { file, idx }, value, 1);
+            }
+            let mut plain_reads = Vec::new();
+            let mut register_reads = Vec::new();
+            assert!(machine.thread_may_arrive_walk_plain(0, 1, 0, false, &mut plain_reads));
+            let mut value_reads = Vec::new();
+            assert!(machine.thread_may_arrive_walk_plain(0, 1, 0, true, &mut value_reads));
+            assert!(value_reads.iter().any(|(key, value)| matches!(key, BarKey::Val(ptxv_ir::Val::Reg(r, _)) if r.file == ptxv_ir::File::R && r.idx == 0) && *value == Some(0)));
+            assert!(!value_reads.iter().any(|(key, _)| matches!(key, BarKey::Val(ptxv_ir::Val::Reg(r, _)) if r.file == ptxv_ir::File::R && r.idx == 2)));
+            assert!(machine.thread_may_arrive_walk_regs(0, 1, 0, &mut register_reads));
+            assert!(plain_reads.iter().any(
+                |(key, value)| matches!(key, BarKey::Val(ptxv_ir::Val::Reg(register, _))
+                if register.file == ptxv_ir::File::R && register.idx == 2)
+                    && *value == Some(7)
+            ));
+            for pc in 0..3 {
+                machine.exec_one(&[0], pc).unwrap();
+            }
+            assert_eq!(machine.threads[0].pc, 3);
+            assert_eq!(machine.threads[0].st, St::Run);
+            eprintln!(
+                "{barrier}: actual execution reaches barrier PC3; plain reads={plain_reads:?}; register reads={register_reads:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parsed_constant_false_exit_falls_through_in_arrival_walk() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        let mut failures = Vec::new();
+        for barrier in ["BAR.SYNC 0", "BAR.SYNC R0"] {
+            for guard in ["!PT", "!UPT", "!P0", "!UP0"] {
+                for transfer in ["EXIT", "BPT.TRAP 0x1", "BRA `(.L_exit)"] {
+                    let text = format!(
+                        ".text.k:\n/*0000*/ @{guard} {transfer} ;\n/* 0x000fc00000000000 */\n/*0010*/ {barrier} ;\n/* 0x000fc00000000000 */\n.L_exit:\n/*0020*/ EXIT ;\n/* 0x000fc00000000000 */\n"
+                    );
+                    let kernel =
+                        ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+                    assert!(kernel.code[0].guard.neg);
+                    let launch = crate::build_launch(&case, &kernel).unwrap();
+                    let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+                    if let Some(register) = machine.k.code[0].guard.reg {
+                        machine.wr(0, register, 1, 1);
+                    }
+                    if machine.bar_cfg.regid {
+                        machine.wr(
+                            0,
+                            ptxv_ir::Reg {
+                                file: ptxv_ir::File::R,
+                                idx: 0,
+                            },
+                            0,
+                            1,
+                        );
+                    }
+                    assert!(machine.bar_cfg.succ[0].contains(&1));
+                    assert_ne!(machine.bar_cfg.reach[0] & 1, 0);
+                    let fresh =
+                        machine.thread_may_arrive_walk(0, 1, 0, bar_values(), &mut Vec::new());
+                    let memoized = machine.thread_may_arrive(0, 1, 0, &mut Vec::new());
+                    let repeated = machine.thread_may_arrive(0, 1, 0, &mut Vec::new());
+                    machine.exec_one(&[0], 0).unwrap();
+                    assert_eq!(machine.threads[0].pc, 1);
+                    assert_eq!(machine.threads[0].st, St::Run);
+                    assert!(machine.thread_may_arrive_walk(0, 1, 0, bar_values(), &mut Vec::new()));
+                    eprintln!(
+                        "{barrier}: @{guard} {transfer}, dynamic next=1, regid={}, fresh={fresh}, memoized={memoized}, repeated={repeated}",
+                        machine.bar_cfg.regid
+                    );
+                    if !(fresh && memoized && repeated) {
+                        failures.push(format!("{barrier}: @{guard} {transfer}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "known-false control transfers lose the barrier path: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn parsed_predicated_brx_fallthrough_is_in_analysis_graph() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../probes/brx_idx");
+        let case = ptxv_case::Case::load(&dir).unwrap();
+        let source = case.variant_ptx("good").unwrap()
+            .replace(".reg .b32", ".reg .pred %p0;\n    .reg .b32")
+            .replace("    brx.idx         %r5, $L_brx_0;", "    setp.eq.u32 %p0, 0, 1;\n    @%p0 brx.idx %r5, $L_brx_0;\n    mov.u32 %r31, 123;")
+            .replace("T0:\n", "T0:\n    bar.sync 0;\n");
+        let kernel = ptxv_ptx::parse_kernel(&source, Some(&case.m.entry)).unwrap();
+        let branch = kernel
+            .code
+            .iter()
+            .position(|i| matches!(i.op, Op::Brx { .. }))
+            .unwrap();
+        let barrier = kernel
+            .code
+            .iter()
+            .position(|i| matches!(i.op, Op::BarSync { .. }))
+            .unwrap();
+        assert!(kernel.code[branch].guard.reg.is_some());
+        let destination = kernel.code[branch + 1].op.dst_regs()[0];
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        machine.threads[0].make_mut().set_pc(branch as u32 - 1);
+        machine.exec_one(&[0], branch as u32 - 1).unwrap();
+        machine.exec_one(&[0], branch as u32).unwrap();
+        assert_eq!(machine.threads[0].pc, branch as u32 + 1);
+        let edges = &machine.bar_cfg.succ[branch];
+        let sets = machine.bar_cfg.program.may_write_sets(branch, 1);
+        let answer = machine
+            .bar_cfg
+            .program
+            .may_write(&sets, barrier, &destination);
+        eprintln!(
+            "parsed guard-false BRX pc={branch}, dynamic next={}, static edges={edges:?}, barrier={barrier}, may-write R31={answer}",
+            branch + 1
+        );
+        assert!(
+            edges.contains(&(branch + 1)),
+            "guard-false dynamic edge is absent from static CFG"
+        );
+        assert!(
+            answer,
+            "R31 write on BRX fallthrough is absent at the barrier"
+        );
+    }
+
+    #[test]
+    fn program_clones_share_only_immutable_semantic_inputs() {
+        let original = BarCfg::default();
+        let mut cloned = original.clone();
+        cloned.peekwait.insert(9);
+        let fresh = BarCfg::default();
+        assert_eq!(
+            original.cache_key(0, 0).generation,
+            cloned.cache_key(0, 0).generation
+        );
+        assert!(!original.peekwait.contains(&9));
+        assert_ne!(
+            original.cache_key(0, 0).generation,
+            fresh.cache_key(0, 0).generation
+        );
+        assert_ne!(
+            cloned.cache_key(0, 0).generation,
+            fresh.cache_key(0, 0).generation
+        );
+    }
+
+    #[test]
+    fn program_generations_are_unique_across_workers() {
+        let workers: Vec<_> = (0..16)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    (0..128)
+                        .map(|_| BarCfg::default().cache_key(0, 0).generation)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let generations: Vec<_> = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect();
+        let unique: HashSet<_> = generations.iter().copied().collect();
+        assert_eq!(unique.len(), generations.len());
+    }
+
+    #[test]
+    fn cached_walk_matches_fresh_after_another_program_is_dropped() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let case = ptxv_case::Case::load(&dir).unwrap();
+        let source = case.variant_ptx("good").unwrap();
+        for regid in [false, true] {
+            let source = if regid {
+                source.replace("bar.sync 1, 64;", "mov.u32 %r11, 1; bar.sync %r11, 64;")
+            } else {
+                source.clone()
+            };
+            let first = ptxv_ptx::parse_kernel(&source, Some(&case.m.entry)).unwrap();
+            let pc = first
+                .code
+                .iter()
+                .position(|i| {
+                    matches!(
+                        i.op,
+                        ptxv_ir::Op::BarSync {
+                            id: ptxv_ir::Val::Imm(1),
+                            ..
+                        }
+                    ) || regid
+                        && matches!(
+                            i.op,
+                            ptxv_ir::Op::BarSync {
+                                id: ptxv_ir::Val::Reg(..),
+                                ..
+                            }
+                        )
+                })
+                .unwrap();
+            let pc = pc - usize::from(regid);
+            let launch = crate::build_launch(&case, &first).unwrap();
+            let mut first = Machine::new(Arc::new(first), Arc::new(launch));
+            first.threads[0].make_mut().set_pc(pc as u32);
+            assert_eq!(first.bar_cfg.regid, regid);
+            assert!(first.thread_may_arrive(0, 2, 0, &mut Vec::new()));
+            drop(first);
+
+            let source = source
+                .replace("bar.arrive 1, 64;", "bar.arrive 2, 64;")
+                .replace("bar.sync 1, 64;", "bar.sync 2, 64;");
+            let second = ptxv_ptx::parse_kernel(&source, Some(&case.m.entry)).unwrap();
+            let launch = crate::build_launch(&case, &second).unwrap();
+            let mut second = Machine::new(Arc::new(second), Arc::new(launch));
+            second.threads[0].make_mut().set_pc(pc as u32);
+            let fresh = second.thread_may_arrive_walk(0, 2, 0, bar_values(), &mut Vec::new());
+            assert!(!fresh);
+            assert_eq!(second.thread_may_arrive(0, 2, 0, &mut Vec::new()), fresh);
+        }
+    }
+
+    #[test]
+    fn republished_program_discards_derived_annotations() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        let source = r#"
+.version 8.0
+.target sm_90
+.address_size 64
+.visible .entry republish() {
+    .reg .pred %p;
+    bar.arrive 1, 32;
+    @%p bra repeat;
+    ret;
+repeat:
+    bar.sync 1, 32;
+    ret;
+}
+"#;
+        let kernel = ptxv_ptx::parse_kernel(source, Some("republish")).unwrap();
+        let branch = kernel
+            .code
+            .iter()
+            .position(|inst| matches!(inst.op, ptxv_ir::Op::Bra { .. }))
+            .unwrap();
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        let mut original = (*machine.bar_cfg).clone();
+        assert_eq!(original.arv_repeat & 2, 2);
+        original.peekwait.insert(1);
+        original
+            .peekskip
+            .insert(2, (BTreeSet::from([3]), BTreeSet::from([4])));
+        let original_key = original.cache_key(0, 1);
+        let mut fold = original.fold.clone();
+        fold[branch] = Some(false);
+        let rebuilt = original.with_control_flow_tables(fold.clone(), original.rets.clone());
+        assert_ne!(rebuilt.cache_key(0, 1), original_key);
+        assert!(rebuilt.peekwait.is_empty());
+        assert!(rebuilt.peekskip.is_empty());
+        assert_eq!(rebuilt.fold, fold);
+        assert_eq!(rebuilt.rets, original.rets);
+        assert_eq!(rebuilt.arv_repeat & 2, 0);
+        assert_eq!(rebuilt.arv_mixed, original.arv_mixed);
+        assert_eq!(rebuilt.regid, original.regid);
+        assert_eq!(rebuilt.cut, original.cut);
+        assert_eq!(original.cache_key(0, 1), original_key);
+        assert_eq!(original.peekwait, BTreeSet::from([1]));
+        assert_eq!(
+            original.peekskip[&2],
+            (BTreeSet::from([3]), BTreeSet::from([4]))
+        );
+        assert_eq!(original.fold, machine.bar_cfg.fold);
+        assert_eq!(original.arv_repeat & 2, 2);
+    }
+
+    #[test]
+    fn walk_reads_code_owned_by_its_program_identity() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let case = ptxv_case::Case::load(&dir).unwrap();
+        let source = case.variant_ptx("good").unwrap();
+        let kernel = ptxv_ptx::parse_kernel(&source, Some(&case.m.entry)).unwrap();
+        let pc = kernel
+            .code
+            .iter()
+            .position(|i| {
+                matches!(
+                    i.op,
+                    ptxv_ir::Op::BarSync {
+                        id: ptxv_ir::Val::Imm(1),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        machine.threads[0].make_mut().set_pc(pc as u32);
+        assert!(machine.thread_may_arrive(0, 2, 0, &mut Vec::new()));
+        let ptxv_ir::Op::BarSync { id, .. } = &mut Arc::make_mut(&mut machine.k).code[pc].op else {
+            unreachable!();
+        };
+        *id = ptxv_ir::Val::Imm(2);
+        assert!(!std::ptr::eq(machine.bar_cfg.kernel(), machine.k.as_ref()));
+        let fresh = machine.thread_may_arrive_walk(0, 2, 0, bar_values(), &mut Vec::new());
+        assert!(fresh);
+        assert_eq!(machine.thread_may_arrive(0, 2, 0, &mut Vec::new()), fresh);
+    }
 
     /// E-BAR-OVER's walk cache keys a machine's walks by the identity of its `BarCfg` and
     /// kernel (`Machine::walk_id`), found by their addresses. Once that machine is dropped, a
@@ -10684,6 +12481,7 @@ mod walk_cache_tests {
     /// `Machine::rd`) or a wrong arrival bound. The identity table and the per-thread identity
     /// memo pin both addresses while they hold them; so do the region dataflow caches
     /// (`bar_mw`, `bar_uw`) for the `BarCfg`.
+
     #[test]
     fn walk_cache_entries_pin_their_key() {
         let dir =
@@ -10697,7 +12495,7 @@ mod walk_cache_tests {
             .find(|&pc| m.bar_cfg.reach[pc] & 2 != 0)
             .expect("a pc that may reach barrier 1");
         let mut m = m;
-        m.threads[0].make_mut().pc = pc as u32;
+        m.threads[0].make_mut().set_pc(pc as u32);
         let mut reads = Vec::new();
         let _ = m.thread_may_arrive(0, 2, 0, &mut reads);
         let key = Arc::as_ptr(&m.bar_cfg) as usize;
@@ -10791,7 +12589,7 @@ mod walk_cache_tests {
                 _ => None,
             })
             .expect("the exit branch");
-        done.threads[160].make_mut().pc = exit as u32;
+        done.threads[160].make_mut().set_pc(exit as u32);
         let pcs = [
             (&bw1, 160usize, 2u32, true, true),
             (&done, 160, 2, true, false),
@@ -10822,6 +12620,7 @@ mod walk_cache_tests {
             .expect("the exit branch");
         k.code[br].guard.neg = !k.code[br].guard.neg;
         flip.k = Arc::new(k);
+        flip.bar_cfg = Arc::new(bar_cfg(&flip));
         let guards = [
             (&good, 160usize, 2u32, true, false),
             (&flip, 160, 2, true, true),
@@ -10829,9 +12628,23 @@ mod walk_cache_tests {
         // The `BarCfg`: BW1 without control-flow successors (the walk cannot leave the
         // thread's pc), the same kernel.
         let mut none = bw1.clone();
-        let mut c = (*bw1.bar_cfg).clone();
-        c.succ.iter_mut().for_each(|s| s.clear());
-        none.bar_cfg = Arc::new(c);
+        let c = &bw1.bar_cfg;
+        let mut builder =
+            crate::bar_program::ProgramBuilder::new(none.k.clone(), c.fold.clone(), c.rets.clone());
+        builder.clear_successors();
+        none.bar_cfg = Arc::new(BarCfg {
+            program: crate::bar_program::BarProgram::new(
+                builder,
+                crate::bar_program::Flags {
+                    arv_repeat: c.arv_repeat,
+                    arv_mixed: c.arv_mixed,
+                    regid: c.regid,
+                    cut: c.cut,
+                },
+            ),
+            peekwait: c.peekwait.clone(),
+            peekskip: c.peekskip.clone(),
+        });
         let cfgs = [
             (&bw1, 160usize, 2u32, true, true),
             (&none, 160, 2, true, false),
@@ -11091,19 +12904,15 @@ mod walk_cache_tests {
         };
         for t in 0..32 {
             m.wr(t, r1, t as u64, 1);
-            m.threads[t].make_mut().pc = 1;
+            m.threads[t].make_mut().set_pc(1);
         }
         assert!(matches!(m.k.code[1].op, ptxv_ir::Op::Setp { .. }));
         agree([(&m, 1, false), (&m, 2, true)]);
     }
 
-    /// A SASS walk records the warp's convergence (`BarKey::Conv`): a uniform register's
-    /// value is used only while every live lane of the warp is at the thread's pc. Thread 0
-    /// at `ISETP.NE.U32.AND P0, PT, RZ, UR4, PT` (UR4 = 7) before `@P0 BRA` past
-    /// `BAR.SYNC 0x1`: with the warp converged the walk knows the branch is taken; with lane
-    /// 31 elsewhere (a machine with the same kernel, no other value differs) it cannot know
-    /// UR4, and the thread may arrive. Fails when the walk leaves the convergence read out
-    /// of its reads.
+    /// A SASS walk records the warp's convergence (`BarKey::Conv`). Shared UR operands
+    /// remain unknown in the walk, so both states may arrive. Their different convergence
+    /// observations must still prevent cross-state trie reuse.
     #[test]
     fn walk_cache_keys_the_warps_convergence() {
         let mut a = sass(
@@ -11124,10 +12933,17 @@ mod walk_cache_tests {
             .find(|&pc| matches!(a.k.code[pc].op, ptxv_ir::Op::Exit))
             .expect("the exit");
         let mut b = a.clone();
-        b.threads[31].make_mut().pc = exit as u32;
+        b.threads[31].make_mut().set_pc(exit as u32);
         assert_eq!(a.bar_read(0, &BarKey::Conv), Some(1));
         assert_eq!(b.bar_read(0, &BarKey::Conv), Some(0));
-        agree([(&a, 0, false), (&b, 0, true)]);
+        for (machine, convergence) in [(&a, 1), (&b, 0)] {
+            let mut reads = Vec::new();
+            assert!(machine.thread_may_arrive_walk(0, 2, 0, true, &mut reads));
+            assert!(reads.contains(&(BarKey::Conv, Some(convergence))));
+        }
+        agree([(&a, 0, true), (&b, 0, true)]);
+        assert!(reused((&a, 0), (&b, 0), 2).is_none());
+        assert!(reused((&b, 0), (&a, 0), 2).is_none());
     }
 
     /// The register-id walk records a guard predicate it reads (one set before the walk
@@ -11154,18 +12970,14 @@ mod walk_cache_tests {
         for t in 0..32 {
             m.wr(t, r2, 1, 1);
             m.wr(t, p1, (t == 1) as u64, 1);
-            m.threads[t].make_mut().pc = 2;
+            m.threads[t].make_mut().set_pc(2);
         }
         agree([(&m, 1, false), (&m, 2, true)]);
     }
 
-    /// The plain walk records R2UR's warp-uniformity read (`BarKey::Uni`): with values, an R2UR
-    /// of a register every live lane holds alike gives the uniform register that value. Thread
-    /// 0 at `R2UR UR4, R2` (R2 = R3 = 7) before `ISETP.EQ.U32.AND P0, PT, R3, UR4, PT` and `@P0
-    /// BRA` past `BAR.SYNC 0x1`: with every lane's R2 equal the walk knows the branch is taken;
-    /// with lane 31's R2 = 8 (a machine with the same kernel, the warp still converged, thread
-    /// 0's values the same) it cannot know UR4, and the thread may arrive. Fails when the walk
-    /// leaves the uniformity read out of its reads.
+    /// The plain walk records R2UR's uniformity check (`BarKey::Uni`). Reading its shared
+    /// UR result remains unknown, so both states may arrive. Different source uniformity
+    /// must nevertheless invalidate the other state's cached trie path.
     #[test]
     fn walk_cache_keys_an_r2urs_uniformity() {
         let mut a = sass(
@@ -11193,9 +13005,16 @@ mod walk_cache_tests {
         let mut b = a.clone();
         b.wr(31, r(2), 8, 1);
         assert_eq!(a.bar_read(0, &BarKey::Uni(src.clone())), Some(1));
-        assert_eq!(b.bar_read(0, &BarKey::Uni(src)), Some(0));
+        assert_eq!(b.bar_read(0, &BarKey::Uni(src.clone())), Some(0));
         assert_eq!(b.bar_read(0, &BarKey::Conv), Some(1));
-        agree([(&a, 0, false), (&b, 0, true)]);
+        for (machine, uniformity) in [(&a, 1), (&b, 0)] {
+            let mut reads = Vec::new();
+            assert!(machine.thread_may_arrive_walk(0, 2, 0, true, &mut reads));
+            assert!(reads.contains(&(BarKey::Uni(src.clone()), Some(uniformity))));
+        }
+        agree([(&a, 0, true), (&b, 0, true)]);
+        assert!(reused((&a, 0), (&b, 0), 2).is_none());
+        assert!(reused((&b, 0), (&a, 0), 2).is_none());
     }
 
     /// Two one-warp SASS kernels: the walk from the entry forks (`BRA.DIV`, which no walk
@@ -11326,35 +13145,43 @@ mod sign_pred_tests {
         ptxv_ir::Reg { file, idx }
     }
 
-    /// MISS 97, E-CONST-BRA: a branch guard reading a register known from an immediate reads
-    /// its bit 31 as a `.SIGN` predicate (the parser takes `.SIGN` in PLOP3 inputs only; the
-    /// guard is set here directly). Before, 0x40000000 folded the branch as taken.
+    /// MISS 97: the executor reads bit 31 for a typed `.SIGN` guard, while the certified
+    /// constant fold conservatively refuses it. The parser permits `.SIGN` only in PLOP3.
     #[test]
-    fn const_guard_reads_sign_bit() {
-        for (v, want) in [
-            (0x4000_0000u32, false),
+    fn const_guard_refuses_sign_bit() {
+        for (v, truth) in [
+            (0u32, false),
+            (0x4000_0000, false),
             (0x8000_0000, true),
             (0xffff_ffff, true),
         ] {
-            let m = machine(
-                &format!(
-                    "
+            for neg in [false, true] {
+                let mut m = machine(
+                    &format!(
+                        "
         /*0000*/                   MOV R4, {v:#x} ;
         /*0010*/               @P0 BRA `(.L_x_1) ;
         /*0020*/                   EXIT ;
 .L_x_1:
         /*0030*/                   EXIT ;
 "
-                ),
-                |k| {
-                    k.code[1].guard = ptxv_ir::Pred {
-                        reg: Some(sign(ptxv_ir::File::R, 4)),
-                        neg: false,
-                    }
-                },
-            );
-            let rets = ret_table(&m.k);
-            assert_eq!(const_guards(&m, &rets)[1], Some(want), "{v:#x}");
+                    ),
+                    |k| {
+                        k.code[1].guard = ptxv_ir::Pred {
+                            reg: Some(sign(ptxv_ir::File::R, 4)),
+                            neg,
+                        }
+                    },
+                );
+                m.exec_one(&[0], 0).unwrap();
+                let rets = ret_table(&m.k);
+                assert_eq!(
+                    m.prd(0, m.k.code[1].guard),
+                    truth ^ neg,
+                    "{v:#x}, neg={neg}"
+                );
+                assert_eq!(const_guards(&m, &rets)[1], None, "{v:#x}, neg={neg}");
+            }
         }
     }
 
@@ -11421,5 +13248,557 @@ mod sign_pred_tests {
         let got = sim.pred(&m, &cfg(r, a), p(r, false));
         let want: Vec<u64> = (0..32).map(|l| (l < 16) as u64).collect();
         assert_eq!(sim.lanes_of(got), Some(want));
+    }
+}
+
+#[cfg(test)]
+mod guarded_lookahead_tests {
+    use ptxv_ir::Op;
+
+    use super::*;
+
+    #[test]
+    fn parsed_false_brx_falls_through_in_lookahead() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../probes/brx_idx");
+        let case = ptxv_case::Case::load(&dir).expect("BRX case");
+        let source = case.variant_ptx("good").expect("PTX source")
+            .replace(".reg .b32", ".reg .pred %p0;\n    .reg .b32")
+            .replace("    brx.idx         %r5, $L_brx_0;",
+                     "    setp.eq.u32 %p0, 0, 1;\n    @%p0 brx.idx %r5, $L_brx_0;\n    mov.u32 %r31, 123;");
+        let kernel =
+            ptxv_ptx::parse_kernel(&source, Some(&case.m.entry)).expect("parsed guarded BRX");
+        let branch = kernel
+            .code
+            .iter()
+            .position(|inst| matches!(inst.op, Op::Brx { .. }))
+            .expect("BRX pc");
+        let launch = crate::build_launch(&case, &kernel).expect("launch");
+        let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        machine.threads[0].make_mut().set_pc(branch as u32 - 1);
+        machine
+            .exec_one(&[0], branch as u32 - 1)
+            .expect("false predicate");
+        let mut scratch = machine.clone();
+        machine
+            .exec_one(&[0], branch as u32)
+            .expect("skipped branch");
+        assert_eq!(machine.threads[0].pc, branch as u32 + 1);
+
+        let mut simulation = LaWarp {
+            w: 0,
+            ts: vec![0],
+            init: Default::default(),
+            lv: Vec::new(),
+            lvi: HashMap::new(),
+            work: Vec::new(),
+            waiting: Vec::new(),
+            seen: Default::default(),
+            ids: 0,
+            exec: vec![0; machine.k.code.len().div_ceil(64)],
+            steps: 0,
+            wild: None,
+            wild_done: false,
+            cut: 0,
+            at: HashMap::new(),
+            trace: false,
+            scc: std::rc::Rc::new(la_scc(&machine)),
+            loops: HashSet::new(),
+            arr_at: HashMap::new(),
+        };
+        let mut config = LaCfg {
+            pc: branch as u32,
+            env: LaEnv::default(),
+            obs: BTreeMap::new(),
+            lanes: 1,
+            body: None,
+            hist: LaHist::default(),
+        };
+        let mut result = LaResult {
+            exec: HashMap::new(),
+            arr: HashMap::new(),
+            inf: HashSet::new(),
+            inf_cta: HashSet::new(),
+            stopped: Vec::new(),
+            why: Vec::new(),
+        };
+        let mut changed = false;
+        let guard = machine.k.code[branch].guard;
+        assert!(matches!(
+            simulation.pred(&machine, &config, guard),
+            Av::K(0)
+        ));
+        let outcome = simulation.step(
+            &machine,
+            &mut scratch,
+            &mut config,
+            &mut result,
+            &|_, _, _| {},
+            &mut changed,
+        );
+        assert!(
+            matches!(outcome, LaStep::Next),
+            "known-false parsed BRX must skip target decoding and fall through"
+        );
+
+        let p = guard.reg.expect("parsed guard register");
+        let ptxv_ir::Op::Brx {
+            base: ptxv_ir::Val::Reg(base, _),
+            targets,
+            ..
+        } = &machine.k.code[branch].op
+        else {
+            panic!("register-indexed BRX")
+        };
+        let base = *base;
+        let targets = targets.clone();
+        config.env.insert(p, Av::U);
+        for value in [Av::K(0), Av::U] {
+            config.env.insert(base, value);
+            let outcome = simulation.step(
+                &machine,
+                &mut scratch,
+                &mut config,
+                &mut result,
+                &|_, _, _| {},
+                &mut changed,
+            );
+            let LaStep::Fork(choices) = outcome else {
+                panic!("uniform unknown guard must retain alternative paths");
+            };
+            assert!(choices.contains(&Some(branch as u32 + 1)));
+            assert!(choices.contains(&Some(targets[0] as u32)));
+            if value == Av::U {
+                assert!(targets
+                    .iter()
+                    .all(|target| choices.contains(&Some(*target as u32))));
+            }
+        }
+        config.env.insert(p, Av::K(0));
+        for operation in [
+            Op::Call { target: usize::MAX },
+            Op::Ret {
+                addr: ptxv_ir::Val::Imm(u64::MAX),
+            },
+        ] {
+            Arc::make_mut(&mut machine.k).code[branch].op = operation;
+            machine.threads[0].make_mut().set_pc(branch as u32);
+            machine
+                .exec_one(&[0], branch as u32)
+                .expect("skipped control transfer");
+            assert_eq!(machine.threads[0].pc, branch as u32 + 1);
+            let outcome = simulation.step(
+                &machine,
+                &mut scratch,
+                &mut config,
+                &mut result,
+                &|_, _, _| {},
+                &mut changed,
+            );
+            assert!(matches!(outcome, LaStep::Next));
+        }
+        let target = branch + 1;
+        let entry = machine.k.entry_of(branch);
+        let code_len = machine.k.code.len();
+        let mut valid_returns = vec![vec![]; code_len];
+        valid_returns[branch].push(target);
+        let instruction = &mut Arc::make_mut(&mut machine.k).code[branch];
+        instruction.guard = ptxv_ir::Pred::TRUE;
+        instruction.op = Op::Ret {
+            addr: ptxv_ir::Val::Imm(((target - entry) as u64) << 4),
+        };
+        for (returns, valid) in [
+            (vec![], true),
+            (vec![vec![]; code_len], false),
+            (vec![vec![target]], false),
+            (valid_returns, true),
+        ] {
+            let builder = crate::bar_program::ProgramBuilder::new(
+                machine.k.clone(),
+                machine.bar_cfg.fold.clone(),
+                returns,
+            );
+            Arc::make_mut(&mut machine.bar_cfg).program =
+                crate::bar_program::BarProgram::new(builder, Default::default());
+            let outcome = simulation.step(
+                &machine,
+                &mut scratch,
+                &mut config,
+                &mut result,
+                &|_, _, _| {},
+                &mut changed,
+            );
+            if valid {
+                assert!(matches!(outcome, LaStep::Jump(pc) if pc == target as u32));
+            } else {
+                assert!(matches!(outcome, LaStep::Wild(_)));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod shared_data_exit_audit {
+    use super::*;
+
+    #[test]
+    fn parsed_future_shared_address_must_not_be_eagerly_pruned() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let instructions = [
+            "S2UR UR0, SR_CTAID.X",
+            "S2R R0, SR_LANEID",
+            "ISETP.EQ.U32.AND P0, PT, R0, RZ, PT",
+            "@P0 BRA `(.L_victim)",
+            "UMOV UR0, 0x10000000",
+            "EXIT",
+            "MOV R2, UR0",
+            "LDC R3, c[0x0][R2+0x380]",
+            "EXIT",
+        ];
+        let mut text = String::from(".text.k:\n");
+        for (pc, instruction) in instructions.iter().enumerate() {
+            if pc == 6 {
+                text.push_str(".L_victim:\n");
+            }
+            let control = ptxv_sass::scoreboard::Ctrl {
+                stall: 15,
+                yld: false,
+                wbar: matches!(pc, 0 | 1 | 7).then_some(0),
+                rbar: None,
+                wait: if matches!(pc, 1 | 2 | 8) { 1 } else { 0 },
+                reuse: 0,
+            };
+            text.push_str(&format!(
+                "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                pc * 16,
+                control.encode(0)
+            ));
+        }
+        let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        assert!(
+            kernel.static_findings.is_empty(),
+            "{:?}",
+            kernel.static_findings
+        );
+        let mut launch = crate::build_launch(&case, &kernel).unwrap();
+        launch.grids[0].param_cbank = 0x380;
+        launch.grids[0].params = 7u32.to_le_bytes().to_vec();
+        let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        let whole_warp: Vec<_> = (0..32).collect();
+        for pc in 0..4 {
+            assert!(machine.split_enabled(&whole_warp, pc));
+            machine.exec_one(&whole_warp, pc).unwrap();
+        }
+        assert_eq!(machine.threads[0].pc, 6);
+        assert!(machine.findings.is_empty(), "{:?}", machine.findings);
+        let actions = machine.actions();
+        let ample = local_ample(&machine, actions.clone());
+        eprintln!(
+            "exit_bound={}; raw={:?}; ample={:?}",
+            exit_bound(&machine, 0, 6),
+            actions,
+            ample
+        );
+        let writer = actions
+            .iter()
+            .find(|(action, _)| matches!(action, Action::Split { warp: 0, pc: 4, .. }))
+            .unwrap()
+            .0
+            .clone();
+        let mut peer_first = machine.clone();
+        peer_first.apply(&writer);
+        for _ in 0..8 {
+            if peer_first.threads[0].st == St::Exited {
+                break;
+            }
+            let pc = peer_first.threads[0].pc;
+            let action = peer_first.actions().into_iter().find(|(action, _)|
+                matches!(action, Action::Split { warp: 0, pc: at, .. } if *at == pc))
+                .unwrap().0;
+            peer_first.apply(&action);
+        }
+        eprintln!("peer-first findings={:?}", peer_first.findings);
+        assert!(peer_first
+            .findings
+            .iter()
+            .any(|finding| finding.kind == "fault"));
+        let verdict = explore_threads(machine, 10000, 1);
+        eprintln!(
+            "actual explorer complete={} states={} classes={:?} findings={:?}",
+            verdict.complete,
+            verdict.states,
+            verdict.classes(),
+            verdict.findings
+        );
+        assert!(verdict.complete);
+        assert!(
+            verdict
+                .findings
+                .iter()
+                .any(|finding| finding.kind == "fault"),
+            "eager exit reduction missed the peer-first invalid address"
+        );
+    }
+    #[test]
+    fn parsed_future_shared_undefined_address_must_not_be_eagerly_pruned() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        let instructions = [
+            "S2UR UR0, SR_CTAID.X",
+            "S2R R0, SR_LANEID",
+            "ISETP.EQ.U32.AND P0, PT, R0, RZ, PT",
+            "@P0 BRA `(.L_victim)",
+            "R2UR UR0, R9",
+            "EXIT",
+            "MOV R2, UR0",
+            "LDC R3, c[0x0][R2+0x380]",
+            "EXIT",
+        ];
+        let mut text = String::from(".text.k:\n");
+        for (pc, instruction) in instructions.iter().enumerate() {
+            if pc == 6 {
+                text.push_str(".L_victim:\n");
+            }
+            let control = ptxv_sass::scoreboard::Ctrl {
+                stall: 15,
+                yld: false,
+                wbar: matches!(pc, 0 | 1 | 7).then_some(0),
+                rbar: None,
+                wait: if matches!(pc, 1 | 2 | 8) { 1 } else { 0 },
+                reuse: 0,
+            };
+            text.push_str(&format!(
+                "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                pc * 16,
+                control.encode(0)
+            ));
+        }
+        let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+        assert!(
+            kernel.static_findings.is_empty(),
+            "{:?}",
+            kernel.static_findings
+        );
+        let mut launch = crate::build_launch(&case, &kernel).unwrap();
+        launch.grids[0].param_cbank = 0x380;
+        launch.grids[0].params = 7u32.to_le_bytes().to_vec();
+        let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+        let whole_warp: Vec<_> = (0..32).collect();
+        for pc in 0..4 {
+            assert!(machine.split_enabled(&whole_warp, pc));
+            machine.exec_one(&whole_warp, pc).unwrap();
+        }
+        assert_eq!(machine.threads[0].pc, 6);
+        assert!(machine.findings.is_empty(), "{:?}", machine.findings);
+        let actions = machine.actions();
+        let ample = local_ample(&machine, actions.clone());
+        eprintln!(
+            "exit_bound={}; raw={:?}; ample={:?}",
+            exit_bound(&machine, 0, 6),
+            actions,
+            ample
+        );
+        let writer = actions
+            .iter()
+            .find(|(action, _)| matches!(action, Action::Split { warp: 0, pc: 4, .. }))
+            .unwrap()
+            .0
+            .clone();
+        let mut peer_first = machine.clone();
+        peer_first.apply(&writer);
+        for _ in 0..8 {
+            if peer_first.threads[0].st == St::Exited {
+                break;
+            }
+            let pc = peer_first.threads[0].pc;
+            let action = peer_first.actions().into_iter().find(|(action, _)|
+                matches!(action, Action::Split { warp: 0, pc: at, .. } if *at == pc))
+                .unwrap().0;
+            peer_first.apply(&action);
+        }
+        eprintln!("peer-first findings={:?}", peer_first.findings);
+        assert!(peer_first
+            .findings
+            .iter()
+            .any(|finding| finding.kind == "violation"));
+        let verdict = explore_threads(machine, 10000, 1);
+        eprintln!(
+            "actual explorer complete={} states={} classes={:?} findings={:?}",
+            verdict.complete,
+            verdict.states,
+            verdict.classes(),
+            verdict.findings
+        );
+        assert!(verdict.complete);
+        assert!(
+            verdict
+                .findings
+                .iter()
+                .any(|finding| finding.kind == "violation"),
+            "eager exit reduction missed the peer-first undefined address"
+        );
+    }
+    #[test]
+    fn parsed_private_and_constant_data_keep_eager_exit_precision() {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/e_bararv");
+        let mut case = ptxv_case::Case::load(&dir).unwrap();
+        case.m.params.clear();
+        case.m.block = [32, 1, 1];
+        for prefix in [
+            vec!["MOV R2, R0"],
+            vec!["MOV R2, URZ"],
+            vec!["SEL R2, RZ, 0x10000000, UPT"],
+            vec!["MOV R2, RZ", "@!PT MOV R2, UR0"],
+        ] {
+            let mut instructions = vec![
+                "S2UR UR0, SR_CTAID.X",
+                "S2R R0, SR_LANEID",
+                "ISETP.EQ.U32.AND P0, PT, R0, RZ, PT",
+                "@P0 BRA `(.L_victim)",
+                "UMOV UR0, 0x10000000",
+                "EXIT",
+            ];
+            instructions.extend(prefix.iter().copied());
+            instructions.extend(["LDC R3, c[0x0][R2+0x380]", "EXIT"]);
+            let mut text = String::from(".text.k:\n");
+            for (pc, instruction) in instructions.iter().enumerate() {
+                if pc == 6 {
+                    text.push_str(".L_victim:\n");
+                }
+                let is_load = instruction.starts_with("LDC");
+                let after_load = pc > 0 && instructions[pc - 1].starts_with("LDC");
+                let control = ptxv_sass::scoreboard::Ctrl {
+                    stall: 15,
+                    yld: false,
+                    wbar: (matches!(pc, 0 | 1) || is_load).then_some(0),
+                    rbar: None,
+                    wait: if matches!(pc, 1 | 2) || after_load {
+                        1
+                    } else {
+                        0
+                    },
+                    reuse: 0,
+                };
+                text.push_str(&format!(
+                    "/*{:04x}*/ {instruction} ;\n/* 0x{:016x} */\n",
+                    pc * 16,
+                    control.encode(0)
+                ));
+            }
+            let kernel = ptxv_sass::lower(&text, "k", &ptxv_sass::CubinMeta::default()).unwrap();
+            assert!(
+                kernel.static_findings.is_empty(),
+                "{:?}",
+                kernel.static_findings
+            );
+            let mut launch = crate::build_launch(&case, &kernel).unwrap();
+            launch.grids[0].param_cbank = 0x380;
+            launch.grids[0].params = 7u32.to_le_bytes().to_vec();
+            let mut machine = Machine::new(Arc::new(kernel), Arc::new(launch));
+            let whole_warp: Vec<_> = (0..32).collect();
+            for pc in 0..4 {
+                machine.exec_one(&whole_warp, pc).unwrap();
+            }
+            assert!(exit_bound(&machine, 0, 6), "{prefix:?}");
+            let actions = machine.actions();
+            assert_eq!(actions.len(), 2);
+            assert_eq!(local_ample(&machine, actions).len(), 1, "{prefix:?}");
+            let verdict = explore_threads(machine, 10000, 1);
+            assert!(verdict.complete);
+            assert_eq!(
+                verdict.classes(),
+                ["clean"],
+                "{prefix:?}: {:?}",
+                verdict.findings
+            );
+            eprintln!("private/constant positive prefix={prefix:?}: complete clean, eager kept");
+        }
+    }
+}
+
+#[cfg(test)]
+mod cancelled_return_completion_tests {
+    use super::*;
+
+    fn initial() -> Machine {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../probes/generic8");
+        let case = ptxv_case::Case::load(path).unwrap();
+        let source = case.variant_ptx("good").unwrap();
+        let kernel = ptxv_ptx::parse_kernel(&source, Some(&case.m.entry)).unwrap();
+        let launch = crate::build_launch(&case, &kernel).unwrap();
+        Machine::new(Arc::new(kernel), Arc::new(launch))
+    }
+
+    fn bounded(initial: &Machine) -> Verdict {
+        let mut verdict = crate::wellsync::certify(initial.clone()).verdict.unwrap();
+        assert!(verdict.complete);
+        assert!(verdict.findings.is_empty());
+        verdict.complete = false;
+        verdict
+    }
+
+    #[test]
+    fn cancelled_return_certificate_precedes_search_and_refuses_a_continuation() {
+        let initial = initial();
+        let certified = run_with_finalization(initial.clone(), |_| {
+            panic!("a certified initial machine must not enter bounded exploration")
+        });
+        assert!(certified.complete);
+        assert_eq!(certified.classes(), ["clean"]);
+
+        let mut advanced = initial;
+        advanced.threads[0].make_mut().advance_pc();
+        assert!(certify_cancelled_returns(&advanced).is_none());
+        let entered = std::cell::Cell::new(false);
+        let verdict = run_with_finalization(advanced, |_| {
+            entered.set(true);
+            Verdict {
+                complete: false,
+                ..certified
+            }
+        });
+        assert!(entered.get());
+        assert!(!verdict.complete);
+    }
+
+    #[test]
+    fn cancelled_return_completion_preserves_partial_diagnostics_and_outputs() {
+        let initial = initial();
+        let mut partial = bounded(&initial);
+        partial.findings.push(Finding {
+            kind: "violation".into(),
+            sig: "preserved-prefix".into(),
+            ..Default::default()
+        });
+        let result = complete_cancelled_returns(&initial, partial.clone());
+        assert!(!result.complete);
+        assert_eq!(result.findings[0].sig, partial.findings[0].sig);
+        assert_eq!(result.outputs, partial.outputs);
+        let mut partial = bounded(&initial);
+        partial.outputs[0][0] ^= 1;
+        let result = complete_cancelled_returns(&initial, partial.clone());
+        assert!(!result.complete);
+        assert_eq!(result.outputs, partial.outputs);
+    }
+
+    #[test]
+    fn cancelled_return_completion_requires_a_fresh_closed_initial_machine() {
+        let initial = initial();
+        let partial = bounded(&initial);
+        let mut completed = initial.clone();
+        completed.completed.push((0, 0, 1, 0));
+        assert!(!complete_cancelled_returns(&completed, partial.clone()).complete);
+        let mut advanced = initial.clone();
+        advanced.threads[0].make_mut().advance_pc();
+        assert!(!complete_cancelled_returns(&advanced, partial.clone()).complete);
+        assert!(complete_cancelled_returns(&initial, partial).complete);
     }
 }

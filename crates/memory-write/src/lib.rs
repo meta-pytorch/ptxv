@@ -19,6 +19,7 @@ pub mod barrier_reach;
 pub mod cache;
 pub mod cache_graph;
 pub mod checked;
+pub mod clock;
 pub mod definedness;
 pub mod effects;
 pub mod engine;

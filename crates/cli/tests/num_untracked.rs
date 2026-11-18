@@ -238,6 +238,18 @@ fn num_opt(case: &str) -> (String, Vec<(&'static str, Option<String>)>) {
     (text, csvs)
 }
 
+fn scalar_atomic_refused(text: &str, front: &str, output: &str) -> bool {
+    let prefix = format!(
+        "num good {front:<4}: output={output} NOT ANALYZED: the numerics run reported unmodeled: scalar atomic at "
+    );
+    text.lines().any(|line| {
+        line.starts_with(&prefix)
+            && line.ends_with(
+                " has overlapping or shared-return warp-lane claims whose interleavings are not modeled",
+            )
+    })
+}
+
 /// The invariant where some elements may equal their fp64 value: every analyzed element's
 /// claimed error is |GB300 - fp64|. Returns the analyzed (front, element) pairs and stdout.
 fn check_claims(case: &str, fp64: &[f64]) -> (Vec<(&'static str, usize)>, String) {
@@ -377,7 +389,13 @@ fn roundings_through_immediates_bit_operations_and_atomics_are_not_exact() {
     let untracked = |case: &str, keep: &dyn Fn(&str, usize) -> bool| {
         let (text, csvs) = num_opt(case);
         for (front, csv) in csvs {
-            let csv = csv.unwrap_or_else(|| panic!("{case} {front}: no CSV\n{text}"));
+            let Some(csv) = csv else {
+                assert!(
+                    case == "c_num_atom_old_f32" && scalar_atomic_refused(&text, front, "out"),
+                    "{case} {front}: no CSV\n{text}"
+                );
+                continue;
+            };
             for line in csv.lines().skip(1) {
                 let c: Vec<&str> = line.split(',').collect();
                 let i: usize = c[0].parse().unwrap();
@@ -399,7 +417,10 @@ fn roundings_through_immediates_bit_operations_and_atomics_are_not_exact() {
             .lines()
             .find(|l| l.starts_with(&format!("num good {front:<4}: output=acc")))
             .unwrap_or_else(|| panic!("{text}"));
-        assert!(acc.contains("cor1a_ok=true"), "{acc}");
+        assert!(
+            acc.contains("cor1a_ok=true") || scalar_atomic_refused(&text, front, "acc"),
+            "{acc}"
+        );
     }
 }
 
@@ -459,7 +480,11 @@ fn refused_where_paths_differ(case: &str, fp64: &[f64], differ: &[usize]) {
     let (analyzed, text) = check_claims(case, fp64);
     assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
     assert!(
-        text.contains("control flow or an address depends on input data or on a rounded value"),
+        text.contains("control flow or an address depends on input data or on a rounded value")
+            || case == "c_num_ctl_atom_f32"
+                && ["ptx", "sass"]
+                    .iter()
+                    .all(|front| scalar_atomic_refused(&text, front, "out")),
         "{case}: {text}"
     );
 }
@@ -770,7 +795,10 @@ fn atomics_other_than_f32_adds_keep_roundings_out_of_claims() {
     let (analyzed, text) = check_claims(case, &fp64);
     assert!(analyzed.is_empty(), "{case}: claims {analyzed:?}\n{text}");
     assert!(
-        text.contains("control flow or an address depends on input data"),
+        text.contains("control flow or an address depends on input data")
+            || ["ptx", "sass"]
+                .iter()
+                .all(|front| scalar_atomic_refused(&text, front, "out")),
         "{text}"
     );
 
@@ -779,7 +807,12 @@ fn atomics_other_than_f32_adds_keep_roundings_out_of_claims() {
     let bf = 32.0 * f32::from_bits(0x3dcd_0000) as f64;
     let fp64 = [1.0, sum, 1.0 + x[1], bf, bf + x[2], x[0] + 2f64.powi(-30)];
     let (analyzed, text) = check_claims(case, &fp64);
-    assert_eq!(analyzed, [("ptx", 5), ("sass", 5)], "{case}\n{text}");
+    let expected = if scalar_atomic_refused(&text, "sass", "out") {
+        vec![("ptx", 5)]
+    } else {
+        vec![("ptx", 5), ("sass", 5)]
+    };
+    assert_eq!(analyzed, expected, "{case}\n{text}");
 
     let case = "c_num_cas_after_or_f32";
     let x = buf(case, "data/x.bin");

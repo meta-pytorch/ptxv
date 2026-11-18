@@ -126,6 +126,15 @@ fn smem_diff(a: &Machine, b: &Machine) -> Vec<Value> {
 fn action_json(a: &Action) -> Value {
     match a {
         Action::Split { warp, pc, .. } => json!({"kind": "warp", "warp": warp, "pc": pc}),
+        Action::AtomicComponent {
+            warp,
+            pc,
+            thread,
+            component,
+        } => json!({
+            "kind": "warp", "warp": warp, "pc": pc,
+            "thread": thread, "component": format!("{component:?}"),
+        }),
         Action::Async(i) => json!({"kind": "async", "index": i}),
         Action::Launch(c) => json!({"kind": "launch", "cta": c}),
         Action::Clc(i, _) => json!({"kind": "clc", "index": i}),
@@ -231,4 +240,107 @@ pub(crate) fn write(
     });
     std::fs::write(path, serde_json::to_vec_pretty(&doc)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn vector_machine() -> Machine {
+        let text = r#"
+.version 8.8
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input) {
+  .reg .b32 %r0;
+  .reg .b64 %rd0;
+  .reg .f32 %f<4>;
+  .reg .pred %p<4>;
+  ld.param.u64 %rd0, [input];
+  mov.u32 %r0, %tid.x;
+  setp.eq.u32 %p0, %r0, 1;
+  mov.f32 %f0, 0f3f800000;
+  mov.f32 %f1, 0f41200000;
+  @%p0 mov.f32 %f0, 0f40000000;
+  @%p0 mov.f32 %f1, 0f41a00000;
+  atom.global.add.v2.f32 {%f2,%f3}, [%rd0], {%f0,%f1};
+  setp.eq.f32 %p1, %f2, 0f00000000;
+  setp.eq.f32 %p2, %f3, 0f41a00000;
+  and.pred %p1, %p1, %p2;
+  not.pred %p0, %p0;
+  and.pred %p1, %p1, %p0;
+  @%p1 trap;
+  ret;
+}
+"#;
+        let kernel = Arc::new(ptxv_ptx::parse_kernel(text, Some("k")).unwrap());
+        let manifest = serde_json::from_value(json!({
+            "name":"trace-component-replay", "description":"atomic component trace identity",
+            "entry":"k", "grid":[1,1,1], "block":[2,1,1], "outputs":[],
+            "buffers":[{"name":"x","dtype":"f32","shape":[2],"init":"zeros"}],
+            "params":[{"kind":"ptr","buffer":"x"}], "variants":[]
+        }))
+        .unwrap();
+        let case = ptxv_case::Case {
+            dir: PathBuf::new(),
+            m: manifest,
+        };
+        let launch = Arc::new(ptxv_sim::build_launch(&case, &kernel).unwrap());
+        Machine::new(kernel, launch)
+    }
+
+    #[test]
+    fn component_trace_keeps_warp_lane_and_component_identity() {
+        let dump = replay(vector_machine(), &[], None).unwrap();
+        assert_eq!(dump["terminal"], true);
+        let actions: Vec<_> = dump["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| &step["action"])
+            .filter(|action| action.get("component").is_some())
+            .collect();
+        assert_eq!(actions.len(), 4);
+        for thread in [0, 1] {
+            for component in ["First", "Second"] {
+                let action = actions
+                    .iter()
+                    .find(|action| action["thread"] == thread && action["component"] == component)
+                    .expect("each actual lane component is serialized");
+                assert_eq!(action["kind"], "warp");
+                assert_eq!(action["warp"], 0);
+                assert!(action["pc"].is_u64());
+            }
+        }
+    }
+
+    #[test]
+    fn component_finding_witness_replays_to_the_actual_trap() {
+        let machine = vector_machine();
+        let verdict = ptxv_sim::explore::explore(machine.clone(), 10000);
+        assert!(verdict.complete);
+        let finding = verdict
+            .findings
+            .iter()
+            .find(|finding| finding.kind == "trap")
+            .expect("mixed component returns reach the trap");
+        let dump = replay(machine, &finding.trace, Some(&finding.sig)).unwrap();
+        assert_eq!(dump["reported"], true);
+        let steps = dump["steps"].as_array().unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|step| step["action"].get("component").is_some())
+        );
+        assert!(
+            steps.last().unwrap()["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["kind"] == "trap")
+        );
+    }
 }

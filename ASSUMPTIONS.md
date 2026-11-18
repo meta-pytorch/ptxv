@@ -53,6 +53,15 @@ returning false and letting the thread do something else).
   fronts, also under `--certify`); source mutant `spin-undef-block` reverts the fix and is
   caught.
 
+  A warp-poll dry run is accepted only when execution raises no error or finding and
+  preserves both the bytes and definedness of every store as well as all participating
+  lane and uniform register state. Otherwise the real step runs, retaining its diagnostic
+  (`spin.rs` `wpoll_dry`; `execution_reduction_tests`). An uninitialized mbarrier wait or
+  peek likewise reports its first `mbar-uninit` diagnostic before parking, including a
+  peek forced into blocking mode (`mbar_uninitialized_wait_reports_before_blocking`,
+  `mbar_uninitialized_peek_reports_before_parking`,
+  `mbar_uninitialized_forced_peek_preserves_the_diagnostic`).
+
   **Compare-and-swap update loops** (2026-11-06, ptxas's loop for `atom.add.noftz.bf16`:
   `H: new = f(old); got = ATOMG.E.CAS [a], old, new; P = got != old; old = got; @P BRA H`) are
   not polls and are not blocked: the model runs every iteration as a step. That terminates in
@@ -600,12 +609,6 @@ commutes with everything:
   async-issue work after a wait);
 - a whole-warp `wait_group`, an exit with no pending async ops, or a visible op guarded off
   in every lane;
-- a whole-warp plain `mbarrier.arrive` that cannot complete the phase (it only decrements
-  the pending count, so it commutes with the other arrivals and no try_wait can tell), in a
-  kernel without counted arrivals: a counted arrival does not commute with it (with three
-  pending, a count-3 arrival completes the phase alone, after a count-1 one it overshoots;
-  `fixtures/mbar_count_order`, whose race the rule hid), and only until the search sees an
-  over-arrival (below);
 - the completion of a TMA store or an MMA (data movement; wait_group / commit observe it
   later);
 - barrier.cluster arrive / wait (like `bar.sync` arrivals);
@@ -634,19 +637,20 @@ With 4 plain arrivals at a barrier expecting 3, the three that come first comple
 and the fourth lands in the next one; which arrival is left over is a scheduling outcome
 (`fixtures/mbar_over_arrival`: a race when it is the one after the data write, from separate
 warps or from three lanes of one warp step; a count is a special case, `mbar_count_order`).
-- **Detection** (exec.rs `rec_late`, `rec_count`, footprint space 25, apart from the
-  pending counts' space 16 so that an exact counted completion is not taken for one): every mbarrier update
+- **Detection** (exec.rs `rec_late`, `rec_overarrival`, footprint space 25, apart from the
+  generation-membership space 18 so that an exact completion is not taken for one): every mbarrier update
   (arrival, complete_tx) reads the key of the phase k it lands in. An update whose actor's
   clock does not cover the completion clock of phase k - 1 (it is not ordered after every
   update of that phase) writes the key of phase k - 1, and so does an arrival of more than the
   pending arrivals at once (an overshoot, a fault). With exactly the expected arrivals per
   phase nothing is written; with an over-arrival every execution writes a key, because the
   arrivals beyond the count are not ordered after the completion in whichever order they come.
-- **Stateful explorer:** the local rule for plain arrivals above holds only until a key is
-  written (`Machine::arv_over`); a search round that relied on it and saw one runs again
-  without it (`explore_one_model`). Multi-node searches leave the rule off from the start
-  (ranks do not share the flag). The synchronization reduction learns the space-25 writes like
-  any footprint.
+- **Stateful explorer:** a plain arrival is no longer a local ample set just because its
+  current pending count is greater than its arrival count. Another schedule can complete
+  that phase first. Synchronization reduction uses the generation-membership audit below
+  and learns the space-25 writes like any footprint. `mbar_plain_generation_order` keeps
+  both orders: three plain arrivals target a phase expecting two, and the consumer races
+  when the producer's release lands in the next phase.
 - **DPOR** stops at the first such update and the stateful explorer redoes the search (a
   note says so; dpor.rs `OVER_ARRIVAL`). Its sleep sets and last-conflict backtracking assume
   that a waiting transition's footprint does not change, which an arrival that would land late
@@ -682,12 +686,17 @@ can still do (`explore.rs` `sync_ample`). Entities are warps, plus each warp's a
   accesses, and mbarrier keys. Plain memory and TMEM data are left out, because their
   conflicts are races (E-DRF).
   - An arrival into phase k reads key (M, k); the arrival that completes phase k also writes
-    (M, k+1). So arrivals into the same phase commute. Counted ones need more (space 16,
-    `rec_count`): every arrival into phase k reads the phase's pending-count key, and an
-    arrival of several at once (a count, or a remote operation carrying several lanes) that
-    takes the last pending arrivals writes it, so it conflicts with every arrival into its
-    phase (DPOR found the count-first order of `fixtures/mbar_count_order` on the PTX front
-    only by chance without it).
+    (M, k+1). This alone does not establish that two actions land in the same phase; the
+    membership key below covers both single and counted arrivals. The old pending-count
+    footprint (space 16) remains reserved, but is not the native counter update's policy.
+  - **Generation membership** (space 18, `memory-write::barrier::arrival_batch_writes`):
+    effects are summarized after the complete action. A membership key is read-only only
+    for an audited, nonempty batch of arrivals with no transaction delta, completion, fault
+    or invalidating effect, whose total is at most half the initial pending count. Such batches stay in the
+    same phase in either pairwise order. Other batches write the key. Transaction-count
+    changes conflict even with zero arrivals: `expect_tx` can prevent the completion that
+    `complete_tx` would otherwise publish. `mbar_transaction_generation_order` pins the
+    deadlock reachable in that order; `mbar_plain_generation_order` pins the release race.
   - A poll while the current phase is k reads (M, k), and the completion of phase k writes it.
     Init and inval write every key of M. So a consumer's poll is independent of everything
     except the one completion that would change its result.
@@ -1026,6 +1035,44 @@ and the search branched on every order (dispatch: no flow completed in 300k stat
 - If wrong: *miss*, for a value the learning did not see.
 - Where: `exec.rs` `vip_ok`, `access_x`, `Op::Ld`; `spin.rs` `after_step`; `machine.rs`
   `VipLearn`, `Machine::vipr`; `explore.rs` `explore_one`, `explore_one_model`.
+
+### E-DEAD-REG · code
+**State fingerprints quotient private register computation while retaining its control trace.**
+Small PTX integer-atomic kernels use a forward-only instruction whitelist. Calls,
+indirect or backward branches, cross-lane operations, asynchronous operations and uniform
+registers and fences disable the optimization. Numeric tracking, certificate runs, clock choices,
+footprint recording and counter-forcing modes retain the full native thread state.
+
+For a running actor, a temporary machine copy executes only defined, deterministic V/P
+register instructions, stopping before the next memory, synchronization or unsupported
+instruction. The signature retains every executed PC and guard decision, the stopping PC,
+the resulting register payloads read anywhere in the remaining instruction suffix, and
+both original and resulting register definedness. A retired scalar atomic lane starts its
+private lookahead after the atomic: its frozen operands, retirement state and all other
+continuation fields remain hashed. Pending lanes retain their atomic operand values.
+Parked actors only omit payloads that no instruction in the remaining suffix can read.
+
+The actual machine is never changed. The signature retains all other native thread state,
+vector clocks, atomic continuations, memory, synchronization histories and race shadows,
+except pending observations with an empty release clock. Such observations add no acquire
+edge; nonempty pending releases retain their writer, clock and scope. Fence instructions
+and warp poll regions disable this quotient. An exit acquire clears the thread's diagnostic
+origins before joining releases, so empty pending entries cannot mark reads as acquired.
+Two equal signatures at the same actual PC therefore execute the same pure control trace
+and expose identical operands and definedness at the next visible event. Other actors
+cannot observe their V/P registers, so those pure steps commute with other actors. The
+read analysis and memoized signature are pinned to the exact kernel object; mutations
+invalidate the cache, and replacing the kernel disables stale analysis.
+
+The DPOR entry point selects the stateful engine for this admitted machine class, with
+the same state cap and incompleteness rules, because stateless trace enumeration cannot
+share these equivalent continuations. The verdict records the selected engine.
+
+- Where: `register_liveness.rs`, `machine.rs` `Machine::hash`, `dpor.rs` engine selection.
+- Status: **argued**. Native controls compare projected and full exploration for returned
+  tickets, stores and races; further controls retain branch traces, guards, vector payloads,
+  definedness and kernel replacement.
+- If wrong: *miss*, through merging states with different future observations.
 
 ### E-CLOCK · code
 **SASS clock reads return 0, and `vprintf` does nothing.** DeepEP bounds every spin with a
@@ -3575,8 +3622,16 @@ and every wait observes a determined phase, happens-before (HB) is schedule-inva
     when all complete_tx are done); a final phase with all arrivals has tx-count ≥ 0;
     `mbarrier.inval` is HB-after every use. Phases are numbered from the initial phase
     (S-MBAR-MEM bit 63: phase 0 counts as completed at init); re-initialization starts a new
-    incarnation (keyed by the init epoch).
-  - **C-WAIT.** A successful try_wait/test_wait observed phase k (the current phase minus
+    incarnation (keyed by the init epoch). Invalidations must also be ordered with operations
+    in other incarnations and with overlapping backing writes or reinitializations; ordering
+    both an invalidation and a reinitialization before a query does not order them with each other.
+  - **C-WAIT.** Every query, including failed blocking polls and discarded peeks, must be
+    ordered after initialization. Overlapping ordinary or async writes to its backing bytes
+    must be ordered before or after it, including partial-word writes and later overwrites.
+    A failed query does not perform a native data-race check, so the certificate checks this
+    obligation independently of E-DRF. A discarded SASS predicate is logged using the query's
+    actual outcome rather than reading the always-true destination.
+    A successful try_wait/test_wait observed phase k (the current phase minus
     one). Lower bound: every operation of phase k-1 is HB-before it (it cannot arrive while
     phase k-1 is current and see k-2 of the same parity). Upper bound: let h be the first
     phase ≥ k+1 that has an operation after the wait or does not complete in the run, where
@@ -4520,6 +4575,20 @@ a divergent path.
 - Where: `exec.rs` `mbar_decode_mem`, `MbarInit`.
 - Status: **validated** (r1a bitwise = GB300; r2_cublas_gemm bitwise = GB300). Count and
   phase bit decoded.
+- **Reduction dependencies:** ordinary shared writes, including partial writes and async
+  landings, can create an encoded barrier before `mbars` contains an entry. In a kernel
+  that observes barrier memory, those writes and operations that drain them are scheduling
+  points. Synchronization footprints write every overlapping eight-byte barrier's init,
+  phase and arrival keys; learned releases also track initialization. Invalidating a
+  materialized barrier can expose its encoded backing word again and is visible too.
+  A specifically diagnosed uninitialized query reads its resolved eight bytes and all
+  phases in full DPOR footprints. Distinct invalid queries then commute; init, invalidation,
+  shared stores and completions retain conflicts. Blocked-query footprints include every
+  active lane's resolved target and all phases. Other query errors and synchronization-only
+  error footprints remain universal dependencies. Query execution still reports once and
+  parks without changing predicates or acquiring anything.
+  Status: **argued and tested**, against unreduced schedule graphs on both frontends in
+  `barrier_materialization`; this is not a proof of native POR soundness.
 
 ### S-TCGEN05 · code
 **tcgen05 ordering (PTX front-end):**
@@ -7142,7 +7211,10 @@ forms seen. Any other form is a hard error.
   - `SYNCS.ARRIVE.TRANS64.RED.A0T1 RZ, [a], RZ` (no arrival, expect one transaction unit) and
     `ARRIVES.LDGSTSBAR.64.TRANSCNT [a]` / `.ARVCNT [a]`: ptxas's `cp.async.mbarrier.arrive` /
     `.noinc` (E-CPASYNC-MBAR; fixtures/s_cpasync_mbar = GB300 1000/1000);
-  - `SYNCS.PHASECHK.TRANS64.TRYWAIT PT, [a], R` (result discarded): lowered as a no-op (E-SPIN).
+  - `SYNCS.PHASECHK.TRANS64.TRYWAIT PT, [a], R` (result discarded): retains the barrier
+    query, validation and acquire; the always-true destination discards the predicate write
+    (E-SPIN). `barrier_materialization` checks compiled discarded-result queries against
+    unreduced schedules, including an async overwrite into a different notification barrier.
 - Real CuTeDSL kernels (FA4 forward / decode, quack softmax, mslk decode, FA4 block sparsity;
   2026-11-05):
   - `CREDUX.MIN|.MAX|.MINABS|.MAXABS.F32[.NAN]` (redux.sync f32): FMNMX's order (-0 < +0) over
@@ -8552,6 +8624,10 @@ is bounded by the theorem in `softmax.rs` / docs/equiv-reassoc.md, from:
   <= a below; each 1/x slice's on every f32 in the divisor's proven range;
 - the argument of each exp, an exact linear form provably <= 0 (x - max(X) with x in X,
   max(A) - max(B) with A in B, or -inf) rounded at most once;
+- A structurally checked comparison/select maximum (`seg::real_maximum`) contributes the
+  same maximum as a tracked `Max` node under the finite-input requirement. Its selected
+  operand keeps its existing rounding history; the selection adds no rounding. This also
+  applies inside a tree of maxima and the positive, round-to-nearest scaled-score form.
 - the rounding nodes on each term's path (sums, online softmax's l * exp(m_old - m_new) +
   s), the division (div.rn: u; div.full: the 1/x slice's contract and one rounding);
 - the denominator having exactly one term exp(x_j - max(X)) per member of X (so S >= 1).
@@ -10575,8 +10651,14 @@ the truncations are a zero-inflated normal.
 ### N-ERRDIST-IDENT · code
 **An instruction slice computes the real function it was fitted to, on the outcomes of its
 data-dependent decisions that the fit's probes took** (non-chain programs).
-Each slice (the instructions between two numerics nodes: an exp range reduction plus
-MUFU.EX2, a Newton rsqrt, a polynomial, a division) is fitted on the captured input and 24
+The structural maximum recognizer is an explicit exception to fitting: it accepts only a
+checked two-argument comparison/select slice (`seg::real_maximum`), with no extra PCs.
+`ident::identify` records the actual operand selected on a tie. Its real projection is a
+maximum, while bit-exact evaluations still execute the slice, preserving signed-zero and
+NaN behavior. This does not identify arbitrary selections as maxima or extend a fitted
+slice to unobserved decision outcomes. NaN arguments have no real maximum value here.
+Other slices (the instructions between two numerics nodes: an exp range reduction plus
+MUFU.EX2, a Newton rsqrt, a polynomial, a division) are fitted on the captured input and 24
 perturbed inputs to f(c0 + sum c_i a_i) with f in {exp2, 1/x, 1/sqrt, sqrt, tanh, identity},
 a divisor or multiplier form, a / b, a polynomial of degree <= 3, or a named function
 (erf, gelu, silu, ...) with an outer affine map. Constants snap to named values (log2 e,
@@ -10697,6 +10779,8 @@ rounding removed, every identified slice replaced by its real function, and maxi
 the real values. The value is evaluated in double-double arithmetic. Where a slice's
 decisions take a pattern its fit does not cover, the slice's value and every value read from
 it are unknown (N-ERRDIST-IDENT).
+A structurally recognized maximum compares both the high and low double-double components
+before applying its recorded tie choice; equal high components alone are not a tie.
 - Where: `errdist/nonlin/real.rs`; used by `errdist/mc.rs` `observe` and the analytic tiers.
 - Status: **argued.** This defines "C - exact" for softmax, norms and attention. For a
   softmax it is softmax(x) computed exactly, given that the slices are identified.
@@ -10714,6 +10798,10 @@ with the 6 largest sites and no floor was retired on 2026-11-10: within 0.5% of 
 every scorecard row, with the same verdicts.) The output's
 position on its grid follows the final op: uniform for continuous values, the lattice
 residue for exact sums, the table offsets for final slices.
+A structurally recognized maximum contributes no local rounding law or sampled slice
+table. Its derivative selects one operand, including the recorded choice on an exact tie,
+and its final-rounding classification follows that operand's rounding site. The existing
+branch-flip checks still bound changes in which operand is selected (N-ERRDIST-SEL).
 - Where: `errdist/nonlin/lin.rs`, `errdist/nonlin/agg.rs` `estimate`.
 - Status: **argued.** Single kernels: within 1-2% of Tier 3 on softmax, RMSNorm, layer norm
   and attention under the normal spec (docs/errdist.md §9). Elementwise functions are

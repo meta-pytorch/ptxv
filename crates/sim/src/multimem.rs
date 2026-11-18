@@ -494,7 +494,7 @@ fn round_ne(neg: bool, mag: u128, e: i32, (eb, mb): (u32, u32)) -> Option<u64> {
     let bias = (1i32 << (eb - 1)) - 1;
     let emin = 1 - bias - mb as i32; // exponent of the subnormal lsb
     let top = 127 - mag.leading_zeros() as i32; // mag in [2^top, 2^(top+1))
-    // Exponent of the result's lsb: mb bits below the leading bit, at least emin.
+                                                // Exponent of the result's lsb: mb bits below the leading bit, at least emin.
     let lsb = (top + e - mb as i32).max(emin);
     let sh = lsb - e;
     let mut q = if sh <= 0 {

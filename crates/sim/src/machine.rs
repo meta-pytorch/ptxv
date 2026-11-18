@@ -16,10 +16,34 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use ptxv_ir::*;
+use ptxv_memory_write::barrier::ArrivalStep;
+use ptxv_memory_write::clock;
+use ptxv_memory_write::effects;
+use ptxv_memory_write::effects::AccessKind;
+use ptxv_memory_write::effects::PhaseKey;
+pub use ptxv_memory_write::effects::Resource;
+pub use ptxv_memory_write::effects::ResourceSpace;
+use ptxv_memory_write::effects::Visibility;
+use ptxv_memory_write::machine_action;
+use ptxv_memory_write::machine_action::ActionState;
+use ptxv_memory_write::machine_control;
+use ptxv_memory_write::machine_control::Flow;
+use ptxv_memory_write::machine_control::ThreadCore;
+pub use ptxv_memory_write::machine_footprint::Footprint;
+use ptxv_memory_write::machine_recorder::Access as RecordedAccess;
+use ptxv_memory_write::machine_registers;
+use ptxv_memory_write::machine_registers::LaneRegisters;
+use ptxv_memory_write::machine_registers::PredicateWrite;
+use ptxv_memory_write::machine_registers::WarpRegisters;
+use ptxv_memory_write::machine_registers::WordWrite;
+use ptxv_memory_write::machine_warp;
+use ptxv_memory_write::machine_warp::MaskOp;
+use ptxv_memory_write::machine_warp::MaskWrite;
+use ptxv_memory_write::machine_warp::WarpCore;
 use serde::Serialize;
 
 use crate::num::NumState;
@@ -53,7 +77,7 @@ pub const SHARED_GENERIC_BASE: u64 = 0x7c00_0000_0000;
 ///
 /// The hash is the XOR of a per-entry mix over the *logical* clock (max of base and own), so
 /// equal clocks hash equally whatever their representation (canonical states merge).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct VC {
     base: Arc<VcBase>,
     /// (actor, clock) overriding the base for that actor; clock 0 = none.
@@ -129,27 +153,21 @@ impl VcBase {
     }
     #[inline]
     fn get(&self, i: u32) -> u32 {
-        match self.e.binary_search_by_key(&i, |e| e.0) {
-            Ok(k) => self.e[k].1,
-            Err(_) => 0,
-        }
+        clock::lookup(&self.e, i)
     }
 }
 
 impl VC {
     pub fn new() -> VC {
-        VC::default()
+        let (base, own) = clock::empty();
+        VC {
+            base: VcBase::from(base),
+            own,
+        }
     }
     /// Entries (actor, clock) in actor order, own entry folded in.
     fn entries(&self) -> Vec<(u32, u32)> {
-        let mut e = self.base.e.clone();
-        if self.own.1 != 0 {
-            match e.binary_search_by_key(&self.own.0, |x| x.0) {
-                Ok(k) => e[k].1 = e[k].1.max(self.own.1),
-                Err(k) => e.insert(k, self.own),
-            }
-        }
-        e
+        clock::entries(&self.base.e, self.own)
     }
     fn logical_hash(&self) -> u64 {
         if self.own.1 == 0 {
@@ -157,6 +175,18 @@ impl VC {
         }
         let b = self.base.get(self.own.0);
         self.base.h ^ vc_mix(self.own.0, b) ^ vc_mix(self.own.0, b.max(self.own.1))
+    }
+}
+
+impl Default for VC {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl clock::OwnEntry for &VC {
+    fn own_entry(&self) -> clock::Entry {
+        self.own
     }
 }
 
@@ -183,26 +213,10 @@ pub fn vc_meet(a: &VC, b: &VC) -> VC {
     if a == b {
         return a.clone();
     }
-    let (ea, eb) = (a.entries(), b.entries());
-    let mut e = Vec::new();
-    let (mut i, mut j) = (0, 0);
-    while i < ea.len() && j < eb.len() {
-        match ea[i].0.cmp(&eb[j].0) {
-            std::cmp::Ordering::Less => i += 1,
-            std::cmp::Ordering::Greater => j += 1,
-            std::cmp::Ordering::Equal => {
-                let c = ea[i].1.min(eb[j].1);
-                if c > 0 {
-                    e.push((ea[i].0, c));
-                }
-                i += 1;
-                j += 1;
-            }
-        }
-    }
+    let (e, own) = clock::meet_clock(&a.base.e, a.own, &b.base.e, b.own);
     VC {
         base: VcBase::from(e),
-        own: (0, 0),
+        own,
     }
 }
 
@@ -215,18 +229,10 @@ pub fn vc_join_all<'a>(vs: impl IntoIterator<Item = &'a VC>) -> VC {
         return VC::new();
     };
     if vs.iter().all(|v| Arc::ptr_eq(&v.base, &first.base)) {
-        let mut e = first.base.e.clone();
-        for v in &vs {
-            if v.own.1 != 0 {
-                match e.binary_search_by_key(&v.own.0, |x| x.0) {
-                    Ok(k) => e[k].1 = e[k].1.max(v.own.1),
-                    Err(k) => e.insert(k, v.own),
-                }
-            }
-        }
+        let (e, own) = clock::join_shared(&first.base.e, &vs);
         return VC {
             base: VcBase::from(e),
-            own: (0, 0),
+            own,
         };
     }
     let mut j = VC::new();
@@ -262,134 +268,22 @@ pub fn vc_join_many(a: &mut VC, vs: &[&VC]) {
         return;
     }
     own.sort_unstable();
-    let mut e = a.entries();
-    let mut out = Vec::with_capacity(e.len() + own.len());
-    let mut k = 0;
-    for (i, c) in own {
-        while k < e.len() && e[k].0 < i {
-            out.push(e[k]);
-            k += 1;
-        }
-        match out.last_mut() {
-            Some(l) if l.0 == i => l.1 = l.1.max(c),
-            _ if k < e.len() && e[k].0 == i => {
-                out.push((i, e[k].1.max(c)));
-                k += 1;
-            }
-            _ => out.push((i, c)),
-        }
-    }
-    out.extend(e.drain(k..));
+    let (out, own) = clock::join_sorted_updates(&a.base.e, a.own, &own);
     a.base = VcBase::from(out);
-    a.own = (0, 0);
+    a.own = own;
 }
 
 pub fn vc_join(a: &mut VC, b: &VC) {
-    if b.base.e.is_empty() && b.own.1 == 0 {
-        return;
-    }
-    // b adds nothing: same base and b's own entry already covered.
-    if Arc::ptr_eq(&a.base, &b.base) && (b.own.1 == 0 || vc_get(a, b.own.0) >= b.own.1) {
-        return;
-    }
-    // a is empty apart from its own entry: share b's base.
-    if a.base.e.is_empty() && b.own.1 == 0 {
-        a.base = b.base.clone();
-        return;
-    }
-    let y: std::borrow::Cow<[(u32, u32)]> = if b.own.1 == 0 {
-        std::borrow::Cow::Borrowed(&b.base.e)
-    } else {
-        std::borrow::Cow::Owned(b.entries())
-    };
-    // When one side covers the other, the merge below would rebuild that side's base entry for
-    // entry: keep a's (a covers b), or share b's (b covers a's base; a's own entry stays). No
-    // allocation, no rehash, sharing kept.
-    match cover(&a.base.e, &y) {
-        Cover2::Left => return,
-        Cover2::Right if b.own.1 == 0 => {
-            a.base = b.base.clone();
-            return;
-        }
-        _ => {}
-    }
-    let x = &a.base.e;
-    let mut out = Vec::with_capacity(x.len().max(y.len()));
-    let (mut i, mut j) = (0, 0);
-    while i < x.len() || j < y.len() {
-        match (x.get(i), y.get(j)) {
-            (Some(&(p, cp)), Some(&(q, cq))) if p == q => {
-                out.push((p, cp.max(cq)));
-                i += 1;
-                j += 1;
-            }
-            (Some(&(p, cp)), Some(&(q, _))) if p < q => {
-                out.push((p, cp));
-                i += 1;
-            }
-            (Some(_), Some(&e)) => {
-                out.push(e);
-                j += 1;
-            }
-            (Some(&e), None) => {
-                out.push(e);
-                i += 1;
-            }
-            (None, Some(&e)) => {
-                out.push(e);
-                j += 1;
-            }
-            (None, None) => unreachable!(),
-        }
-    }
-    a.base = VcBase::from(out);
-}
-
-/// Which of two entry lists (sorted by actor) covers the other: `Left` when every entry of
-/// `y` is in `x` with at least its clock (merging them gives `x`), `Right` when every entry of
-/// `x` is in `y` likewise (merging gives `y`), else `Neither`. Only exact answers: an actor
-/// one side lacks counts against covering whatever its clock. Binary searches when `y` is much
-/// shorter than `x` (then only `Left` is possible), else one merge scan that stops as soon as
-/// neither can cover.
-enum Cover2 {
-    Left,
-    Right,
-    Neither,
-}
-
-fn cover(x: &[(u32, u32)], y: &[(u32, u32)]) -> Cover2 {
-    if y.len() * 16 < x.len() {
-        let left = y
-            .iter()
-            .all(|&(q, c)| matches!(x.binary_search_by_key(&q, |e| e.0), Ok(k) if x[k].1 >= c));
-        return if left { Cover2::Left } else { Cover2::Neither };
-    }
-    let (mut i, mut j) = (0, 0);
-    let (mut x_more, mut y_more) = (false, false);
-    while i < x.len() && j < y.len() && !(x_more && y_more) {
-        match x[i].0.cmp(&y[j].0) {
-            std::cmp::Ordering::Less => {
-                x_more = true;
-                i += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                y_more = true;
-                j += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                x_more |= x[i].1 > y[j].1;
-                y_more |= y[j].1 > x[i].1;
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    x_more |= i < x.len();
-    y_more |= j < y.len();
-    match (x_more, y_more) {
-        (_, false) => Cover2::Left,
-        (false, true) => Cover2::Right,
-        (true, true) => Cover2::Neither,
+    match clock::join_plan(
+        &a.base.e,
+        a.own,
+        &b.base.e,
+        b.own,
+        Arc::ptr_eq(&a.base, &b.base),
+    ) {
+        clock::JoinPlan::Keep => {}
+        clock::JoinPlan::ShareRight => a.base = b.base.clone(),
+        clock::JoinPlan::Replace(entries) => a.base = VcBase::from(entries),
     }
 }
 
@@ -459,27 +353,28 @@ pub fn vc_covers(a: &VC, b: &VC) -> bool {
 
 /// Entries (actor, clock) of `v` with actor >= `from`, in actor order.
 pub fn vc_tail(v: &VC, from: u32) -> Vec<(u32, u32)> {
-    let k = v.base.e.partition_point(|x| x.0 < from);
-    let mut e: Vec<(u32, u32)> = v.base.e[k..].to_vec();
-    if v.own.1 != 0 && v.own.0 >= from {
-        match e.binary_search_by_key(&v.own.0, |x| x.0) {
-            Ok(i) => e[i].1 = e[i].1.max(v.own.1),
-            Err(i) => e.insert(i, v.own),
-        }
-    }
-    e
+    clock::tail(&v.base.e, v.own, from)
 }
 
 /// The clock with entries `e` (sorted by actor, distinct actors, no zero clocks).
 pub fn vc_from_sorted(e: Vec<(u32, u32)>) -> VC {
+    let (e, own) = clock::from_sorted(e);
     VC {
         base: VcBase::from(e),
-        own: (0, 0),
+        own,
     }
 }
 
 /// E-READ-DONE: the clock entry of actor `a`'s completed reads (`Machine::read_release`).
-pub const RR_BIT: u32 = 1 << 31;
+pub const RR_BIT: u32 = clock::READ_BIT;
+
+pub fn vc_read_release(v: &VC, lower: u32, reader: u32, done: u32) -> VC {
+    let (entries, own) = clock::read_release_clock(&v.base.e, v.own, lower, reader, done);
+    VC {
+        base: VcBase::from(entries),
+        own,
+    }
+}
 
 /// Actors every thread has, with ids `k n + t` (`n` threads, `k` below this): the thread
 /// itself, its tcgen05.ld/st actor (`Machine::tc_actor_id`), its tcgen05 pipe
@@ -527,12 +422,10 @@ pub fn actor_thread_of(a: u32, n: u32, shift: u32) -> usize {
 /// read entry dropped because happens-before covers it would be lost at the next relaxed
 /// store; `r4c_ring_reuse_is_load_buffering_under_the_strict_model`.)
 pub fn rr_new(v: &VC, rr: &VC) -> Option<VC> {
-    let e: Vec<(u32, u32)> = rr
-        .entries()
-        .into_iter()
-        .filter(|&(a, c)| vc_get(v, a) < c)
-        .collect();
-    (!e.is_empty()).then(|| vc_from_sorted(e))
+    clock::uncovered_clock(&rr.base.e, rr.own, &v.base.e, v.own).map(|(e, own)| VC {
+        base: VcBase::from(e),
+        own,
+    })
 }
 
 /// `vc_get(vc, ·)` with the last answers kept (direct-mapped by actor): a shadow check asks
@@ -569,19 +462,15 @@ impl<'a> VcMemo<'a> {
 
 #[inline]
 pub fn vc_get(v: &VC, i: u32) -> u32 {
-    let b = v.base.get(i);
-    if v.own.1 != 0 && v.own.0 == i {
-        b.max(v.own.1)
-    } else {
-        b
-    }
+    clock::get(&v.base.e, v.own, i)
 }
 
 /// The clock that knows only `actor` up to `clock`.
 pub fn vc_single(actor: u32, clock: u32) -> VC {
+    let (base, own) = clock::single(actor, clock);
     VC {
-        base: VcBase::from(vec![(actor, clock)]),
-        own: (0, 0),
+        base: VcBase::from(base),
+        own,
     }
 }
 
@@ -627,13 +516,10 @@ pub fn vc_raise_many<'a>(vs: impl IntoIterator<Item = &'a VC>, i: u32, c: u32) -
 }
 
 pub fn vc_tick(v: &mut VC, i: u32) {
-    if v.own.1 != 0 && v.own.0 != i {
-        // Fold the other actor's own entry into a new base first.
-        v.base = VcBase::from(v.entries());
-        v.own = (0, 0);
+    if let Some(next) = clock::relocate(&v.base.e, v.own, i) {
+        clock::install_relocation(&mut v.base, &mut v.own, VcBase::from(next));
     }
-    let c = vc_get(v, i) + 1;
-    v.own = (i, c);
+    clock::tick_own(&v.base.e, &mut v.own, i);
 }
 
 /// Insert or replace `e` in a list kept sorted by actor (canonical state: commuting
@@ -1156,6 +1042,7 @@ impl Hasher for FastHasher {
 pub struct Cached<T> {
     v: T,
     h: std::sync::atomic::AtomicU64,
+    projected: std::sync::OnceLock<(Arc<crate::register_liveness::FutureReads>, bool, u64)>,
 }
 
 impl<T: Clone> Clone for Cached<T> {
@@ -1163,6 +1050,7 @@ impl<T: Clone> Clone for Cached<T> {
         Cached {
             v: self.v.clone(),
             h: std::sync::atomic::AtomicU64::new(self.h.load(std::sync::atomic::Ordering::Relaxed)),
+            projected: self.projected.clone(),
         }
     }
 }
@@ -1185,6 +1073,7 @@ impl<T: Clone + Hash> Cow<T> {
         Cow(Arc::new(Cached {
             v,
             h: std::sync::atomic::AtomicU64::new(0),
+            projected: std::sync::OnceLock::new(),
         }))
     }
     pub fn make_mut(&mut self) -> &mut T {
@@ -1195,6 +1084,7 @@ impl<T: Clone + Hash> Cow<T> {
         }
         let c = Arc::make_mut(&mut self.0);
         c.h.store(0, std::sync::atomic::Ordering::Relaxed);
+        let _ = c.projected.take();
         &mut c.v
     }
     fn cached_hash(&self) -> u64 {
@@ -1226,6 +1116,29 @@ impl<T: Clone + Hash> Hash for Cow<T> {
     }
 }
 
+pub(crate) fn raw_thread_hash(thread: &Cow<Thread>) -> u64 {
+    thread.cached_hash()
+}
+
+impl Cow<Thread> {
+    fn projected_hash(
+        &self,
+        machine: &Machine,
+        thread: usize,
+        reads: &Arc<crate::register_liveness::FutureReads>,
+    ) -> u64 {
+        let retired = self.st == St::Run && machine.atomic_scalar_lane_retired(thread, self.pc);
+        if let Some((cached, cached_retired, hash)) = self.0.projected.get() {
+            if Arc::ptr_eq(cached, reads) && *cached_retired == retired {
+                return *hash;
+            }
+        }
+        let hash = reads.projected_hash(machine, thread, retired);
+        let _ = self.0.projected.set((reads.clone(), retired, hash));
+        hash
+    }
+}
+
 /// Copy-on-write paged array: cloning a machine is cheap (one reference count per array, not
 /// one per page), and a transition copies only the page table and the pages it touches. Both
 /// levels cache their hash, so an untouched array costs O(1) to fingerprint.
@@ -1246,6 +1159,7 @@ impl<T: Clone> Clone for Pages<T> {
                 h: std::sync::atomic::AtomicU64::new(
                     t.h.load(std::sync::atomic::Ordering::Relaxed),
                 ),
+                projected: t.projected.clone(),
             }))
         } else {
             self.pages.clone()
@@ -1315,7 +1229,11 @@ impl<T: Clone + Hash> Pages<T> {
     #[inline]
     pub fn get(&self, i: usize) -> &T {
         let p = &self.pages[i / PAGE];
-        if p.len() == 1 { &p[0] } else { &p[i % PAGE] }
+        if p.len() == 1 {
+            &p[0]
+        } else {
+            &p[i % PAGE]
+        }
     }
     /// Page `pi`, writable and stored element by element.
     #[inline]
@@ -1441,6 +1359,10 @@ pub enum St {
     Exited,
 }
 
+pub fn apply_thread_flow(state: &mut ThreadCore<St>, pc: u32, flow: Flow) {
+    machine_control::apply_flow(state, pc, flow, St::Run);
+}
+
 #[derive(Clone, Debug, Hash)]
 pub struct Thread {
     pub cta: u16,
@@ -1448,13 +1370,7 @@ pub struct Thread {
     pub warp: u32,
     pub lane: u32,
     pub tid: [u32; 3],
-    pub pc: u32,
-    pub st: St,
-    pub regs: Vec<u64>,
-    pub preds: Vec<u64>,
-    /// Bitset over `preds`: predicate written since launch (S-INIT-PRED: a read of an
-    /// unwritten predicate is reported, as for registers; SASS `PT` is always defined).
-    pub pdef: Vec<u64>,
+    core: ThreadCore<St>,
     pub vc: VC,
     /// View of this thread's tcgen05.ld/st actor (`Machine::tc_actor_id`): tcgen05 operations
     /// only see synchronization that a `tcgen05.fence::after_thread_sync` imported (PTX
@@ -1490,13 +1406,6 @@ pub struct Thread {
     pub tc_ld_unwaited: u32,
     /// Likewise its first tcgen05.st since its last tcgen05.wait::st.
     pub tc_st_unwaited: u32,
-    /// Bitset over `regs`: slot written since launch (S-INIT: reads of unwritten registers
-    /// are reported).
-    pub written: Vec<u64>,
-    /// S-INIT, PTX virtual registers: the undefined bits of written registers that are partly
-    /// undefined (sorted by index; absent: wholly defined). A 64-bit register packs two f32x2
-    /// lanes that may come from different rows (`mov.b64 %rd, {%r1, %r2}`).
-    pub vund: Vec<(u16, u64)>,
     /// fence.proxy.async executions of this thread (S-PROXY): its clock then (own entry and
     /// what it had observed of every other thread).
     pub fences: Vec<VC>,
@@ -1532,9 +1441,6 @@ pub struct Thread {
     /// the full `wait_group` only, and until then a line of the destination this SM filled
     /// before the store can still be read, E-HW-L1).
     pub bulk_vis: VC,
-    /// Barrier generation key this thread was released from and has not run since (DPOR:
-    /// its next transition acquires it).
-    pub acq_bar: Option<u64>,
     /// Visibility of mbarrier inits beyond `vc` (E-CLUSTER-BAR): a relaxed cluster arrive
     /// after fence.mbarrier_init releases only the inits. Checked as `init HB vc or vis`.
     pub vis: VC,
@@ -1578,6 +1484,8 @@ pub struct Thread {
     /// Peeks the explorer runs as failed tests (`explore::peekskip_set`) whose worlds have
     /// not joined yet: (CTA, mbarrier offset, parity, peek pc).
     pub peekwin: Vec<(u16, u32, u32, u32)>,
+    /// A diagnosed wait error blocks repeated identical diagnostics until the query changes.
+    pub wait_error: Option<u32>,
     /// Local memory (STL/LDL spills), sorted by word address: low 32 bits value, high 32
     /// bits its undefined-bit mask (S-INIT).
     pub local: Vec<(u32, u64)>,
@@ -1601,6 +1509,12 @@ pub struct Thread {
 }
 
 impl Thread {
+    pub(crate) fn with_registers(&self, registers: LaneRegisters) -> Self {
+        let mut projected = self.clone();
+        projected.core.registers = registers;
+        projected
+    }
+
     /// The tcgen05.ld/st actor's clock of the thread's first load or store not yet waited
     /// for (`tc_ld_unwaited`, `tc_st_unwaited`), 0 if none.
     pub fn tc_unwaited(&self) -> u32 {
@@ -1608,6 +1522,68 @@ impl Thread {
             (0, x) | (x, 0) => x,
             (x, y) => x.min(y),
         }
+    }
+}
+
+impl std::ops::Deref for Thread {
+    type Target = ThreadCore<St>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl Thread {
+    pub(crate) fn set_pc(&mut self, pc: u32) {
+        machine_control::set_pc(&mut self.core, pc);
+    }
+
+    pub(crate) fn advance_pc(&mut self) {
+        machine_control::advance(&mut self.core);
+    }
+
+    pub fn set_status(&mut self, status: St) {
+        machine_control::set_status(&mut self.core, status);
+    }
+
+    pub(crate) fn apply_flow(&mut self, pc: u32, flow: Flow) {
+        apply_thread_flow(&mut self.core, pc, flow);
+    }
+
+    pub(crate) fn resume(&mut self) {
+        machine_control::resume(&mut self.core, St::Run);
+    }
+
+    pub(crate) fn release(&mut self, key: u64) {
+        machine_control::release(&mut self.core, St::Run, key);
+    }
+
+    pub(crate) fn take_acquire(&mut self) -> Option<u64> {
+        machine_control::take_acquire(&mut self.core)
+    }
+
+    pub(crate) fn write_virtual(&mut self, index: u16, value: u64, undefined: u64) {
+        machine_registers::write_virtual(&mut self.core.registers, index, value, undefined);
+    }
+
+    pub(crate) fn write_scalar(&mut self, write: WordWrite) {
+        machine_registers::write_scalar(&mut self.core.registers, write);
+    }
+
+    pub(crate) fn write_predicate(&mut self, index: u16, value: bool, defined: bool) {
+        machine_registers::write_predicate(&mut self.core.registers, index, value, defined);
+    }
+
+    pub(crate) fn poison_scalar(&mut self, index: u16) {
+        machine_registers::poison_scalar(&mut self.core.registers, index);
+    }
+
+    pub(crate) fn poison_predicate(&mut self, index: u16) {
+        machine_registers::poison_predicate(&mut self.core.registers, index);
+    }
+
+    pub(crate) fn fill_scalar_if_unwritten(&mut self, index: usize, value: u64) {
+        machine_registers::fill_scalar_if_unwritten(&mut self.core.registers, index, value);
     }
 }
 
@@ -1628,23 +1604,30 @@ pub struct CpPending {
 #[derive(Clone, Debug, Hash)]
 pub struct Warp {
     pub cta: u16,
-    pub ur: Vec<u64>,
-    pub up: u8,
-    /// Bitset over `up`: uniform predicate written since launch (S-INIT-PRED; `UPT` is
-    /// always defined).
-    pub up_def: u8,
-    /// Bitset over `ur`: uniform register written since launch.
-    pub ur_written: [u64; 4],
-    /// Lanes recorded by `BSSY Bb` for each convergence barrier b (E-BSYNC).
-    pub bmask: [u32; 16],
-    /// SASS: LDGDEPBAR executions by the warp (any lanes): the cp.async scoreboard counts
-    /// the warp's commits, not each thread's (E-CPASYNC).
-    pub cp_seq: u32,
+    core: WarpCore,
     /// SASS: copies a `DEPBAR` of some lanes retired while other live lanes of the warp ran
     /// elsewhere: (the warp's commit count at their issue, their writes' clock, lanes that
     /// have not executed a `DEPBAR` covering them yet). Such a lane's covering wait joins
     /// the clock (E-CPASYNC, `cp_async_wait_warp`). Empty unless waits diverge.
     pub cp_landed: Vec<(u32, VC, u32)>,
+}
+
+impl std::ops::Deref for Warp {
+    type Target = WarpCore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl Warp {
+    pub(crate) fn fill_uniform_if_unwritten(&mut self, index: usize, value: u64) {
+        machine_registers::fill_uniform_if_unwritten(&mut self.core.registers, index, value);
+    }
+
+    pub(crate) fn commit_async(&mut self) {
+        machine_warp::commit_async(&mut self.core);
+    }
 }
 
 /// The memory a release or acquire covers (S-MBAR-SCOPE): everything; the SM-local memories
@@ -2327,7 +2310,7 @@ impl Launch {
 /// `barrier.cluster` state of one cluster (E-CLUSTER-BAR).
 #[derive(Clone, Debug, Default, Hash)]
 pub struct ClusterBar {
-    pub gen: u32,
+    pub r#gen: u32,
     /// Threads that arrived in generation `gen` (sorted).
     pub arrived: Vec<u32>,
     /// What the arrivals released (full clocks of release arrives, fence snapshots of
@@ -2396,6 +2379,7 @@ impl std::ops::DerefMut for MbarMap {
 #[derive(Clone)]
 pub struct Machine {
     pub k: Arc<Kernel>,
+    register_liveness: Option<(Arc<Kernel>, Arc<crate::register_liveness::FutureReads>)>,
     pub launch: Arc<Launch>,
     pub threads: CowVec<Cow<Thread>>,
     pub warps: CowVec<Cow<Warp>>,
@@ -2405,6 +2389,10 @@ pub struct Machine {
     pub mbars: MbarMap,
     pub bars: BTreeMap<(u16, u32), Bar>,
     pub pending: Vec<AsyncOp>,
+    pub(crate) atomic_components:
+        BTreeMap<(u32, u32), crate::exec::atomic_components::Continuation>,
+    /// Frozen operand supplied only during one component's scalar execution.
+    pub(crate) atomic_operand: Option<ptxv_memory_write::symbolic::Metadata>,
     /// Completed async operations (cta, actor, clock, pc), sorted: checked at exit.
     pub completed: Vec<(u16, u32, u32, u32)>,
     /// ASSUME(S-REMOTE-INFLIGHT): remote operations delivered as async steps (not drained by
@@ -2470,6 +2458,9 @@ pub struct Machine {
     /// `elect_any`, an active set's leaders are tried one per group of clones. Not hashed
     /// (fixed for a search).
     pub elect_lanes: Option<Arc<crate::elect_lanes::Part>>,
+    /// Proven clone classes before a single dead-return atomic. The kernel pin prevents
+    /// reusing this analysis after a caller replaces or mutates the kernel.
+    pub(crate) dead_atomic_lanes: Option<(Arc<Kernel>, crate::elect_lanes::Part)>,
     /// Not hashed, static: a kernel containing try_cancel whose CTAs were all launched up
     /// front (`explore::clc_eager`, E-CLC); executing a try_cancel is then "unmodeled".
     pub clc_eager: bool,
@@ -2520,7 +2511,7 @@ pub struct Machine {
     /// the values of polled locations. Shared by every state; not part of the state.
     pub vip: Option<Arc<VipLearn>>,
     /// Bit 0: set (by any state of the search) when an mbarrier update landed late or took
-    /// more than the pending arrivals (footprint space 25 written, `rec_late` and `rec_count`
+    /// more than the pending arrivals (footprint space 25 written, `rec_late` and `rec_overarrival`
     /// in exec.rs); the stateful explorer's local reduction of plain arrivals is then unsound
     /// and the search runs again without it (`explore::local_ample`). Bit 1: that reduction
     /// was applied. Shared by every state; not part of the state.
@@ -2568,7 +2559,8 @@ pub struct Machine {
     /// Not hashed, shared by all clones: MMA results by (inputs, accumulator) fingerprint.
     /// The same MMA recurs on many schedules; its arithmetic is a pure function.
     pub mma_cache: MmaCache,
-    /// Not hashed: findings produced by the last transition (drained by the explorer).
+    /// Not hashed: findings collected on this path. Stateful exploration drains transitions;
+    /// DPOR retains history so dry poll checks recognize previously reported signatures.
     pub findings: Vec<Finding>,
     /// Not hashed: numerics shadow (single-path runs only).
     pub num: Option<Box<NumState>>,
@@ -2625,8 +2617,7 @@ pub struct Machine {
     /// Not hashed, transient: set while an operation that read partly undefined registers
     /// runs: the undefined bits of its result (slot i in bits 32i..32i+32), S-INIT.
     pub vmask: Option<u64>,
-    /// Not hashed, transient: footprint recording for partial-order reduction (dpor.rs).
-    pub fp: Option<Box<Footprint>>,
+    pub(crate) action_effects: ActionEffects,
     /// Not hashed: thread indices outside this range have exited for good (slices: the
     /// other clusters), so scans that only care about live threads skip them (`live`).
     pub live: std::ops::Range<usize>,
@@ -2959,7 +2950,7 @@ impl SFoot {
             _ => {
                 // Barrier generations and mbarrier phases: every use conflicts (the
                 // co-participants of a barrier must be in one slice).
-                let w = write || matches!(space, 14 | 7 | 12);
+                let w = write || matches!(space, 14 | 7 | 12 | 18);
                 self.items.lock().unwrap().insert((space, id, lo, hi, w));
             }
         }
@@ -2983,50 +2974,24 @@ impl SFoot {
 
 /// Footprint space of the tensor core's A collector buffer (S-TC-COLLECTOR).
 pub const SPACE_COLL_A: u8 = 24;
-/// Footprint space of mbarrier pending counts (exec.rs `rec_count`).
+/// Reserved legacy mbarrier pending-count space; audited membership uses space 18.
 pub const SPACE_MBAR_COUNT: u8 = 16;
-/// Footprint space of mbarrier over-arrivals (exec.rs `rec_late`, `rec_count`); a write is an
+/// Footprint space of mbarrier over-arrivals (exec.rs `rec_late`, `rec_overarrival`); a write is an
 /// over-arrival to the reductions (`Machine::arv_over`, dpor.rs `OVER_ARRIVAL`).
 pub const SPACE_MBAR_OVER: u8 = 25;
 /// Footprint space of NIC queues (nic.rs, id = queue).
 pub const SPACE_NIC_QUEUE: u8 = 26;
 
-/// What one transition touched, for the DPOR dependency relation. Spaces: 0 shared memory
-/// (id = CTA; mbarrier objects are their 8 bytes: poll = read, arrive/init/complete = write),
-/// 1 global memory (id = allocation), 2 TMEM words (id = CTA, index = tmem_idx), 3 TMEM
-/// allocator (id = CTA), 4 CTA exit state (id = CTA), 5 bulk-group state (id = issuer),
-/// 6 mbarrier phase state (polls read, phase completions and init write), 7 mbarrier
-/// arrival-phase keys (see `mbar_maybe_complete`), 8 merge-sensitive pcs (id = warp), 9 grid
-/// launch gates, 10/11 strong shared/global accesses, 12 mbarrier phase keys (`rec_phase`),
-/// 13 barrier.cluster state, 14 named-barrier generations (id = CTA, index = barrier id << 32
-/// | generation: arrivals read theirs, `bar.arrive` writes all; E-BAR-OVER writes, see
-/// `Op::BarSync` and `bar_try_release` in exec.rs), 15 mbarrier (re)initialization: init and
-/// inval write it (id = CTA, index = offset; sync-only, for the explorer's phase-aware
-/// footprints, `sync_ample`), 16 mbarrier pending counts (`SPACE_MBAR_COUNT`, `rec_count`:
-/// arrivals read the key of their phase, a counted arrival that takes the last pending
-/// arrivals writes it), 20 / 21 L1 lines and SMs (l1_cores.rs `SPACE_LINE` / `SPACE_SM`),
-/// 24 (`SPACE_COLL_A`) the tensor core's A collector buffer (id = CTA; every MMA writes it in a
-/// kernel that uses `.collector::a::*`, S-TC-COLLECTOR), 25 mbarrier over-arrivals
-/// (`SPACE_MBAR_OVER`, `rec_late`: updates read the key of the phase they land in; an arrival
-/// of more than the pending arrivals at once writes it, and an update that lands after a
-/// completion its actor does not know of writes the key of the completed phase), 26 NIC
-/// queues (`SPACE_NIC_QUEUE`, id = queue). Named spaces must differ from each other and from
-/// the literal ones (test `footprint_spaces_are_disjoint`).
 #[derive(Clone, Debug, Default)]
-pub struct Footprint {
-    /// Record synchronization only (the stateful explorer's reduction): drop plain memory and
-    /// TMEM (spaces 0-2, whose conflicts are races, E-DRF), the warp-internal space 8, and
-    /// space 6, which space 12 refines by phase.
-    pub sync_only: bool,
-    pub r: Vec<(u8, u32, u64, u64)>,
-    pub w: Vec<(u8, u32, u64, u64)>,
-    /// Conflicts with everything (trap).
-    pub all: bool,
-    /// Synchronization that commutes but orders: release / acquire keys (`sync_key`). A
-    /// transition that acquires a key happens after every earlier transition that released
-    /// it (DPOR happens-before), without making the releasers mutually dependent.
-    pub rel: Vec<u64>,
-    pub acq: Vec<u64>,
+pub(crate) struct ActionEffects {
+    core: ActionState,
+}
+
+#[cfg(test)]
+impl ActionEffects {
+    pub(crate) fn is_recording(&self) -> bool {
+        machine_action::is_recording(&self.core)
+    }
 }
 
 /// Key of a synchronization object generation: kind 1 = named barrier (cta, id, generation),
@@ -3041,90 +3006,25 @@ pub fn sync_key(kind: u8, a: u64, b: u64, c: u64) -> u64 {
     f.finish()
 }
 
-impl Footprint {
-    pub fn add(&mut self, space: u8, id: u32, lo: u64, hi: u64, write: bool) {
-        if self.sync_only && matches!(space, 0 | 1 | 2 | 6 | 8) {
-            return;
-        }
-        let v = if write { &mut self.w } else { &mut self.r };
-        // Coalesce with the previous range when contiguous (the common streaming case).
-        if let Some(last) = v.last_mut() {
-            if last.0 == space && last.1 == id && lo <= last.3 && hi >= last.2 {
-                last.2 = last.2.min(lo);
-                last.3 = last.3.max(hi);
-                return;
-            }
-        }
-        v.push((space, id, lo, hi));
-    }
-    /// Sort and merge ranges.
-    pub fn normalize(&mut self) {
-        for v in [&mut self.rel, &mut self.acq] {
-            v.sort_unstable();
-            v.dedup();
-        }
-        for v in [&mut self.r, &mut self.w] {
-            v.sort();
-            let mut out: Vec<(u8, u32, u64, u64)> = Vec::with_capacity(v.len());
-            for &x in v.iter() {
-                if let Some(l) = out.last_mut() {
-                    if l.0 == x.0 && l.1 == x.1 && x.2 <= l.3 {
-                        l.3 = l.3.max(x.3);
-                        continue;
-                    }
-                }
-                out.push(x);
-            }
-            *v = out;
-        }
-    }
-    pub fn union(&mut self, o: &Footprint) {
-        self.r.extend_from_slice(&o.r);
-        self.w.extend_from_slice(&o.w);
-        self.rel.extend_from_slice(&o.rel);
-        self.acq.extend_from_slice(&o.acq);
-        self.all |= o.all;
-        self.normalize();
-    }
-    fn overlaps(a: &[(u8, u32, u64, u64)], b: &[(u8, u32, u64, u64)]) -> bool {
-        // Both sorted: merge-style sweep.
-        let (mut i, mut j) = (0, 0);
-        while i < a.len() && j < b.len() {
-            let (x, y) = (a[i], b[j]);
-            if (x.0, x.1) < (y.0, y.1) {
-                i += 1;
-            } else if (x.0, x.1) > (y.0, y.1) {
-                j += 1;
-            } else if x.3 <= y.2 {
-                i += 1;
-            } else if y.3 <= x.2 {
-                j += 1;
-            } else {
-                return true;
-            }
-        }
-        false
-    }
-    /// Dependent: some write of one overlaps a read or write of the other.
-    pub fn conflicts(&self, o: &Footprint) -> bool {
-        self.all
-            || o.all
-            || Self::overlaps(&self.w, &o.w)
-            || Self::overlaps(&self.w, &o.r)
-            || Self::overlaps(&o.w, &self.r)
-    }
-    pub fn is_empty(&self) -> bool {
-        !self.all && self.r.is_empty() && self.w.is_empty()
-    }
-    /// Does `self` acquire something `o` released?
-    pub fn acquires_from(&self, o: &Footprint) -> bool {
-        !self.acq.is_empty() && !o.rel.is_empty() && self.acq.iter().any(|k| o.rel.contains(k))
+impl std::ops::Deref for Machine {
+    type Target = ActionState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.action_effects.core
     }
 }
 
 impl Hash for Machine {
     fn hash<H: Hasher>(&self, h: &mut H) {
-        self.threads.hash(h);
+        if let Some(reads) = self.private_register_projection() {
+            self.threads.len().hash(h);
+            for (actor, thread) in self.threads.iter().enumerate() {
+                // ASSUME(E-DEAD-REG): private tails retain their complete control trace.
+                thread.projected_hash(self, actor, reads).hash(h);
+            }
+        } else {
+            self.threads.hash(h);
+        }
         self.warps.hash(h);
         self.smem.hash(h);
         self.gmem.hash(h);
@@ -3132,6 +3032,7 @@ impl Hash for Machine {
         self.mbars.hash(h);
         self.bars.hash(h);
         self.pending.hash(h);
+        self.atomic_components.hash(h);
         self.completed.hash(h);
         self.remote_obs.hash(h);
         self.mbar_seen.hash(h);
@@ -3161,6 +3062,50 @@ impl Hash for Machine {
 }
 
 impl Machine {
+    pub(crate) fn take_thread_acquire(&mut self, thread: usize) -> Option<u64> {
+        if self.threads[thread].acq_bar.is_some() {
+            self.threads[thread].make_mut().take_acquire()
+        } else {
+            None
+        }
+    }
+
+    fn apply_uniform_mutation(&mut self, warp: u32, op: machine_action::UniformOp) {
+        let delivery = machine_action::write_uniform(
+            &mut self.warps[warp as usize].make_mut().core.registers,
+            &mut self.action_effects.core,
+            self.sfoot.is_some(),
+            machine_action::UniformRequest { warp, op },
+        );
+        self.deliver_slice(delivery);
+    }
+
+    pub(crate) fn write_convergence_mask(&mut self, warp: u32, barrier: u8, op: MaskOp) {
+        let delivery = machine_action::write_mask(
+            &mut self.warps[warp as usize].make_mut().core,
+            &mut self.action_effects.core,
+            self.sfoot.is_some(),
+            MaskWrite { warp, barrier, op },
+        );
+        self.deliver_slice(delivery);
+    }
+
+    pub(crate) fn write_uniform(&mut self, warp: u32, write: WordWrite) {
+        self.apply_uniform_mutation(warp, machine_action::UniformOp::Word(write));
+    }
+
+    pub(crate) fn write_uniform_predicate(&mut self, warp: u32, write: PredicateWrite) {
+        self.apply_uniform_mutation(warp, machine_action::UniformOp::Predicate(write));
+    }
+
+    pub(crate) fn poison_uniform(&mut self, warp: u32, index: u16) {
+        self.apply_uniform_mutation(warp, machine_action::UniformOp::PoisonWord(index));
+    }
+
+    pub(crate) fn poison_uniform_predicate(&mut self, warp: u32, index: u16) {
+        self.apply_uniform_mutation(warp, machine_action::UniformOp::PoisonPredicate(index));
+    }
+
     /// ASSUME(E-CLOCK): is `pc` a clock branch for the threads `members` (clock.rs)?
     pub fn clock_choice_at(&self, pc: u32, members: &[usize]) -> bool {
         self.clock_step == 0
@@ -3169,38 +3114,106 @@ impl Machine {
                     && members.iter().any(|&t| self.threads[t].clock_mem))
     }
 
-    /// Record a footprint item if recording (dpor.rs).
-    #[inline]
-    pub fn rec(&mut self, space: u8, id: u32, lo: u64, hi: u64, write: bool) {
-        if let Some(s) = self.sfoot.as_ref() {
-            s.add(space, id, lo, hi, write);
-        }
-        if let Some(f) = self.fp.as_mut() {
-            f.add(space, id, lo, hi, write);
+    pub(crate) fn private_register_projection(
+        &self,
+    ) -> Option<&Arc<crate::register_liveness::FutureReads>> {
+        self.register_liveness
+            .as_ref()
+            .filter(|(kernel, _)| {
+                Arc::ptr_eq(kernel, &self.k) && crate::register_liveness::plain_mode(self)
+            })
+            .map(|(_, reads)| reads)
+    }
+
+    pub fn set_footprint(&mut self, footprint: Option<Box<Footprint>>) {
+        machine_action::set_footprint(&mut self.action_effects.core, footprint);
+    }
+
+    pub fn take_footprint(&mut self) -> Option<Box<Footprint>> {
+        machine_action::take_footprint(&mut self.action_effects.core)
+    }
+
+    pub(crate) fn begin_action_effects(&mut self) -> bool {
+        machine_action::begin(&mut self.action_effects.core)
+    }
+
+    pub(crate) fn finish_action_effects(&mut self, force_write: bool) {
+        machine_action::finish(&mut self.action_effects.core, force_write);
+    }
+
+    pub(crate) fn rec_arrival(&mut self, key: PhaseKey, step: ArrivalStep) -> bool {
+        machine_action::record_arrival(&mut self.action_effects.core, key, step)
+    }
+
+    pub(crate) fn rec_fault(&mut self) {
+        machine_action::record_fault(&mut self.action_effects.core);
+    }
+
+    pub(crate) fn rec_uniform_register(&mut self, warp: u32, write: bool) {
+        self.rec(effects::uniform_register(warp), write);
+    }
+
+    fn deliver_slice(&self, access: Option<RecordedAccess>) {
+        if let Some(access) = access {
+            let sfoot = self
+                .sfoot
+                .as_ref()
+                .expect("recorder requested slice delivery without a slice footprint");
+            let (space, owner, start, end) = effects::resource_range(access.resource);
+            sfoot.add(space, owner, start, end, access.kind == AccessKind::Write);
         }
     }
-    /// Record only for the stateful explorer's synchronization reduction (`sync_only`
-    /// footprints): cluster-level dependencies that dpor.rs does not track.
+
     #[inline]
-    pub fn rec_sync(&mut self, space: u8, id: u32, lo: u64, hi: u64, write: bool) {
-        if let Some(s) = self.sfoot.as_ref() {
-            s.add(space, id, lo, hi, write);
-        }
-        if let Some(f) = self.fp.as_mut().filter(|f| f.sync_only) {
-            f.add(space, id, lo, hi, write);
+    fn rec_access(&mut self, resource: Resource, write: bool, visibility: Visibility) {
+        let access = RecordedAccess {
+            resource,
+            kind: if write {
+                AccessKind::Write
+            } else {
+                AccessKind::Read
+            },
+            visibility,
+        };
+        let delivery = machine_action::record_access(
+            &mut self.action_effects.core,
+            self.sfoot.is_some(),
+            access,
+        );
+        self.deliver_slice(delivery);
+    }
+
+    /// Record a resource access for transition dependence and slice coverage.
+    #[inline]
+    pub fn rec(&mut self, resource: Resource, write: bool) {
+        self.rec_access(resource, write, Visibility::All);
+    }
+
+    /// Record a full-footprint dependency without action-trace or slice observations.
+    pub(crate) fn rec_full_only(&mut self, resource: Resource, write: bool) {
+        if let Some(mut footprint) = self.take_footprint() {
+            if !footprint.sync_only {
+                let (space, owner, start, end) = effects::resource_range(resource);
+                footprint.add(space, owner, start, end, write);
+            }
+            self.set_footprint(Some(footprint));
         }
     }
+
+    /// Record dependencies used only by the stateful synchronization reduction.
+    #[inline]
+    pub fn rec_sync(&mut self, resource: Resource, write: bool) {
+        self.rec_access(resource, write, Visibility::SyncOnly);
+    }
+
     #[inline]
     pub fn rec_rel(&mut self, key: u64) {
-        if let Some(f) = self.fp.as_mut() {
-            f.rel.push(key);
-        }
+        machine_action::record_release(&mut self.action_effects.core, key);
     }
+
     #[inline]
     pub fn rec_acq(&mut self, key: u64) {
-        if let Some(f) = self.fp.as_mut() {
-            f.acq.push(key);
-        }
+        machine_action::record_acquire(&mut self.action_effects.core, key);
     }
 
     // ASSUME(E-GRID, S-INIT): see ASSUMPTIONS.md
@@ -3231,12 +3244,16 @@ impl Machine {
             for _ in 0..tpc.div_ceil(32) {
                 warps.push(Cow::new(Warp {
                     cta: cta as u16,
-                    ur: vec![0; 255],
-                    up: 0,
-                    up_def: 0,
-                    ur_written: [0; 4],
-                    bmask: [0; 16],
-                    cp_seq: 0,
+                    core: WarpCore {
+                        registers: WarpRegisters {
+                            ur: vec![0; 255],
+                            ur_written: [0; 4],
+                            up: 0,
+                            up_def: 0,
+                        },
+                        bmask: [0; 16],
+                        cp_seq: 0,
+                    },
                     cp_landed: Vec::new(),
                 }));
             }
@@ -3248,11 +3265,18 @@ impl Machine {
                     warp: warp0 + t / 32,
                     lane: t % 32,
                     tid,
-                    pc: g.entry,
-                    st: St::Run,
-                    regs: vec![0; nv],
-                    preds: vec![0; np.div_ceil(64)],
-                    pdef: vec![0; np.div_ceil(64)],
+                    core: ThreadCore {
+                        pc: g.entry,
+                        st: St::Run,
+                        registers: LaneRegisters {
+                            regs: vec![0; nv],
+                            preds: vec![0; np.div_ceil(64)],
+                            pdef: vec![0; np.div_ceil(64)],
+                            written: vec![0; nv.div_ceil(64)],
+                            vund: vec![],
+                        },
+                        acq_bar: None,
+                    },
                     vc: VC::new(),
                     tc_vc: VC::new(),
                     pipe_vc: VC::new(),
@@ -3270,8 +3294,6 @@ impl Machine {
                     tc_st_unwaited: 0,
                     ld_pend: vec![],
                     ldtm_pend: vec![],
-                    written: vec![0; nv.div_ceil(64)],
-                    vund: vec![],
                     fences: vec![],
                     alias_fences: vec![],
                     gfences: vec![],
@@ -3281,7 +3303,6 @@ impl Machine {
                     bulk_sb: Vec::new(),
                     bulk_done: vec![],
                     bulk_vis: VC::new(),
-                    acq_bar: None,
                     vis: VC::new(),
                     membar_vc: VC::new(),
                     minit_vc: VC::new(),
@@ -3297,6 +3318,7 @@ impl Machine {
                     cl_arrived: None,
                     tmap_fence: Vec::new(),
                     peekwin: Vec::new(),
+                    wait_error: None,
                     local: Vec::new(),
                     cp_pending: Vec::new(),
                     cp_group: 0,
@@ -3323,8 +3345,11 @@ impl Machine {
         let launch_ctas = launch.ctas();
         let n_grids = launch.grids.len();
         let threads_len = threads.len() as u32;
+        let register_liveness = crate::register_liveness::FutureReads::analyze(&k)
+            .map(|reads| (k.clone(), Arc::new(reads)));
         let mut m = Machine {
             k,
+            register_liveness,
             launch,
             div_clk: Arc::new(vec![0; threads.len()]),
             wdiv: Arc::new(vec![false; warps.len()]),
@@ -3336,6 +3361,8 @@ impl Machine {
             mbars: MbarMap::default(),
             bars: BTreeMap::new(),
             pending: Vec::new(),
+            atomic_components: BTreeMap::new(),
+            atomic_operand: None,
             completed: Vec::new(),
             remote_obs: Vec::new(),
             mbar_seen: BTreeMap::new(),
@@ -3394,6 +3421,7 @@ impl Machine {
             elect_any: false,
             elect_fn: Vec::new(),
             elect_lanes: None,
+            dead_atomic_lanes: None,
             stale: None,
             dead_probe: None,
             perm: None,
@@ -3406,7 +3434,7 @@ impl Machine {
             fill: None,
             prov: None,
             vmask: None,
-            fp: None,
+            action_effects: ActionEffects::default(),
             live: 0..0,
             xg: None,
             sink: 0,
@@ -3486,7 +3514,7 @@ impl Machine {
                     .iter()
                     .any(|i| matches!(i.op, Op::ClcTryCancel { .. }))
             {
-                m.threads[t].make_mut().st = St::Unlaunched;
+                m.threads[t].make_mut().set_status(St::Unlaunched);
             }
         }
         // ASSUME(E-SPIN): poll loops on strong loads block until the iteration exits.
@@ -3524,6 +3552,17 @@ impl Machine {
             let th = m.threads[t].make_mut();
             vc_tick(&mut th.vc, t as u32);
         }
+        let blocks: Vec<_> = m.launch.grids.iter().map(|grid| grid.block).collect();
+        let fence_bound =
+            m.k.code
+                .iter()
+                .filter(|inst| matches!(inst.op, Op::Fence { .. }))
+                .count()
+                .checked_mul(m.threads.len());
+        if fence_bound.is_some_and(|bound| bound < crate::exec::SC_MAX_FENCES) {
+            m.dead_atomic_lanes = crate::elect_lanes::dead_atomic_lane_classes(&m.k, &blocks)
+                .map(|classes| (m.k.clone(), classes));
+        }
         m
     }
 
@@ -3540,6 +3579,8 @@ impl Machine {
         UNSHARING.set(false);
         VC_COPIES.with_borrow_mut(|c| c.clear());
         m.k = like.k.clone();
+        m.dead_atomic_lanes = like.dead_atomic_lanes.clone();
+        m.register_liveness = like.register_liveness.clone();
         m.launch = like.launch.clone();
         m.polls = like.polls.clone();
         m.wpolls = like.wpolls.clone();
@@ -3578,6 +3619,8 @@ impl Machine {
     /// `self` with the static parts (kernel, launch, spin tables, MMA cache) of `like`.
     pub fn with_statics(mut self, like: &Machine) -> Machine {
         self.k = like.k.clone();
+        self.dead_atomic_lanes = like.dead_atomic_lanes.clone();
+        self.register_liveness = like.register_liveness.clone();
         self.launch = like.launch.clone();
         self.polls = like.polls.clone();
         self.wpolls = like.wpolls.clone();
@@ -3592,6 +3635,15 @@ impl Machine {
     pub fn private_statics(&self) -> Machine {
         let mut m = self.clone();
         m.k = Arc::new((*self.k).clone());
+        m.dead_atomic_lanes = self
+            .dead_atomic_lanes
+            .as_ref()
+            .and_then(|(kernel, classes)| {
+                Arc::ptr_eq(kernel, &self.k).then(|| (m.k.clone(), *classes))
+            });
+        m.register_liveness = self.register_liveness.as_ref().and_then(|(kernel, reads)| {
+            Arc::ptr_eq(kernel, &self.k).then(|| (m.k.clone(), reads.clone()))
+        });
         m.launch = Arc::new((*self.launch).clone());
         m.polls = Arc::new((*self.polls).clone());
         m.wpolls = Arc::new((*self.wpolls).clone());
@@ -3753,6 +3805,7 @@ impl Machine {
 
     /// `report` naming the instructions involved (`Finding::pcs`).
     pub fn report_pcs(&mut self, kind: &str, sig: String, msg: String, pcs: Vec<u32>) {
+        machine_action::record_finding(&mut self.action_effects.core);
         // Verdicts keep the first finding per signature; so does a step. A step that repeats
         // an access (a racy loop of invisible instructions) would otherwise grow without bound.
         if self.findings.iter().any(|f| f.sig == sig) {
@@ -4035,20 +4088,47 @@ mod vc_tests {
 
 #[cfg(test)]
 mod footprint_space_tests {
-    /// Named footprint spaces differ from each other and from every literal space id passed to
-    /// `rec` in the simulator's sources (a shared id makes unrelated transitions conflict, and
-    /// a write in `SPACE_MBAR_OVER` stops DPOR).
+    use super::ResourceSpace;
+
+    /// Named footprint spaces retain their typed encodings and remain distinct. Native
+    /// recorder calls use typed resources rather than literal namespace ids.
     #[test]
     fn footprint_spaces_are_disjoint() {
         let named = [
-            ("SPACE_MBAR_COUNT", super::SPACE_MBAR_COUNT),
-            ("SPACE_MBAR_OVER", super::SPACE_MBAR_OVER),
-            ("SPACE_NIC_QUEUE", super::SPACE_NIC_QUEUE),
-            ("SPACE_COLL_A", super::SPACE_COLL_A),
-            ("SPACE_LINE", crate::l1_cores::SPACE_LINE),
-            ("SPACE_SM", crate::l1_cores::SPACE_SM),
+            (
+                "SPACE_MBAR_COUNT",
+                super::SPACE_MBAR_COUNT,
+                ResourceSpace::MbarPendingCount,
+            ),
+            (
+                "SPACE_MBAR_OVER",
+                super::SPACE_MBAR_OVER,
+                ResourceSpace::MbarOverArrival,
+            ),
+            (
+                "SPACE_NIC_QUEUE",
+                super::SPACE_NIC_QUEUE,
+                ResourceSpace::NicQueue,
+            ),
+            (
+                "SPACE_COLL_A",
+                super::SPACE_COLL_A,
+                ResourceSpace::TensorCoreACollector,
+            ),
+            (
+                "SPACE_LINE",
+                crate::l1_cores::SPACE_LINE,
+                ResourceSpace::L1Line,
+            ),
+            ("SPACE_SM", crate::l1_cores::SPACE_SM, ResourceSpace::L1Sm),
         ];
         for (i, a) in named.iter().enumerate() {
+            assert_eq!(
+                a.1,
+                ptxv_memory_write::effects::resource_tag(a.2),
+                "{}",
+                a.0
+            );
             for b in &named[i + 1..] {
                 assert_ne!(
                     a.1, b.1,
@@ -4068,19 +4148,212 @@ mod footprint_space_tests {
         let mut literal = std::collections::BTreeSet::new();
         for s in srcs {
             for (i, _) in s.match_indices("self.rec(") {
-                let rest = &s[i + "self.rec(".len()..];
+                let rest = s[i + "self.rec(".len()..].trim_start();
                 let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
                 if !digits.is_empty() && rest[digits.len()..].starts_with(',') {
                     literal.insert(digits.parse::<u8>().unwrap());
                 }
             }
         }
-        assert!(literal.contains(&0), "no literal spaces found: {literal:?}");
-        for (name, v) in named {
-            assert!(
-                !literal.contains(&v),
-                "{name} = {v} is also used as a literal footprint space"
+        assert!(
+            literal.is_empty(),
+            "untyped recorder spaces found: {literal:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sparse_clock_tests {
+    use super::*;
+
+    #[test]
+    fn source_clock_join_preserves_sharing_and_native_observations() {
+        let mut left = vc_single(1, 3);
+        left.own = (2, 7);
+        let mut covered = left.clone();
+        covered.own = (2, 4);
+        let before = left.base.clone();
+        vc_join(&mut left, &covered);
+        assert!(Arc::ptr_eq(&before, &left.base));
+        assert_eq!(vc_entries(&left), vec![(1, 3), (2, 7)]);
+
+        let mut empty_base = VC::new();
+        empty_base.own = (4, 9);
+        let right = vc_from_sorted(vec![(0, 2), (3, 5)]);
+        vc_join(&mut empty_base, &right);
+        assert!(Arc::ptr_eq(&empty_base.base, &right.base));
+        assert_eq!(vc_entries(&empty_base), vec![(0, 2), (3, 5), (4, 9)]);
+
+        let mut joined = vc_single(3, 2);
+        joined.own = (0, 8);
+        let mut other = vc_single(3, 7);
+        other.own = (2, 6);
+        vc_join(&mut joined, &other);
+        assert_eq!(vc_entries(&joined), vec![(0, 8), (2, 6), (3, 7)]);
+        for (actor, expected) in [(0, 8), (1, 0), (2, 6), (3, 7), (u32::MAX, 0)] {
+            assert_eq!(vc_get(&joined, actor), expected);
+        }
+        let before = joined.clone();
+        vc_join(&mut joined, &VC::default());
+        assert!(Arc::ptr_eq(&before.base, &joined.base));
+        assert_eq!(before, joined);
+        assert_eq!(VC::new().entries(), Vec::new());
+    }
+
+    #[test]
+    fn source_tick_preserves_sharing_relocation_and_native_hashes() {
+        let mut clock = vc_single(1, 3);
+        let original = clock.base.clone();
+        vc_tick(&mut clock, 2);
+        assert!(Arc::ptr_eq(&clock.base, &original));
+        assert_eq!(clock.own, (2, 1));
+        vc_tick(&mut clock, 2);
+        assert!(Arc::ptr_eq(&clock.base, &original));
+        assert_eq!(clock.own, (2, 2));
+        vc_tick(&mut clock, 3);
+        assert!(!Arc::ptr_eq(&clock.base, &original));
+        assert_eq!(clock.base.e, [(1, 3), (2, 2)]);
+        assert_eq!(clock.own, (3, 1));
+        let expected = vc_from_sorted(vec![(1, 3), (2, 2), (3, 1)]);
+        assert_eq!(clock, expected);
+        assert_eq!(clock.logical_hash(), expected.logical_hash());
+        assert_eq!(vc_get(&clock, 1), 3);
+        assert_eq!(vc_get(&clock, 2), 2);
+        assert_eq!(vc_get(&clock, 3), 1);
+        assert_eq!(vc_get(&clock, 4), 0);
+    }
+
+    #[test]
+    fn source_shared_join_all_preserves_native_clock_values_and_hashes() {
+        let base = vc_from_sorted(vec![(0, 1), (2, 0), (3, 5)]);
+        let clocks: Vec<_> = [(4, 3), (1, 7), (2, 0), (4, 9), (0, 8), (1, 2)]
+            .into_iter()
+            .map(|own| {
+                let mut clock = base.clone();
+                clock.own = own;
+                clock
+            })
+            .collect();
+        assert!(clocks
+            .iter()
+            .all(|clock| Arc::ptr_eq(&base.base, &clock.base)));
+        let joined = vc_join_all(clocks.iter());
+        let mut expected = VC::new();
+        for clock in &clocks {
+            vc_join(&mut expected, clock);
+        }
+        assert_eq!(joined, expected);
+        assert_eq!(joined.own, (0, 0));
+        assert!(!Arc::ptr_eq(&joined.base, &base.base));
+        assert_eq!(joined.base.e, [(0, 8), (1, 7), (2, 0), (3, 5), (4, 9)]);
+        assert_eq!(joined.logical_hash(), expected.logical_hash());
+        assert_eq!(vc_join_all(std::iter::empty::<&VC>()), VC::new());
+        let other = vc_single(2, 8);
+        let mixed = vc_join_all([&joined, &other]);
+        vc_join(&mut expected, &other);
+        assert_eq!(mixed, expected);
+    }
+    #[test]
+    fn source_meet_preserves_clone_fast_path_and_native_clock_observations() {
+        let mut left = vc_from_sorted(vec![(0, 0), (1, 6), (4, 2)]);
+        left.own = (3, 7);
+        let same = vc_meet(&left, &left);
+        assert!(Arc::ptr_eq(&same.base, &left.base));
+        assert_eq!(same.own, left.own);
+        let mut right = vc_from_sorted(vec![(0, 0), (1, 3), (2, 9), (3, 2)]);
+        right.own = (4, 5);
+        let meet = vc_meet(&left, &right);
+        let expected = vc_from_sorted(vec![(1, 3), (3, 2), (4, 2)]);
+        assert_eq!(meet, expected);
+        assert_eq!(meet.own, (0, 0));
+        assert_eq!(meet.logical_hash(), expected.logical_hash());
+        assert_eq!(vc_meet(&left, &VC::new()), VC::new());
+        for actor in 0..6 {
+            assert_eq!(
+                vc_get(&meet, actor),
+                vc_get(&left, actor).min(vc_get(&right, actor))
             );
         }
+    }
+    #[test]
+    fn source_read_release_preserves_actor_aliases_and_native_hashes() {
+        let mut incoming = vc_from_sorted(vec![(1, 2), (4, 6), (RR_BIT + 1, 3), (RR_BIT + 4, 5)]);
+        incoming.own = (5, 7);
+        let released = vc_read_release(&incoming, 3, 1, 4);
+        let expected = vc_from_sorted(vec![(RR_BIT + 1, 4), (RR_BIT + 4, 6), (RR_BIT + 5, 7)]);
+        assert_eq!(released, expected);
+        assert_eq!(released.own, (0, 0));
+        assert_eq!(released.logical_hash(), expected.logical_hash());
+        assert_eq!(vc_read_release(&VC::new(), 3, 1, 0), VC::new());
+        assert_eq!(
+            vc_read_release(&incoming, RR_BIT + 4, 1, 0),
+            vc_from_sorted(vec![(RR_BIT + 4, 5)])
+        );
+    }
+
+    #[test]
+    fn source_batched_join_preserves_duplicate_owns_and_native_hashes() {
+        let base = vc_from_sorted(vec![(0, 1), (2, 0), (4, 8)]);
+        let other = vc_from_sorted(vec![(1, 3), (4, 2)]);
+        let clocks: Vec<_> = [(3, 6), (1, 7), (3, 9), (3, 2), (0, 0), (4, 5)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, own)| {
+                let mut clock = if index % 3 == 0 {
+                    other.clone()
+                } else {
+                    base.clone()
+                };
+                clock.own = own;
+                clock
+            })
+            .collect();
+        let mut expected = vc_single(5, 4);
+        expected.own = (2, 5);
+        for clock in &clocks {
+            vc_join(&mut expected, clock);
+        }
+        for reverse in [false, true] {
+            let mut refs: Vec<_> = clocks.iter().collect();
+            if reverse {
+                refs.reverse();
+            }
+            let mut joined = vc_single(5, 4);
+            joined.own = (2, 5);
+            vc_join_many(&mut joined, &refs);
+            assert_eq!(joined, expected);
+            assert_eq!(joined.own, (0, 0));
+            assert_eq!(joined.logical_hash(), expected.logical_hash());
+            assert_eq!(
+                joined.base.e,
+                [(0, 1), (1, 7), (2, 5), (3, 9), (4, 8), (5, 4)]
+            );
+        }
+        let mut covered = expected.clone();
+        let original = covered.base.clone();
+        vc_join_many(&mut covered, &[&expected, &expected]);
+        assert!(Arc::ptr_eq(&original, &covered.base));
+        vc_join_many(&mut covered, &[]);
+        assert!(Arc::ptr_eq(&original, &covered.base));
+    }
+
+    #[test]
+    fn source_filter_and_tail_preserve_read_release_ordering_and_hashes() {
+        let mut reads = vc_from_sorted(vec![(RR_BIT, 1), (RR_BIT + 1, 7), (RR_BIT + 2, 3)]);
+        reads.own = (RR_BIT + 3, 5);
+        let mut seen = vc_from_sorted(vec![(RR_BIT, 1), (RR_BIT + 1, 2)]);
+        seen.own = (RR_BIT + 3, 5);
+        let novel = rr_new(&seen, &reads).expect("two read-release actors are not covered");
+        let expected = vc_from_sorted(vec![(RR_BIT + 1, 7), (RR_BIT + 2, 3)]);
+        assert_eq!(novel, expected);
+        assert_eq!(novel.logical_hash(), expected.logical_hash());
+        assert_eq!(novel.own, (0, 0));
+        assert_eq!(
+            vc_tail(&reads, RR_BIT + 2),
+            [(RR_BIT + 2, 3), (RR_BIT + 3, 5)]
+        );
+        assert_eq!(vc_tail(&reads, RR_BIT + 4), []);
+        assert!(rr_new(&reads, &reads).is_none());
+        assert!(rr_new(&seen, &VC::new()).is_none());
     }
 }

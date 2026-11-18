@@ -1567,7 +1567,10 @@ struct MutatedRow {
 
 /// The case's declared input invariants (`buffers[].invariant`), checked on the captured bytes
 /// of `m` (coverage.rs `Domain::new`), with their notes.
-fn input_domain(case: &Case, m: &Machine) -> Result<(ptxv_sim::coverage::Domain, Vec<String>)> {
+fn input_domain(
+    case: &Case,
+    m: &Machine,
+) -> Result<(ptxv_sim::coverage::Domain, Vec<String>)> {
     let invs: Vec<ptxv_sim::coverage::Invariant> = case
         .m
         .buffers
@@ -3213,8 +3216,11 @@ fn cmd_num_with(
             .map(|x| {
                 let msg = x.msg.lines().next().unwrap_or("");
                 format!("the numerics run reported {}: {msg}", x.kind)
-            })
-            .or(control);
+            });
+        let broken = match (broken, control) {
+            (Some(fault), Some(control)) => Some(format!("{fault}; {control}")),
+            (fault, control) => fault.or(control),
+        };
         std::fs::write(dir.join(format!("{variant}.{f}.num.out.bin")), m.outputs())?;
         let warnings: Vec<String> = ns.warnings.iter().cloned().collect();
         let output_hash = format!("{:016x}", fnv(&m.outputs()));

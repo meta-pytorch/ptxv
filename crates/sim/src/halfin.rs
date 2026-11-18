@@ -24,6 +24,9 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use ptxv_ir::*;
+use ptxv_memory_write::Key;
+use ptxv_memory_write::Origin;
+use ptxv_memory_write::engine::Engine;
 
 use crate::exec::Loc;
 use crate::machine::Machine;
@@ -117,6 +120,74 @@ impl HalfState {
                 self.gwritten.insert((key.1, byte));
             }
         }
+    }
+
+    pub(crate) fn effect_origin(&self, key: Key) -> Option<Origin> {
+        self.mem
+            .get(&(key.space, key.allocation, key.offset))
+            .map(|origin| match *origin {
+                Src::Zero => Origin::Zero,
+                Src::E { alloc, elem, b } => Origin::E {
+                    alloc: alloc as u64,
+                    elem,
+                    b,
+                },
+                Src::N { node, b } => Origin::N { node, b },
+                Src::E7 { alloc, elem } => Origin::E7 {
+                    alloc: alloc as u64,
+                    elem,
+                },
+            })
+    }
+
+    pub(crate) fn effect_written(&self, key: Key) -> bool {
+        key.space == 1 && self.gwritten.contains(&(key.allocation, key.offset))
+    }
+
+    pub(crate) fn apply_effect_state(&mut self, state: &Engine, destination: Key) {
+        if !self.is_on() {
+            return;
+        }
+        for cell in &state.cells {
+            let key = cell.key;
+            if key.space != destination.space
+                || key.allocation != destination.allocation
+                || !key
+                    .offset
+                    .checked_sub(destination.offset)
+                    .is_some_and(|offset| offset < 4)
+            {
+                continue;
+            }
+            let key = (key.space, key.allocation, key.offset);
+            let origin = cell.origin.map(|origin| match origin {
+                Origin::Zero => Src::Zero,
+                Origin::E { alloc, elem, b } => Src::E {
+                    alloc: usize::try_from(alloc).expect("captured origin allocation fits usize"),
+                    elem,
+                    b,
+                },
+                Origin::N { node, b } => Src::N { node, b },
+                Origin::E7 { alloc, elem } => Src::E7 {
+                    alloc: usize::try_from(alloc).expect("captured origin allocation fits usize"),
+                    elem,
+                },
+            });
+            match origin {
+                Some(origin) => {
+                    self.mem.insert(key, origin);
+                }
+                None => {
+                    self.mem.remove(&key);
+                }
+            }
+        }
+        self.gwritten.extend(
+            state
+                .half_written
+                .iter()
+                .map(|key| (key.allocation, key.offset)),
+        );
     }
 
     pub(crate) fn forget_register(&mut self, thread: usize, reg: Reg) {

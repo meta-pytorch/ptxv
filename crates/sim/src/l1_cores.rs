@@ -174,11 +174,17 @@ pub fn placements(l: &Launch, mode: &str) -> anyhow::Result<Vec<BTreeMap<u32, u3
 /// (the message names the placement), complete only if every run was, outputs pooled.
 /// Without co-residency (or with havoc, which covers every placement's fills) this is one
 /// plain run. Inside each `%smid` placement (ASSUME(E-SMID), `smid::explore_smid`).
-pub fn explore_placements(m0: Machine, run: &mut dyn FnMut(Machine) -> Verdict) -> Verdict {
+pub fn explore_placements(
+    m0: Machine,
+    run: &mut dyn FnMut(Machine) -> Verdict,
+) -> Verdict {
     crate::smid::explore_smid(m0, &mut |m| explore_l1_placements(m, run))
 }
 
-fn explore_l1_placements(m0: Machine, run: &mut dyn FnMut(Machine) -> Verdict) -> Verdict {
+fn explore_l1_placements(
+    m0: Machine,
+    run: &mut dyn FnMut(Machine) -> Verdict,
+) -> Verdict {
     if !m0.launch.l1_cores || m0.launch.l1_havoc || m0.l1.is_none() {
         // ASSUME(E-L1-PLACE): without co-residency, the one placement of `L1::new`.
         return run(m0);
@@ -300,8 +306,24 @@ impl Machine {
     pub(crate) fn l1_fp_load(&mut self, sm: u32, alloc: usize, line: u64) {
         if self.l1_fp_on() {
             let key = ((alloc as u64) << 40) | line;
-            self.rec(SPACE_LINE, alloc as u32, line, line + LINE, false);
-            self.rec(SPACE_SM, sm, key, key + 1, false);
+            self.rec(
+                Resource {
+                    space: ResourceSpace::L1Line,
+                    owner: alloc as u32,
+                    start: line,
+                    end: line + LINE,
+                },
+                false,
+            );
+            self.rec(
+                Resource {
+                    space: ResourceSpace::L1Sm,
+                    owner: sm,
+                    start: key,
+                    end: key + 1,
+                },
+                false,
+            );
         }
     }
 
@@ -310,14 +332,30 @@ impl Machine {
         if self.l1_fp_on() {
             let lo = off / LINE * LINE;
             let hi = (off + n.max(1) as u64).div_ceil(LINE) * LINE;
-            self.rec(SPACE_LINE, alloc as u32, lo, hi, true);
+            self.rec(
+                Resource {
+                    space: ResourceSpace::L1Line,
+                    owner: alloc as u32,
+                    start: lo,
+                    end: hi,
+                },
+                true,
+            );
         }
     }
 
     /// DPOR (E-L1-CORES): an invalidation, atomic or CTA launch changes the SM's copies.
     pub(crate) fn l1_fp_drop(&mut self, sm: u32) {
         if self.l1_fp_on() {
-            self.rec(SPACE_SM, sm, 0, u64::MAX, true);
+            self.rec(
+                Resource {
+                    space: ResourceSpace::L1Sm,
+                    owner: sm,
+                    start: 0,
+                    end: u64::MAX,
+                },
+                true,
+            );
         }
     }
 

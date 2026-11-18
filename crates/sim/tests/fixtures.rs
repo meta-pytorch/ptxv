@@ -14,6 +14,7 @@ use std::sync::Arc;
 use ptxv_case::Case;
 use ptxv_sim::build_launch;
 use ptxv_sim::explore::explore;
+use ptxv_sim::explore::Verdict;
 use ptxv_sim::machine::Machine;
 
 fn root() -> PathBuf {
@@ -570,13 +571,11 @@ fn e_elect_taint_mutants() {
 /// lane-varying control (without the edge the store was outside the region).
 #[test]
 fn e_elect_taint_guarded_exit() {
-    assert!(
-        elect_taint(
-            "setp.lt.u32 %p2, %r2, 16; elect.sync %r8|%p1, -1; @%p2 bra SKIP; \
+    assert!(elect_taint(
+        "setp.lt.u32 %p2, %r2, 16; elect.sync %r8|%p1, -1; @%p2 bra SKIP; \
              setp.eq.u32 %p3, %r3, 99; @%p3 exit; @%p1 st.global.u32 [%rd1], %r3; SKIP: bra DONE;"
-        )
-        .is_some()
-    );
+    )
+    .is_some());
 }
 
 /// E-ELECT: races only a middle-lane leader causes, which the taint used to miss: a
@@ -1175,7 +1174,10 @@ fn e_bararv_named_barrier_arrive() {
         let case = Case::load(root().join("fixtures").join("e_bararv")).unwrap();
         let k = kernel(&case, "AB2", front);
         let launch = build_launch(&case, &k).unwrap();
-        let d = ptxv_sim::dpor::explore_dpor(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+        let d = ptxv_sim::dpor::explore_dpor(
+            Machine::new(Arc::new(k), Arc::new(launch)),
+            100_000,
+        );
         let expect = case.variant("AB2").unwrap().expect_for(front);
         assert!(
             d.complete && expect.iter().all(|e| d.classes().contains(e)),
@@ -1222,8 +1224,10 @@ fn e_barcut_all_thread_barrier_cut() {
             let case = Case::load(root().join("fixtures").join("e_barcut")).unwrap();
             let k = kernel(&case, v, front);
             let launch = build_launch(&case, &k).unwrap();
-            let d =
-                ptxv_sim::dpor::explore_dpor(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+            let d = ptxv_sim::dpor::explore_dpor(
+                Machine::new(Arc::new(k), Arc::new(launch)),
+                100_000,
+            );
             let expect = case.variant(v).unwrap().expect_for(front);
             assert!(
                 d.complete && expect.iter().all(|e| d.classes().contains(e)),
@@ -1959,21 +1963,31 @@ fn e_hw_l1_logs_hashed() {
 
 /// Stateful explorer only, must complete (r1g: DPOR revisits too many traces here).
 fn check_stateful(case: &str, variant: &str, front: &str, max_states: usize) {
-    let case = Case::load(root().join("fixtures").join(case)).unwrap();
-    let k = kernel(&case, variant, front);
-    let launch = build_launch(&case, &k).unwrap();
-    let m0 = Machine::new(Arc::new(k), Arc::new(launch));
-    let mut v = explore(m0.clone(), max_states);
-    // E-TC-FENCE-NOP, as `ptxv check` reports it.
-    ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut |m| explore(m, max_states));
-    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut |m| explore(m, max_states));
-    let expect = case.variant(variant).unwrap().expect_for(front);
+    let (v, expect) = run_stateful(case, variant, front, |m| explore(m, max_states));
     assert!(
         v.complete && v.meets(&expect),
         "{variant}/{front}: got {:?} (complete: {}), want {expect:?}",
         v.classes(),
         v.complete
     );
+}
+
+fn run_stateful(
+    case: &str,
+    variant: &str,
+    front: &str,
+    mut run: impl FnMut(Machine) -> Verdict,
+) -> (Verdict, Vec<String>) {
+    let case = Case::load(root().join("fixtures").join(case)).unwrap();
+    let k = kernel(&case, variant, front);
+    let launch = build_launch(&case, &k).unwrap();
+    let m0 = Machine::new(Arc::new(k), Arc::new(launch));
+    let mut v = run(m0.clone());
+    // E-TC-FENCE-NOP, as `ptxv check` reports it.
+    ptxv_sim::twolevel::tc_fence_contract(&mut v, &m0, &mut run);
+    ptxv_sim::twolevel::mbar_async_contract(&mut v, &m0, &mut run);
+    let expect = case.variant(variant).unwrap().expect_for(front);
+    (v, expect)
 }
 
 // Rung 1g: 3-GPU all-reduce, two calls. PTX is exhaustive; the SASS good kernel needs tens of
@@ -2167,7 +2181,7 @@ fn r2_cute_small_cm4_ptx_contract_reruns() {
     check_bounded_part("r2_cute_small", "CM4", "ptx", 50_000, 1);
 }
 
-/// fixtures/r2_cute_gemm CM1 on SASS (exhaustive): its expectation had no test and went stale.
+/// fixtures/r2_cute_gemm CM1 on SASS (exhaustive).
 #[test]
 #[ignore = "heavy: 46 s"]
 fn r2_cute_gemm_cm1_sass() {
@@ -2293,7 +2307,8 @@ fn r3_cute_mxf4() {
         let case = Case::load(root().join("fixtures/r3_cute_mxf4")).unwrap();
         let k = kernel(&case, "good", front);
         let launch = build_launch(&case, &k).unwrap();
-        let (m, _, _) = ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
+        let (m, _, _) =
+            ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
         let hw = std::fs::read(case.dir.join("gb300_C.bin")).unwrap();
         assert!(
             m.outputs() == hw,
@@ -2315,7 +2330,8 @@ fn r3_cute_nvf4() {
         let case = Case::load(root().join("fixtures/r3_cute_nvf4")).unwrap();
         let k = kernel(&case, "good", front);
         let launch = build_launch(&case, &k).unwrap();
-        let (m, _, _) = ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
+        let (m, _, _) =
+            ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
         let hw = std::fs::read(case.dir.join("gb300_C.bin")).unwrap();
         assert!(
             m.outputs() == hw,
@@ -2373,7 +2389,8 @@ fn e_exitbound_races_on_the_way_out() {
         for variant in ["good", "XB1", "XB2"] {
             let k = Arc::new(kernel(&case, variant, front));
             let launch = Arc::new(build_launch(&case, &k).unwrap());
-            let v = ptxv_sim::explore::explore(Machine::new(k.clone(), launch.clone()), 100_000);
+            let v =
+                ptxv_sim::explore::explore(Machine::new(k.clone(), launch.clone()), 100_000);
             assert!(v.complete, "{variant}/{front}: incomplete");
             assert_eq!(
                 v.classes(),
@@ -2499,6 +2516,10 @@ fn captured_outputs_match_the_gpu(part: usize) {
         for (front, k) in ks {
             // The front's own expectation (a case's `expect_sass` differs from its PTX one).
             let expect = case.variant("good").unwrap().expect_for(front);
+            let has_atomics = k
+                .code
+                .iter()
+                .any(|inst| matches!(inst.op, ptxv_ir::Op::Atom { .. }));
             let launch = build_launch(&case, &k).unwrap();
             let m = Machine::new(Arc::new(k), Arc::new(launch));
             // Launches too large to explore whole (cuBLAS, 8 CTAs in clusters of 4) are decided
@@ -2517,6 +2538,9 @@ fn captured_outputs_match_the_gpu(part: usize) {
                     }
                     None => panic!("{name}: certificate does not hold"),
                 }
+            } else if !has_atomics {
+                // Use the production certificate/exploration dispatcher for non-atomic captures.
+                ptxv_sim::wellsync::check_certified(m, 200_000)
             } else {
                 let mut v = explore(m.clone(), 200_000);
                 ptxv_sim::twolevel::mbar_async_contract(&mut v, &m, &mut |m| explore(m, 200_000));
@@ -3699,14 +3723,25 @@ fn dpor_backtracks_a_consumed_async_op() {
 /// [trap], the stateful search [fault, trap]); a drain consumes an op behind another lane's in
 /// its remote pipe (the release backtracks the pipe although its head stays pending, counted
 /// in `dpor::NONHEAD_BACKTRACKS`). `check` cross-checks DPOR against the stateful search.
+/// Cluster st.async selects the stateful search; a private DPOR test covers its inner
+/// non-head backtracking path.
 #[test]
 fn dpor_backtracks_a_disabled_process() {
     both("e_dpor_trap", "good");
-    let before = ptxv_sim::dpor::NONHEAD_BACKTRACKS.load(std::sync::atomic::Ordering::Relaxed);
     both("e_dpor_nonhead", "good");
     both("e_dpor_nonhead", "NH");
-    let after = ptxv_sim::dpor::NONHEAD_BACKTRACKS.load(std::sync::atomic::Ordering::Relaxed);
-    assert!(after > before, "e_dpor_nonhead NH: no non-head consumed op backtracked");
+    let case = Case::load(root().join("fixtures/e_dpor_nonhead")).unwrap();
+    let k = kernel(&case, "NH", "ptx");
+    let launch = build_launch(&case.for_variant("NH").unwrap(), &k).unwrap();
+    let m = Machine::new(Arc::new(k), Arc::new(launch));
+    let selected = ptxv_sim::dpor::explore_dpor(m, 2_000_000);
+    assert!(selected.complete, "NH/ptx: selected exploration incomplete");
+    assert!(
+        selected.notes.iter().any(|note| note
+            == "Stateful explorer selected for PTX cluster st.async/mbarrier code without atomics (state cap 2000000)"),
+        "NH/ptx: missing stateful-selection note: {:?}",
+        selected.notes
+    );
 }
 
 /// One .cta_group per kernel (fixtures/e_cta_group_mix): a kernel whose tcgen05 instructions
@@ -3784,7 +3819,8 @@ fn probe_lop3_pmode_matches_hardware() {
         });
         assert_eq!(pand, form.starts_with("pand"), "{form}");
         let launch = build_launch(&case, &k).unwrap();
-        let (m, f, _) = ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
+        let (m, f, _) =
+            ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
         assert!(f.is_empty(), "{form}: {f:?}");
         let hw = std::fs::read(case.dir.join(format!("expected/{form}.bin"))).unwrap();
         assert!(
@@ -3803,7 +3839,8 @@ fn probe_tmem_16x128b_matches_hardware() {
     for front in ["ptx", "sass"] {
         let k = kernel(&case, "good", front);
         let launch = build_launch(&case, &k).unwrap();
-        let (m, f, _) = ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
+        let (m, f, _) =
+            ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
         assert!(f.is_empty(), "{front}: {f:?}");
         assert!(
             m.outputs() == hw,
@@ -3821,7 +3858,8 @@ fn probe_tmem_st16_matches_hardware() {
     for front in ["ptx", "sass"] {
         let k = kernel(&case, "good", front);
         let launch = build_launch(&case, &k).unwrap();
-        let (m, f, _) = ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
+        let (m, f, _) =
+            ptxv_sim::explore::run_once(Machine::new(Arc::new(k), Arc::new(launch)));
         assert!(f.is_empty(), "{front}: {f:?}");
         assert!(
             m.outputs() == hw,
@@ -6232,17 +6270,15 @@ fn probe_red_async_ops_add() {
     probe_bitwise("probes/red_async_ops", "good", "sass");
     let case = Case::load(root().join("probes/red_async_ops")).unwrap();
     let ptx = case.variant_ptx("good").unwrap();
-    assert!(
-        ptxv_ptx::parse_kernel_for(
-            &ptx,
-            Some(&case.m.entry),
-            case.m
-                .ptxas_toolkit
-                .as_deref()
-                .and_then(ptxv_ptx::toolkit_version)
-        )
-        .is_err()
-    );
+    assert!(ptxv_ptx::parse_kernel_for(
+        &ptx,
+        Some(&case.m.entry),
+        case.m
+            .ptxas_toolkit
+            .as_deref()
+            .and_then(ptxv_ptx::toolkit_version)
+    )
+    .is_err());
 }
 
 /// cp.async.bulk.prefetch.tensor (SASS UTMAPF.L2.2D) as a cache hint (probes/tma_prefetch)
@@ -7283,13 +7319,11 @@ fn r4b_notify_group_is_exhaustive() {
         each[1].states
     );
     assert_eq!(each[1].classes(), ["race"], "{:#?}", each[1].findings);
-    assert!(
-        each[1]
-            .findings
-            .iter()
-            .filter(|f| f.kind != "note")
-            .all(|f| f.msg.contains("notify_dispatch"))
-    );
+    assert!(each[1]
+        .findings
+        .iter()
+        .filter(|f| f.kind != "note")
+        .all(|f| f.msg.contains("notify_dispatch")));
     // The hardware model.
     let case = Case::load(root().join("fixtures/r4b_moe")).unwrap();
     let vcase = case.for_variant("good").unwrap();
@@ -7549,11 +7583,10 @@ fn l1_coreader() {
         // that shares the consumer's SM; no race.
         let vd = run(true, false, "good", f, false);
         assert_eq!(vd.classes(), ["stale"], "good/{f}: {:#?}", vd.findings);
-        assert!(
-            vd.findings
-                .iter()
-                .all(|x| x.msg.contains("kernel 0 CTA 1 + kernel 1 CTA 0"))
-        );
+        assert!(vd
+            .findings
+            .iter()
+            .all(|x| x.msg.contains("kernel 0 CTA 1 + kernel 1 CTA 0")));
         assert!(vd.assumptions.iter().any(|x| x == "E-L1-CORES"));
         assert!(!vd.assumptions.iter().any(|x| x == "E-L1-PLACE"));
         // DPOR orders the reader's fill between the entry fence and the producer's write:
@@ -7574,11 +7607,10 @@ fn l1_coreader() {
         // Havoc: vulnerable without the reader; no closed-world assumption listed.
         let vd = run(false, true, "good", f, false);
         assert_eq!(vd.classes(), ["stale"], "good/{f} havoc");
-        assert!(
-            vd.findings
-                .iter()
-                .any(|x| x.sig.starts_with("stale-l1-havoc:"))
-        );
+        assert!(vd
+            .findings
+            .iter()
+            .any(|x| x.sig.starts_with("stale-l1-havoc:")));
         assert!(!vd.assumptions.iter().any(|x| x == "E-L1-CLOSED"));
         // The two-level check (twolevel.rs). Closed world the level-1 verdict is clean (it
         // opts into E-POLL-ACQ, so level 2 runs); the hardware model is clean too, and its
@@ -7616,11 +7648,10 @@ fn l1_coreader() {
         }));
         let (v1, c) = two(true, false, "good");
         assert!(c.observable >= 1 && c.latent_closed_world == 0);
-        assert!(
-            v1.findings
-                .iter()
-                .all(|x| x.gb300.as_ref().is_some_and(|g| g.class == "observable"))
-        );
+        assert!(v1
+            .findings
+            .iter()
+            .all(|x| x.gb300.as_ref().is_some_and(|g| g.class == "observable")));
         let (_, c) = two(false, false, "fixed");
         assert!(c.extra.is_empty(), "fixed/{f}: {:#?}", c.extra);
         // The fix: clean with co-residency (both explorers) and under havoc.
@@ -7848,7 +7879,9 @@ fn r4c_keep(mut m: Machine, keep: &[usize]) -> Machine {
             continue;
         }
         for t in m.grid_threads(g) {
-            m.threads[t].make_mut().st = ptxv_sim::machine::St::Exited;
+            m.threads[t]
+                .make_mut()
+                .set_status(ptxv_sim::machine::St::Exited);
         }
     }
     m
@@ -8283,7 +8316,10 @@ fn check_finds(case: &str, variant: &str, front: &str, max_states: usize) {
     let case = Case::load(root().join("fixtures").join(case)).unwrap();
     let k = kernel(&case, variant, front);
     let launch = build_launch(&case, &k).unwrap();
-    let v = explore(Machine::new(Arc::new(k), Arc::new(launch)), max_states);
+    let v = explore(
+        Machine::new(Arc::new(k), Arc::new(launch)),
+        max_states,
+    );
     let expect = case.variant(variant).unwrap().expect_for(front);
     assert!(
         !expect.iter().any(|e| e == "clean") && v.meets(&expect),
@@ -8613,10 +8649,9 @@ fn cpasync_exit_is_contract_unless_read() {
     check_stateful("e_cpasync_exit", "other", "ptx", 100_000);
     check_stateful("e_cpasync_exit", "other", "sass", 100_000);
     let p = ptxv_sim::hwprofile::GB300;
-    assert!(
-        p.iter()
-            .any(|i| i.id == "E-CPASYNC-EXIT" && i.discharges == ["cp-async-exit:"])
-    );
+    assert!(p
+        .iter()
+        .any(|i| i.id == "E-CPASYNC-EXIT" && i.discharges == ["cp-async-exit:"]));
 }
 
 /// S-TCGEN05 (fixtures/s_tc_st_mma): a thread's own tcgen05.st, wait::st, then its
@@ -8947,8 +8982,123 @@ fn undefined_values_through_shared_memory() {
 /// a returned old value that reaches a sink stays undefined (useret).
 #[test]
 fn undefined_values_through_shared_atomics() {
-    for v in ["good", "add0", "branch", "readspill", "useret"] {
-        both("smem_spill_sink", v);
+    let case = Case::load(root().join("fixtures/smem_spill_sink")).unwrap();
+    for variant in ["good", "add0", "branch", "readspill", "useret"] {
+        check("smem_spill_sink", variant, "sass");
+        let front = "ptx";
+        let k = Arc::new(kernel(&case, variant, front));
+        let launch = Arc::new(build_launch(&case.for_variant(variant).unwrap(), &k).unwrap());
+        let m = Machine::new(k, launch);
+        // Lane-level returned atomics make the original 64-lane search exceed its cap.
+        // Keep that limitation visible; a terminal trace never certifies all schedules.
+        let bounded = explore(m.clone(), 1_000);
+        if bounded.complete {
+            assert_eq!(
+                bounded.classes(),
+                case.variant(variant).unwrap().expect_for(front),
+                "{variant}/{front}: {:#?}",
+                bounded.findings
+            );
+        } else {
+            assert!(!bounded.classes().iter().any(|kind| kind == "clean"));
+            assert!(!bounded.meets(&["clean".into()]));
+            if bounded.findings.is_empty() && bounded.distinct_outputs <= 1 {
+                assert_eq!(bounded.classes(), ["inconclusive"]);
+            }
+        }
+        let (_, findings, terminal) = ptxv_sim::explore::run_once(m);
+        assert!(
+            terminal,
+            "{variant}/{front}: original trace did not terminate"
+        );
+        let kinds: std::collections::BTreeSet<_> = findings
+            .iter()
+            .filter(|f| {
+                !matches!(
+                    f.kind.as_str(),
+                    "probe" | "unordered" | "note" | "race-dead"
+                )
+            })
+            .map(|f| f.kind.as_str())
+            .collect();
+        let expected = case.variant(variant).unwrap().expect_for(front);
+        let expected: std::collections::BTreeSet<_> = expected
+            .iter()
+            .map(String::as_str)
+            .filter(|kind| !matches!(*kind, "clean" | "nondeterministic"))
+            .collect();
+        assert_eq!(kinds, expected, "{variant}/{front}: {findings:#?}");
+    }
+}
+
+fn shared_atomic_sink_representative(case: &Case, variant: &str) -> Machine {
+    let replace = |source: String, from: &str, to: &str| {
+        assert_eq!(
+            source.matches(from).count(),
+            1,
+            "representative edit: {from}"
+        );
+        source.replacen(from, to, 1)
+    };
+    let mut source = case.variant_ptx(variant).unwrap();
+    // All 64 lanes still initialize and read the histogram. Two atomic lanes collide on a
+    // defined bin, and a third uses an undefined spill; only one iteration is explored.
+    source = replace(
+        source,
+        "mad.lo.u32      %r11, %r10, 101, %r9;",
+        "setp.lt.u32     %p3, %r0, 2;\n    selp.b32        %r11, 0, 511, %p3;\n    setp.lt.u32     %p2, %r0, 3;",
+    );
+    source = replace(
+        source,
+        "setp.lt.u32     %p1, %r10, 4;",
+        "setp.lt.u32     %p1, %r10, 1;",
+    );
+    if variant != "branch" {
+        source = replace(
+            source,
+            "    atom.shared.cta.add.u32 %r15, [%r13], %r14;",
+            "    @%p2 atom.shared.cta.add.u32 %r15, [%r13], %r14;",
+        );
+    }
+    let k = ptxv_ptx::parse_kernel_for(&source, Some(&case.m.entry), None).unwrap();
+    let launch = build_launch(&case.for_variant(variant).unwrap(), &k).unwrap();
+    Machine::new(Arc::new(k), Arc::new(launch))
+}
+
+#[test]
+fn undefined_values_through_shared_atomics_representative() {
+    let case = Case::load(root().join("fixtures/smem_spill_sink")).unwrap();
+    for variant in ["good", "add0", "branch", "readspill", "useret"] {
+        let front = "ptx";
+        let m = shared_atomic_sink_representative(&case, variant);
+        let v = explore(m.clone(), 100_000);
+        let d = ptxv_sim::dpor::explore_dpor(m, 100_000);
+        let expected = case.variant(variant).unwrap().expect_for(front);
+        assert!(v.complete, "{variant}/{front}: representative incomplete");
+        assert!(
+            d.complete,
+            "{variant}/{front}: representative DPOR incomplete"
+        );
+        assert_eq!(
+            v.classes(),
+            expected,
+            "{variant}/{front}: {:#?}",
+            v.findings
+        );
+        assert_eq!(
+            d.classes(),
+            expected,
+            "{variant}/{front}: {:#?}",
+            d.findings
+        );
+        let mut outputs = v.outputs;
+        let mut dpor_outputs = d.outputs;
+        outputs.sort();
+        dpor_outputs.sort();
+        assert_eq!(
+            outputs, dpor_outputs,
+            "{variant}/{front}: representative outputs"
+        );
     }
 }
 
@@ -8972,8 +9122,10 @@ fn unordered_smem_pair_is_listed_as_root_cause() {
     let case = Case::load(root().join("fixtures/e_smem_root")).unwrap();
     let k = kernel(&case, "good", "sass");
     let launch = build_launch(&case, &k).unwrap();
-    let v =
-        ptxv_sim::wellsync::check_certified(Machine::new(Arc::new(k), Arc::new(launch)), 10_000);
+    let v = ptxv_sim::wellsync::check_certified(
+        Machine::new(Arc::new(k), Arc::new(launch)),
+        10_000,
+    );
     assert_eq!(v.classes(), ["nondeterministic"], "{:#?}", v.findings);
     let f = v.findings.first().expect("a root-cause finding");
     assert_eq!(f.kind, "unordered", "{:#?}", v.findings);
@@ -9143,7 +9295,10 @@ fn e_rmsnorm_ptx_contract(v: &str, want: &str) {
     let case = Case::load(root().join("fixtures/e_rmsnorm_cluster_drain")).unwrap();
     let k = Arc::new(kernel(&case, v, "ptx"));
     let mut launch = build_launch(&case, &k).unwrap();
-    let r = explore(Machine::new(k.clone(), Arc::new(launch.clone())), 200_000);
+    let r = explore(
+        Machine::new(k.clone(), Arc::new(launch.clone())),
+        200_000,
+    );
     assert!(
         r.classes().iter().any(|c| c == "race"),
         "{v}: {:?}",
@@ -9652,7 +9807,7 @@ fn e_scratch_undef_buffers() {
 }
 
 /// C-TICKET-ADDR (fixtures/e_ticket_addr, wellsync/perm.rs): slot assignment by fetch-add.
-/// good certifies `clean-up-to-permutation` (never `clean`), and every output the explorer
+/// PTX good certifies `clean-up-to-permutation` (never `clean`), and every output the explorer
 /// reaches equals the certified one up to the permutation of each counter's rows. Without the
 /// `[[permuted]]` declaration the certificate refuses (C-ORDER). Each mutant is refused:
 /// BRANCH (a ticket-dependent branch), VALUE (a ticket-dependent stored value) and GUARD (a
@@ -9709,6 +9864,26 @@ fn e_ticket_addr_permutation_certificate() {
             .collect()
     };
     for front in ["ptx", "sass"] {
+        if front == "sass" {
+            for variant in [
+                "good", "BRANCH", "VALUE", "GUARD", "SHIFT", "READ", "OVERLAP", "NOHB",
+            ] {
+                let o = ptxv_sim::wellsync::certify(machine(&base, variant, front));
+                assert!(
+                    o.verdict.is_none(),
+                    "{front} {variant}: unsupported claims certified"
+                );
+                assert!(
+                    o.reasons
+                        .iter()
+                        .any(|reason| reason
+                            .contains("overlapping or shared-return warp-lane claims")),
+                    "{front} {variant}: {:?}",
+                    o.reasons
+                );
+            }
+            continue;
+        }
         let o = ptxv_sim::wellsync::certify(machine(&base, "good", front));
         let v = o
             .verdict
@@ -9755,7 +9930,7 @@ fn e_ticket_addr_permutation_certificate() {
             ("SHIFT", "depends on more than the ticket"),
             ("READ", "rows must be outputs only"),
             ("OVERLAP", "race"),
-            ("NOHB", "C-TICKET-ADDR"),
+            ("NOHB", "race"),
         ] {
             let o = ptxv_sim::wellsync::certify(machine(&base, v, front));
             assert!(o.verdict.is_none(), "{front} {v}: certified");
@@ -9764,6 +9939,19 @@ fn e_ticket_addr_permutation_certificate() {
                 "{front} {v}: {:?}",
                 o.reasons
             );
+            if v == "NOHB" {
+                assert!(
+                    o.races.iter().any(|finding| {
+                        finding.kind == "race"
+                            && finding.msg.contains("gmem (cnt) byte 0x0")
+                            && finding.msg.contains("k0.cta1.t0")
+                            && finding.msg.contains("k0.cta0.t0")
+                            && finding.msg.contains("not ordered by happens-before")
+                    }),
+                    "{front} {v}: {:?}",
+                    o.races
+                );
+            }
         }
     }
 }
@@ -10328,7 +10516,10 @@ fn cpasync_write_is_not_ordered_by_a_barrier_before_the_wait() {
         let case = Case::load(root().join("fixtures/e_cpasync_early")).unwrap();
         let k = kernel(&case, "LATEWAIT", front);
         let launch = build_launch(&case, &k).unwrap();
-        let d = ptxv_sim::dpor::explore_dpor(Machine::new(Arc::new(k), Arc::new(launch)), 100_000);
+        let d = ptxv_sim::dpor::explore_dpor(
+            Machine::new(Arc::new(k), Arc::new(launch)),
+            100_000,
+        );
         assert!(
             d.complete && d.classes().iter().any(|c| c == "race"),
             "LATEWAIT/{front}: DPOR {:?}",
@@ -10699,4 +10890,88 @@ fn probe_bra_u_matches_hardware() {
         }
     }
     assert_eq!(n, 36);
+}
+#[test]
+fn mbar_plain_generation_order_reaches_both_orders() {
+    let case = Case::load(root().join("fixtures/mbar_plain_generation_order")).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = Arc::new(kernel(&case, "good", front));
+        let launch = Arc::new(build_launch(&case, &k).unwrap());
+        let machine = Machine::new(k, launch);
+        let want = case.variant("good").unwrap().expect_for(front);
+        let stateful = ptxv_sim::explore::explore(machine.clone(), 100_000);
+        assert!(stateful.complete, "{front}: incomplete");
+        assert_eq!(stateful.classes(), want, "{front}: {:?}", stateful.findings);
+        let dpor = ptxv_sim::dpor::explore_dpor(machine, 100_000);
+        assert!(dpor.complete, "{front}: DPOR incomplete");
+        let mut classes = dpor.classes();
+        if front == "ptx" {
+            classes.retain(|c| c != "nondeterministic");
+        }
+        assert_eq!(classes, want, "{front}: DPOR: {:?}", dpor.findings);
+    }
+}
+
+#[test]
+fn mbar_transaction_generation_order_reaches_deadlock() {
+    both("mbar_transaction_generation_order", "good");
+}
+
+#[test]
+fn mbar_uninitialized_wait_reports_before_blocking() {
+    both("mbar_wait_uninitialized", "bad");
+}
+
+#[test]
+fn mbar_uninitialized_peek_reports_before_parking() {
+    invalid_peek_preserves_its_first_diagnostic("mbar_peek_uninitialized");
+}
+
+#[test]
+fn mbar_uninitialized_forced_peek_preserves_the_diagnostic() {
+    invalid_peek_preserves_its_first_diagnostic("mbar_forced_peek_uninitialized");
+}
+
+fn invalid_peek_preserves_its_first_diagnostic(name: &str) {
+    let case = Case::load(root().join("fixtures").join(name)).unwrap();
+    for front in ["ptx", "sass"] {
+        let k = kernel(&case, "bad", front);
+        let pc = k
+            .code
+            .iter()
+            .position(|inst| matches!(inst.op, ptxv_ir::Op::MbarTryWait { .. }))
+            .expect("compiler retained the observed peek");
+        let launch = build_launch(&case, &k).unwrap();
+        let machine = Machine::new(Arc::new(k), Arc::new(launch));
+        for (explorer, result) in [
+            ("stateful", explore(machine.clone(), 1000)),
+            ("DPOR", ptxv_sim::dpor::explore_dpor(machine, 1000)),
+        ] {
+            eprintln!(
+                "{name}/{front}/{explorer}: {} states {:?}/{}",
+                result.states,
+                result.classes(),
+                result.complete
+            );
+            assert!(result.complete);
+            assert_eq!(result.classes(), ["deadlock", "violation"]);
+            let signature = format!("mbar-uninit:{pc}");
+            assert!(
+                result
+                    .findings
+                    .iter()
+                    .any(|finding| finding.sig == signature
+                        && finding.msg.contains("used before mbarrier.init")),
+                "first peek's error missing: {:?}",
+                result.findings
+            );
+        }
+    }
+}
+
+#[test]
+fn e_spin_mbarrier_peeks_keep_valid_progress() {
+    for variant in ["good", "SPIN"] {
+        both("e_peek_loop", variant);
+    }
 }

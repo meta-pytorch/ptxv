@@ -7714,6 +7714,7 @@ fn lower_inst(lw: &mut Lower) -> Result<Inst> {
                         | "min"
                         | "max"
                         | "inc"
+                        | "dec"
                         | "b32"
                         | "b64"
                         | "u32"

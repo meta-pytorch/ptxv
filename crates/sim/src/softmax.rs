@@ -1234,6 +1234,14 @@ impl<'a> Ctx<'a> {
         &self.ns.nodes[n as usize].kind
     }
 
+    fn max_inputs(&self, n: u32) -> Option<(u32, u32)> {
+        match self.kind(n) {
+            NodeKind::Max { a, b, min: false } => Some((*a, *b)),
+            NodeKind::Seg(p) => crate::seg::real_maximum(&p.0),
+            _ => None,
+        }
+    }
+
     fn konst(&self, n: u32) -> Option<f64> {
         match self.kind(n) {
             NodeKind::Leaf => Some(f32::from_bits(self.ns.nodes[n as usize].hw) as f64),
@@ -1268,15 +1276,16 @@ impl<'a> Ctx<'a> {
                 },
                 false,
             )),
-            NodeKind::Max { min: false, .. } => {
+            _ if self.max_inputs(n).is_some() => {
                 let mut set = BTreeSet::new();
                 let mut stack = vec![n];
                 while let Some(x) = stack.pop() {
+                    if let Some((a, b)) = self.max_inputs(x) {
+                        stack.push(a);
+                        stack.push(b);
+                        continue;
+                    }
                     match self.kind(x).clone() {
-                        NodeKind::Max { a, b, min: false } => {
-                            stack.push(a);
-                            stack.push(b);
-                        }
                         NodeKind::Input((a, i)) => {
                             set.insert((self.buf_id[a], i));
                         }
@@ -1342,20 +1351,18 @@ impl<'a> Ctx<'a> {
                 Ok((l, !exact))
             }
             // fl(c max(S)) of scores: max_k fl(c s_k) (rounding to nearest is monotone, c > 0).
-            NodeKind::Seg(p)
-                if p.0.args.len() == 1
-                    && matches!(self.kind(p.0.args[0]), NodeKind::Max { min: false, .. }) =>
-            {
+            NodeKind::Seg(p) if p.0.args.len() == 1 && self.max_inputs(p.0.args[0]).is_some() => {
                 let q = simplify_inf(&p.0);
                 let c = fmul_const_prog(&q).ok_or("a slice of a maximum that is not fl(c max)")?;
                 let mut set = BTreeSet::new();
                 let mut stack = vec![p.0.args[0]];
                 while let Some(x) = stack.pop() {
+                    if let Some((a, b)) = self.max_inputs(x) {
+                        stack.push(a);
+                        stack.push(b);
+                        continue;
+                    }
                     match self.kind(x).clone() {
-                        NodeKind::Max { a, b, min: false } => {
-                            stack.push(a);
-                            stack.push(b);
-                        }
                         NodeKind::Leaf if self.ns.nodes[x as usize].hw == 0xff80_0000 => {}
                         _ => {
                             set.insert(self.scaled_score(x, c, true)?);
@@ -2856,5 +2863,181 @@ impl AttnEval {
             Self::one(self.c, v1, vm, dc, ub),
         );
         (br + bc, o, br, bc)
+    }
+}
+
+#[cfg(test)]
+mod comparison_maximum_projection_tests {
+    use super::*;
+    use crate::num::Node;
+    use crate::num::SegRef;
+
+    fn program(plan: ptxv_ir::comparison_select::Plan) -> SProg {
+        let (args, ops, out) =
+            crate::seg::comparison_program_parts(crate::seg::ComparisonContext {
+                plan,
+                left: 0,
+                right: 1,
+                comparison_pc: 3,
+                selection_pc: 5,
+            });
+        SProg {
+            args,
+            ops,
+            out,
+            extra_pcs: Default::default(),
+        }
+    }
+
+    fn state(program: SProg, right: NodeKind, right_bits: u32) -> NumState {
+        let node = |kind, hw| Node {
+            kind,
+            hw,
+            exact: vec![],
+            err: vec![],
+            pc: 0,
+        };
+        let mut state = NumState::default();
+        state.nodes = vec![
+            node(NodeKind::Input((0, 0)), 0),
+            node(right, right_bits),
+            node(NodeKind::Seg(SegRef(std::sync::Arc::new(program))), 0),
+        ];
+        state
+    }
+
+    #[test]
+    fn finite_real_projection_preserves_exact_selection_signed_zero_bits() {
+        for comparison in [
+            FCmp::Gt,
+            FCmp::Ge,
+            FCmp::Gtu,
+            FCmp::Geu,
+            FCmp::Lt,
+            FCmp::Le,
+            FCmp::Ltu,
+            FCmp::Leu,
+        ] {
+            for negate in [false, true] {
+                for swap in [false, true] {
+                    let plan = ptxv_ir::comparison_select::Plan {
+                        comparison,
+                        negate,
+                        swap,
+                    };
+                    let p = program(plan);
+                    for bits in [[0, 0x8000_0000], [0x8000_0000, 0]] {
+                        assert_eq!(
+                            p.eval(&bits).unwrap(),
+                            crate::seg::hardware::evaluate(plan, bits[0], bits[1])
+                        );
+                    }
+                    let state = state(p, NodeKind::Input((0, 1)), 0x8000_0000);
+                    let result = Ctx::new(&state, &[0]).lin(2);
+                    if ptxv_ir::comparison_select::real_max(plan) {
+                        let (linear, rounded) = result.unwrap();
+                        assert!(!rounded);
+                        assert_eq!(
+                            linear.terms,
+                            [(Atom::Max(vec![(0, 0), (0, 1)].into()), 1.0)].into()
+                        );
+                    } else {
+                        assert!(result.is_err());
+                    }
+                    assert!(matches!(state.nodes[2].kind, NodeKind::Seg(_)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrary_slices_and_nonmaximum_comparisons_are_not_projected() {
+        let plan = ptxv_ir::comparison_select::Plan {
+            comparison: FCmp::Gt,
+            negate: false,
+            swap: false,
+        };
+        for field in 0..14 {
+            let mut p = program(plan);
+            match field {
+                0 => p.args.push(2),
+                1 => p.ops.push(p.ops[0].clone()),
+                2 => p.out = SVal::Op(0),
+                3 => {
+                    p.extra_pcs.insert(7);
+                }
+                4 => {
+                    p.ops[0].kind = SKind::DivRn {
+                        a: SVal::Arg(0),
+                        b: SVal::Arg(1),
+                    }
+                }
+                5 => {
+                    p.ops[1].kind = SKind::Guard {
+                        pred: SVal::Op(0),
+                        neg: false,
+                        new: SVal::Arg(0),
+                        old: SVal::Arg(1),
+                    }
+                }
+                6..=9 => {
+                    let SKind::Inst {
+                        dst, regs, cvals, ..
+                    } = &mut p.ops[0].kind
+                    else {
+                        panic!()
+                    };
+                    match field {
+                        6 => dst.idx += 1,
+                        7 => regs.swap(0, 1),
+                        8 => regs[0].1 = SVal::Arg(1),
+                        _ => cvals.push((Val::Imm(0), 0)),
+                    }
+                }
+                10..=12 => {
+                    let SKind::Inst {
+                        dst, regs, cvals, ..
+                    } = &mut p.ops[1].kind
+                    else {
+                        panic!()
+                    };
+                    match field {
+                        10 => dst.idx += 1,
+                        11 => regs[2].1 = SVal::Arg(0),
+                        _ => cvals.push((Val::Imm(0), 0)),
+                    }
+                }
+                _ => {
+                    let SKind::Inst {
+                        op: Op::Fsetp { cmp, .. },
+                        ..
+                    } = &mut p.ops[0].kind
+                    else {
+                        panic!()
+                    };
+                    *cmp = FCmp::Eq;
+                }
+            }
+            assert_eq!(crate::seg::real_maximum(&p), None, "field {field}");
+            let state = state(p, NodeKind::Input((0, 1)), 0);
+            assert!(Ctx::new(&state, &[0]).lin(2).is_err(), "field {field}");
+        }
+    }
+
+    #[test]
+    fn real_projection_rejects_nan_and_opaque_leaves_but_accepts_negative_infinity_identity() {
+        let plan = ptxv_ir::comparison_select::Plan {
+            comparison: FCmp::Gt,
+            negate: false,
+            swap: false,
+        };
+        for (kind, bits) in [(NodeKind::Leaf, 0x7fc0_0000), (NodeKind::Opaque, 0)] {
+            let state = state(program(plan), kind, bits);
+            assert!(Ctx::new(&state, &[0]).lin(2).is_err());
+        }
+        let state = state(program(plan), NodeKind::Leaf, 0xff80_0000);
+        let (linear, rounded) = Ctx::new(&state, &[0]).lin(2).unwrap();
+        assert!(!rounded);
+        assert_eq!(linear.terms, [(Atom::In((0, 0)), 1.0)].into());
     }
 }

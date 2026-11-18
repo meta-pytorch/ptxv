@@ -83,6 +83,13 @@ pub const REGISTRY: &[Assumption] = &[
         },
     },
     Assumption {
+        id: "E-DEAD-REG",
+        kind: "code",
+        status: "argued",
+        title: "private register continuations retain exact control traces, future operands and definedness",
+        applies: |kernel| crate::register_liveness::FutureReads::analyze(kernel).is_some(),
+    },
+    Assumption {
         id: "E-CLOCK",
         kind: "code",
         status: "argued",

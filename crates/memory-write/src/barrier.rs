@@ -161,6 +161,8 @@ pub fn record_arrival_batch(mut batch: ArrivalBatch, step: ArrivalStep) -> Arriv
 }
 
 pub fn arrival_batch_writes(batch: ArrivalBatch) -> bool {
+    // ASSUME(E-CTA-INDEP): only audited plain batches small enough to remain in the
+    // same phase in either pairwise order may share a read-only membership key.
     !batch.valid || batch.arrivals == 0 || batch.arrivals > batch.pending / 2
 }
 

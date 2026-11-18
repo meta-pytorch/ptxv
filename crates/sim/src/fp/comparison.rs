@@ -52,6 +52,9 @@ mod tests {
     use ptxv_ir::FCmp::*;
 
     use super::*;
+    use crate::seg::ComparisonRequest;
+    use crate::seg::bound::ComparisonPrimitive;
+    use crate::seg::bound::IeeeComparison;
 
     const MODES: [FCmp; 16] = [
         F, T, Lt, Eq, Le, Gt, Ne, Ge, Num, Nan, Ltu, Equ, Leu, Gtu, Neu, Geu,
@@ -91,6 +94,15 @@ mod tests {
                     "first={first:08x}, second={second:08x}, mode={mode:?}, FTZ={flush}"
                 );
                 assert_eq!(crate::fp::f32_cmp(first, second, mode, flush), expected);
+                assert_eq!(
+                    IeeeComparison.compare(ComparisonRequest {
+                        comparison: mode,
+                        left: first,
+                        right: second,
+                        ftz: flush,
+                    }),
+                    expected
+                );
             }
         }
     }

@@ -205,7 +205,11 @@ pub fn mbar_async_rerun(m1: &Machine) -> Option<Machine> {
 /// it reruns `m1` with both fences implied around every instruction
 /// (`Launch::tc_fence_implied`) when `v` has races and the kernel uses tcgen05; a race absent
 /// there becomes kind "contract" (only when that rerun is complete).
-pub fn tc_fence_contract(v: &mut Verdict, m1: &Machine, check: &mut dyn FnMut(Machine) -> Verdict) {
+pub fn tc_fence_contract(
+    v: &mut Verdict,
+    m1: &Machine,
+    check: &mut dyn FnMut(Machine) -> Verdict,
+) {
     if !v.findings.iter().any(|x| x.kind == "race") {
         return;
     }

@@ -127,8 +127,11 @@ pub fn single(law: &ChainLaw, out_fmt: Format, round16: Option<Format>) -> Estim
     let mut abs_atoms = vec![];
     let mut tail = 0.0;
     for (c, _p, h, _pre) in &law.fin {
-        let b = law.cells.binade(*c);
-        let ue = 2f64.powi(ulp_exp(b));
+        let ue = if *c == 0 {
+            f32::from_bits(1) as f64
+        } else {
+            2f64.powi(ulp_exp(law.cells.binade(*c)))
+        };
         ulp_atoms.extend(hist_atoms(h, 1.0, law.g));
         abs_atoms.extend(hist_atoms(h, ue, law.g));
         tail += h.tail;
@@ -768,4 +771,58 @@ mod tent_tests {
         let (v, _) = t.finish(None);
         assert_eq!(v, vec![(0, 0.5), (1, 0.5)]);
     }
+}
+
+#[cfg(test)]
+mod zero_cell_tests {
+    use super::*;
+    use crate::errdist::markov::Cells;
+    use crate::errdist::markov::G;
+
+    fn law(with_error: bool, zero_mass: f64) -> ChainLaw {
+        let zero = Hist {
+            z: zero_mass,
+            ..Default::default()
+        };
+        let mut fin = vec![(0, zero_mass, zero.clone(), zero)];
+        if zero_mass < 1.0 {
+            let mass = 1.0 - zero_mass;
+            let hist = if with_error {
+                Hist {
+                    h: [(G, mass)].into_iter().collect(),
+                    ..Default::default()
+                }
+            } else {
+                Hist {
+                    z: mass,
+                    ..Default::default()
+                }
+            };
+            fin.push((1, mass, hist.clone(), hist));
+        }
+        ChainLaw {
+            cells: Cells { bmin: 0, bmax: 0 },
+            fin,
+            residue: vec![],
+            notes: vec![],
+            g: G,
+            trace: vec![],
+        }
+    }
+
+    #[test]
+    fn exact_zero_single_has_finite_zero_error_statistics() {
+        let estimate = single(&law(false, 1.0), Format::F32, None);
+        assert_eq!(estimate.abs.p_zero, 1.0);
+        assert_eq!(estimate.abs.mean_abs, 0.0);
+        assert!(
+            estimate
+                .abs
+                .quantiles
+                .iter()
+                .all(|&(_, value)| value == 0.0)
+        );
+        assert_eq!(estimate.p_differ, Some((0.0, 0.0, 0.0)));
+    }
+
 }

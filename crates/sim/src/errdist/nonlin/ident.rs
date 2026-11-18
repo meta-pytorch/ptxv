@@ -46,6 +46,8 @@ pub enum Func {
     Poly,
     /// arg0 / arg1.
     Div,
+    /// Exact maximum in the ordered, non-NaN real interpretation of a checked slice.
+    Max,
     /// A named elementwise function (`named`).
     Named(String),
 }
@@ -90,6 +92,7 @@ impl Func {
             Func::Ident => "affine".into(),
             Func::Poly => "poly".into(),
             Func::Div => "div".into(),
+            Func::Max => "max".into(),
             Func::Named(n) => n.clone(),
         }
     }
@@ -101,7 +104,7 @@ impl Func {
             Func::Sqrt => z.sqrt(),
             Func::Tanh => z.tanh(),
             Func::Ident | Func::Poly => z,
-            Func::Div => f64::NAN,
+            Func::Div | Func::Max => f64::NAN,
             Func::Named(n) => named(n, z),
         }
     }
@@ -114,7 +117,7 @@ impl Func {
             Func::Sqrt => 0.5 / z.sqrt(),
             Func::Tanh => 1.0 - z.tanh().powi(2),
             Func::Ident | Func::Poly => 1.0,
-            Func::Div => f64::NAN,
+            Func::Div | Func::Max => f64::NAN,
             Func::Named(_) => {
                 let h = 1e-5 * z.abs().max(1e-2);
                 (self.f(z + h) - self.f(z - h)) / (2.0 * h)
@@ -148,7 +151,7 @@ pub struct RealFn {
     pub pow: i32,
     /// Outer affine map (alpha, beta) (named forms; else (0, 1)).
     pub outer: (f64, f64),
-    /// The argument of a polynomial form.
+    /// The argument of a polynomial form, or the selected argument on a maximum tie.
     #[serde(default)]
     pub parg: usize,
     /// Every constant snapped to a named value (else some are least-squares fits).
@@ -265,7 +268,24 @@ impl RealFn {
             None => 1.0,
         }
     }
+    pub(crate) fn maximum_arg(&self, x: f64, y: f64) -> usize {
+        if x > y {
+            0
+        } else if y > x {
+            1
+        } else {
+            self.parg
+        }
+    }
+
     pub fn eval(&self, a: &[f64]) -> f64 {
+        if self.func == Func::Max {
+            return if a[0].is_nan() || a[1].is_nan() {
+                f64::NAN
+            } else {
+                a[self.maximum_arg(a[0], a[1])]
+            };
+        }
         if self.func == Func::Div {
             return a[0] / a[1];
         }
@@ -273,6 +293,15 @@ impl RealFn {
     }
     /// Partial derivatives with respect to each argument.
     pub fn grad(&self, a: &[f64]) -> Vec<f64> {
+        if self.func == Func::Max {
+            return if a[0].is_nan() || a[1].is_nan() {
+                vec![f64::NAN, f64::NAN]
+            } else {
+                let mut gradient = vec![0.0, 0.0];
+                gradient[self.maximum_arg(a[0], a[1])] = 1.0;
+                gradient
+            };
+        }
         if self.func == Func::Div {
             return vec![1.0 / a[1], -a[0] / (a[1] * a[1])];
         }
@@ -297,6 +326,9 @@ impl RealFn {
         g
     }
     pub fn show(&self) -> String {
+        if self.func == Func::Max {
+            return "max(a0, a1)".into();
+        }
         if self.func == Func::Div {
             return "a0 / a1".into();
         }
@@ -842,6 +874,15 @@ fn fit_poly(probes: &[(Vec<f64>, f64)], cands: &[(f64, u8)], k: usize) -> Vec<Re
 
 /// Identify one slice from its probes (argument tuples and outputs, f64).
 pub fn identify(p: &SProg, probes: &[(Vec<f64>, f64)]) -> Result<RealFn, String> {
+    if crate::seg::real_maximum(p).is_some() {
+        let mut form = RealFn::plain(Func::Max, 2);
+        form.parg = match p.eval(&[0, 0x8000_0000])? {
+            0 => 0,
+            0x8000_0000 => 1,
+            _ => return Err("checked maximum did not select an argument on a zero tie".into()),
+        };
+        return Ok(form);
+    }
     let n = p.args.len();
     let probes: Vec<(Vec<f64>, f64)> = probes
         .iter()
@@ -1055,4 +1096,227 @@ pub fn identify_prog(
         );
     }
     out
+}
+
+#[cfg(test)]
+mod exact_comparison_maximum_tests {
+    use std::sync::Arc;
+
+    use ptxv_ir::FCmp;
+
+    use super::*;
+    use crate::errdist::chain::Op;
+    use crate::errdist::chain::Prog;
+    use crate::errdist::nonlin;
+    use crate::errdist::nonlin::lin::Final;
+    use crate::errdist::nonlin::lin::KModel;
+    use crate::errdist::nonlin::lin::Law;
+    use crate::errdist::nonlin::ops::NlOp;
+    use crate::errdist::spec::Format;
+
+    fn program(comparison: FCmp) -> SProg {
+        let (args, ops, out) =
+            crate::seg::comparison_program_parts(crate::seg::ComparisonContext {
+                plan: ptxv_ir::comparison_select::Plan {
+                    comparison,
+                    negate: false,
+                    swap: false,
+                },
+                left: 0,
+                right: 1,
+                comparison_pc: 3,
+                selection_pc: 5,
+            });
+        SProg {
+            args,
+            ops,
+            out,
+            extra_pcs: Default::default(),
+        }
+    }
+
+    #[test]
+    fn maximum_is_identified_structurally_without_fitting_arbitrary_slices() {
+        let prog = program(FCmp::Gt);
+        let form = identify(&prog, &[]).unwrap();
+        assert_eq!(form.func, Func::Max);
+        for args in [[-2.0, 3.0], [3.0, -2.0], [2.0, 2.0]] {
+            assert_eq!(form.eval(&args), args[0].max(args[1]));
+        }
+        assert_eq!(form.grad(&[3.0, -2.0]), [1.0, 0.0]);
+        assert_eq!(form.grad(&[-2.0, 3.0]), [0.0, 1.0]);
+        assert_eq!(form.grad(&[2.0, 2.0]), [0.0, 1.0]);
+        assert_eq!(
+            identify(&program(FCmp::Ge), &[]).unwrap().grad(&[2.0, 2.0]),
+            [1.0, 0.0]
+        );
+        assert!(form.eval(&[f64::NAN, 3.0]).is_nan());
+        assert!(form.eval(&[3.0, f64::NAN]).is_nan());
+        assert_eq!(form.eval(&[f64::NEG_INFINITY, 3.0]), 3.0);
+        assert!(identify(&program(FCmp::Lt), &[]).is_err());
+        assert!(identify(&program(FCmp::Eq), &[]).is_err());
+        let mut malformed = prog.clone();
+        malformed.extra_pcs.insert(9);
+        assert!(identify(&malformed, &[]).is_err());
+    }
+
+    #[test]
+    fn maximum_keeps_exact_slice_bits_and_serializes_its_real_projection() {
+        let prog = program(FCmp::Gt);
+        let form = identify(&prog, &[]).unwrap();
+        let op = NlOp::Seg {
+            prog: Arc::new(prog),
+            args: vec![0, 1],
+            real: Some(form),
+        };
+        let restored: NlOp = serde_json::from_str(&serde_json::to_string(&op).unwrap()).unwrap();
+        for (x, y) in [
+            (0, 0x8000_0000),
+            (0x8000_0000, 0),
+            (0x7fc0_1234, 0x3f80_0000),
+        ] {
+            for slice in [&op, &restored] {
+                let value =
+                    slice.eval(&|i| f32::from_bits(if i == 0 { x } else { y }), &mut vec![]);
+                assert_eq!(value.to_bits(), y);
+            }
+        }
+        assert_eq!(op.shape_key(), restored.shape_key());
+        let NlOp::Seg {
+            real: Some(real), ..
+        } = restored
+        else {
+            panic!()
+        };
+        assert_eq!(real.func, Func::Max);
+    }
+
+    #[test]
+    fn maximum_uses_no_sampled_table_and_preserves_the_selected_rounding_site() {
+        let prog = Arc::new(program(FCmp::Gt));
+        let form = identify(&prog, &[]).unwrap();
+        let slice = NlOp::Seg {
+            prog: prog.clone(),
+            args: vec![0, 1],
+            real: Some(form.clone()),
+        };
+        let p = Prog {
+            ops: vec![Op::Const(2.0), Op::Const(5.0), Op::Nl(slice)],
+            hw: vec![2f32.to_bits(), 5f32.to_bits(), 5f32.to_bits()],
+            outputs: vec![Some(2)],
+            out_fmt: Format::F32,
+            bufs: vec![],
+            dep_untracked: vec![],
+            atomic: vec![],
+            atomic_src: vec![],
+            atomic_free: vec![],
+            pre_rounded: vec![],
+        };
+        let ids = [(
+            func_key(&prog),
+            IdentInfo {
+                result: Ok(form),
+                count: 1,
+                pc: 3,
+                prog,
+                probes: vec![],
+            },
+        )]
+        .into();
+        let spec = serde_json::from_value(serde_json::json!({"version": 1})).unwrap();
+        let tables = nonlin::compile(&[(&p, &ids)], &spec, &[]).unwrap();
+        assert!(tables.tables.is_empty());
+        let indices = nonlin::op_tables(&p, &tables);
+        assert_eq!(indices, [None, None, None]);
+        let model = KModel::new(&p, &tables.tables, indices);
+        let state = model.state(&[]);
+        assert_eq!(state.v[2], 5.0);
+        assert!(matches!(state.law[2], Law::Zero));
+        assert_eq!(model.final_of(&state, 2), (1, Final::Exact));
+        let gradients = model.adjoints(&state, &model.cone(2), &mut vec![]);
+        assert!(gradients.contains(&(1, 1.0)));
+        assert!(!gradients.iter().any(|&(i, _)| i == 0));
+        let values = nonlin::real::eval(&p, &[]);
+        assert_eq!(values[2], values[1]);
+    }
+
+    #[test]
+    fn maximum_ties_preserve_the_actual_selected_rounding_site() {
+        let value = 1.1f32 as f64;
+        for (comparison, selected, final_kind) in
+            [(FCmp::Gt, 2, Final::Exact), (FCmp::Ge, 1, Final::Rn)]
+        {
+            let program = Arc::new(program(comparison));
+            let form = identify(&program, &[]).unwrap();
+            let p = Prog {
+                ops: vec![
+                    Op::Const(value),
+                    Op::Round { arg: 0, f16: false },
+                    Op::Const(value),
+                    Op::Nl(NlOp::Seg {
+                        prog: program,
+                        args: vec![1, 2],
+                        real: Some(form),
+                    }),
+                ],
+                hw: vec![],
+                outputs: vec![Some(3)],
+                out_fmt: Format::F32,
+                bufs: vec![],
+                dep_untracked: vec![],
+                atomic: vec![],
+                atomic_src: vec![],
+                atomic_free: vec![],
+                pre_rounded: vec![],
+            };
+            let model = KModel::new(&p, &[], vec![None; 4]);
+            let state = model.state(&[]);
+            assert_eq!(state.v[1], state.v[2]);
+            assert!(matches!(state.law[1], Law::Rn { .. }));
+            assert!(matches!(state.law[2], Law::Zero));
+            assert_eq!(state.lat[3], state.lat[selected as usize]);
+            assert_eq!(model.final_of(&state, 3), (selected, final_kind));
+            let gradients = model.adjoints(&state, &model.cone(3), &mut vec![]);
+            assert!(gradients.contains(&(selected, 1.0)));
+            assert!(!gradients.iter().any(|&(i, _)| i == 3 - selected));
+        }
+    }
+
+    #[test]
+    fn maximum_real_evaluation_uses_double_double_low_bits_before_ties() {
+        let program = Arc::new(program(FCmp::Gt));
+        let form = identify(&program, &[]).unwrap();
+        let p = Prog {
+            ops: vec![
+                Op::Const(1e20),
+                Op::Const(1.0),
+                Op::Add {
+                    a: 0,
+                    b: 1,
+                    rz: false,
+                    ftz: false,
+                },
+                Op::Const(1e20),
+                Op::Nl(NlOp::Seg {
+                    prog: program,
+                    args: vec![2, 3],
+                    real: Some(form),
+                }),
+            ],
+            hw: vec![],
+            outputs: vec![Some(4)],
+            out_fmt: Format::F32,
+            bufs: vec![],
+            dep_untracked: vec![],
+            atomic: vec![],
+            atomic_src: vec![],
+            atomic_free: vec![],
+            pre_rounded: vec![],
+        };
+        let values = nonlin::real::eval(&p, &[]);
+        assert_eq!(values[2].0.hi, values[3].0.hi);
+        assert_eq!(values[2].0.lo, 1.0);
+        assert_eq!(values[3].0.lo, 0.0);
+        assert_eq!(values[4], values[2]);
+    }
 }

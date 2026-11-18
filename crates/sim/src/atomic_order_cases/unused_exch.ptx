@@ -1,0 +1,22 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+.visible .entry k(.param .u64 input) {
+ .reg .b64 %address;
+ .reg .b32 %lane, %replacement, %old, %value;
+ .reg .pred %middle;
+ ld.param.u64 %address,[input];
+ mov.u32 %lane,%tid.x;
+ add.u32 %replacement,%lane,1;
+ atom.global.exch.b32 %old,[%address],%replacement;
+ bar.sync 0;
+ ld.global.u32 %value,[%address];
+ setp.eq.u32 %middle,%value,2;
+ @%middle trap;
+ ret;
+}
