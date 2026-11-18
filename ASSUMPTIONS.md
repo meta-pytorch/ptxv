@@ -3603,14 +3603,20 @@ E-BAR-OVER) drops the other edge.
 ### E-WELLSYNC · code
 **A well-synchronized run stands for every schedule.** `ptxv check --certify` (with or
 without `--slices`) runs the kernel once (`run_once`'s schedule, `explore.rs` `DetSched`: the
-current warp runs until it blocks, then the first async operation that can complete, then the
-next warp in cyclic order; any valid schedule serves, and this one looks at one warp per step
+current warp runs until it blocks or takes 4096 steps, then the first async operation that
+can complete, then the next warp in cyclic order; any valid schedule serves, and this one looks at one warp per step
 instead of every thread of the launch) with an event log (`wellsync.rs`) and checks that every synchronization point is *determined*; then that run's
 verdict (findings, outputs, termination) is the verdict of the launch, and no exploration
 happens. Otherwise it prints the condition that failed (instruction, mbarrier, phase) and
 explores. The idea is SentryWard's (static verification of warp-specialized Blackwell
 kernels): if barrier phases/generations are completed by the same arrivals in every schedule
 and every wait observes a determined phase, happens-before (HB) is schedule-invariant.
+- Scheduling policy: with unlaunched CTAs or a TMEM co-tenant, the full scheduler normally
+  chooses the first enabled split. After that preferred warp takes 4096 consecutive steps,
+  it rotates through the offered actions so a polling warp can yield to a producer.
+  Numerical runs and `PTXV_DET=lowest` retain their explicit lowest-split policy. This
+  selects one admissible certificate run; the quantum itself establishes neither
+  exhaustive coverage nor fairness.
 - Conditions (each checked on the run's vector clocks; "x HB y" is the FastTrack epoch test,
   strict for an event that follows a strong store in the same clock window, since a strong
   store does not tick its thread):
@@ -11028,6 +11034,9 @@ its representatives' checks list (`exhaustive_concolic.check_assumes`).
 position i make the same decision at position i** (2026-11-09). The coverage run uses one
 deterministic schedule (explore.rs `DetSched`), whose choices depend on the machine's control
 state; values reach that state only through decisions (atoms) or operands (C-EXH-TRANSFER).
+The full scheduler's preferred warp, 4096-step counter and action cursor are deterministic
+state as well; repeating a path starts from a fresh scheduler. Changing the quantum can
+change the chosen path, so a coverage run is not a proof that every schedule was explored.
 - Where: cert.rs (the region "the path's decisions before i, decision i the other way").
 - Status: **argued** from the deterministic schedule. Checked only between traversed paths:
   two that agree before i and differ in which decision comes at i block the record

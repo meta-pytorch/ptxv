@@ -1,0 +1,28 @@
+name = "deterministic-racing-poll"
+description = "Two active actors plus a later inert grid select the existing full deterministic scheduler"
+ptx = "kernel.ptx"
+entry = "main"
+grid = [2, 1, 1]
+block = [1, 1, 1]
+outputs = ["flag"]
+
+[[buffers]]
+name = "flag"
+dtype = "u32"
+shape = [1]
+init = "zeros"
+values = [[0, 2.0]]
+
+[[params]]
+kind = "ptr"
+buffer = "flag"
+
+[[launches]]
+entry = "dummy"
+grid = [1, 1, 1]
+block = [1, 1, 1]
+params = []
+
+[[variants]]
+id = "good"
+expect = ["race"]

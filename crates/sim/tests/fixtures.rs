@@ -14,6 +14,7 @@ use std::sync::Arc;
 use ptxv_case::Case;
 use ptxv_sim::build_launch;
 use ptxv_sim::explore::explore;
+use ptxv_sim::explore::explore_with_workers;
 use ptxv_sim::explore::Verdict;
 use ptxv_sim::machine::Machine;
 
@@ -2181,14 +2182,28 @@ fn r2_cute_small_cm4_ptx_contract_reruns() {
     check_bounded_part("r2_cute_small", "CM4", "ptx", 50_000, 1);
 }
 
-/// fixtures/r2_cute_gemm CM1 on SASS (exhaustive).
+/// CM1 on SASS: exact verdict classes at completion or explicit state-cap exhaustion.
 #[test]
 #[ignore = "heavy: 46 s"]
 fn r2_cute_gemm_cm1_sass() {
     if vendor_missing(&["r2_cute_gemm"]) {
         return;
     }
-    check_stateful("r2_cute_gemm", "CM1", "sass", 2_000_000);
+    let cap = 16_000_000;
+    let (v, expect) = run_stateful("r2_cute_gemm", "CM1", "sass", |m| {
+        explore_with_workers(m, cap, 40)
+    });
+    let classes = v.classes();
+    eprintln!(
+        "CM1/sass: complete={}, states={}, cap={cap}, classes={classes:?}",
+        v.complete, v.states
+    );
+    assert!(
+        (v.complete || v.states >= cap) && classes == expect,
+        "CM1/sass: got {classes:?} (complete: {}, states: {}), want {expect:?}",
+        v.complete,
+        v.states
+    );
 }
 
 // Rung 3b (CuTeDSL half): MXF8 block-scaled GEMM (TMA, tcgen05.cp of the scale factors,

@@ -254,6 +254,21 @@ the HB-free path.
 
 ### 3.4 Properties checked (built in)
 
+**Deterministic runs and search budgets.** A deterministic run supplies one schedule for
+certificate checking, coverage or numerical extraction. When the launch has unlaunched
+CTAs or a TMEM co-tenant, its full scheduling policy normally chooses the first enabled
+split. After 4096 consecutive steps by the preferred warp, it rotates through the offered
+actions so a polling warp can yield to a producer. Numerical runs and `PTXV_DET=lowest`
+keep their explicit lowest-split policy. The scheduling quantum does not establish
+exhaustive coverage or fairness; a certificate still needs its independent acceptance
+checks.
+
+`explore_with_workers` lets callers set the exploration state cap and worker budget
+separately, while retaining the normal verdict finalization and diagnostic preservation.
+A state cap is a resource limit: reaching it may leave the result inconclusive. The CM1
+SASS regression uses a 16-million-state cap and 40 workers and accepts explicit cap
+exhaustion only when the expected finding classes are retained.
+
 Safety invariants on every reachable state:
 
 * **Data races:** smem, DSMEM, global, peer-GPU global (physical), TMEM, and *registers vs

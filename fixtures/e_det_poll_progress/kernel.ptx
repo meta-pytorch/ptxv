@@ -1,0 +1,33 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree.
+
+.version 9.0
+.target sm_103a
+.address_size 64
+
+.visible .entry main(.param .u64 flag_p) {
+    .reg .b64 %rd<2>;
+    .reg .b32 %r<4>;
+    .reg .pred %p<3>;
+    ld.param.u64 %rd1, [flag_p];
+    mov.u32 %r0, %ctaid.x;
+    mov.u32 %r3, 0;
+    setp.eq.u32 %p0, %r0, 0;
+    @%p0 bra POLL;
+    st.global.u32 [%rd1], 0;
+    st.relaxed.sys.global.u32 [%rd1], 1;
+    ret;
+POLL:
+    ld.relaxed.sys.global.u32 %r1, [%rd1];
+    add.u32 %r3, %r3, 1;
+    setp.ne.u32 %p1, %r1, 0;
+    vote.sync.all.pred %p2, %p1, 0xffffffff;
+    @!%p2 bra POLL;
+    ret;
+}
+
+.visible .entry dummy() {
+    ret;
+}

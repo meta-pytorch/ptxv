@@ -5981,6 +5981,11 @@ pub fn explore(m0: Machine, max_states: usize) -> Verdict {
     })
 }
 
+/// Explore with an explicit worker budget and finalize the verdict.
+pub fn explore_with_workers(m0: Machine, max_states: usize, workers: usize) -> Verdict {
+    run_with_finalization(m0, |m| explore_threads(m, max_states, workers))
+}
+
 fn run_with_finalization(m0: Machine, run: impl FnOnce(Machine) -> Verdict) -> Verdict {
     let note = crate::residency::reliance_note(&m0);
     let base = m0.clone();
@@ -8048,7 +8053,8 @@ fn explore_round(
 /// complete (in issue order, respecting the in-order pipes), else move to the next warp, in
 /// cyclic order, that has an enabled split; when nothing of that kind can move, the first
 /// action of `Machine::actions`. With unlaunched CTAs or a TMEM co-tenant, keep the original
-/// first-split priority throughout.
+/// first-split priority until one preferred warp exhausts `DET_STREAK`, then rotate the
+/// offered actions so a polling warp can yield to its producer.
 #[derive(Default)]
 pub struct DetSched {
     warp: u32,
@@ -8057,6 +8063,8 @@ pub struct DetSched {
     warps: Option<(u32, u32)>,
     /// The machine has unlaunched CTAs or a TMEM co-tenant: use `actions` throughout.
     full: Option<bool>,
+    /// Next offered action after the full policy exhausts its preferred warp's streak.
+    full_cursor: usize,
 }
 
 /// Steps one warp may take in a row before the deterministic scheduler moves on (so that a
@@ -8070,11 +8078,29 @@ impl DetSched {
         });
         if full {
             let acts = m.actions();
-            return acts
+            let (preferred, _) = acts
                 .iter()
                 .find(|(a, _)| matches!(a, Action::Split { .. }))
-                .or(acts.first())
-                .map(|(a, _)| a.clone());
+                .or(acts.first())?;
+            if m.num.is_some() || std::env::var("PTXV_DET").as_deref() == Ok("lowest") {
+                return Some(preferred.clone());
+            }
+            if let Action::Split { warp, .. } = preferred {
+                if self.warp != *warp {
+                    self.warp = *warp;
+                    self.streak = 0;
+                    self.full_cursor = 0;
+                }
+                if self.streak < DET_STREAK {
+                    self.streak += 1;
+                    return Some(preferred.clone());
+                }
+            } else if self.streak < DET_STREAK {
+                return Some(preferred.clone());
+            }
+            let index = self.full_cursor % acts.len();
+            self.full_cursor = self.full_cursor.wrapping_add(1);
+            return Some(acts[index].0.clone());
         }
         let (lo, hi) = *self.warps.get_or_insert_with(|| {
             if m.live.is_empty() {
@@ -13725,6 +13751,9 @@ mod shared_data_exit_audit {
 
 #[cfg(test)]
 mod cancelled_return_completion_tests {
+    use std::fs;
+    use std::path::PathBuf;
+
     use super::*;
 
     fn initial() -> Machine {
@@ -13743,6 +13772,28 @@ mod cancelled_return_completion_tests {
         assert!(verdict.findings.is_empty());
         verdict.complete = false;
         verdict
+    }
+
+    #[test]
+    fn full_worker_api_completes_a_real_cancelled_return_search() {
+        let initial = initial();
+        let partial = explore_threads(initial.clone(), 1, 1);
+        assert!(!partial.complete);
+        let full = explore_with_workers(initial, 1, 1);
+        assert!(full.complete);
+        assert_eq!(full.classes(), ["clean"]);
+        assert_eq!(full.distinct_outputs, 1);
+        assert_eq!(full.outputs.len(), 1);
+        let expected = fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../probes/generic8/expected/out.bin"),
+        )
+        .expect("captured generic8 GPU output should be available");
+        assert_eq!(full.outputs, vec![expected]);
+        assert!(full
+            .notes
+            .iter()
+            .any(|note| { note.contains("fresh initial-state certificate completed") }));
     }
 
     #[test]

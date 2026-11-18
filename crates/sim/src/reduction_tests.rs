@@ -487,7 +487,7 @@ fn scalar_component_machine(lanes: u32, overlap: bool) -> Machine {
 
 #[test]
 fn independent_scalar_atomic_components_stay_within_a_linear_state_budget() {
-    let result = crate::explore::explore_threads(scalar_component_machine(16, false), 128, 1);
+    let result = crate::explore::explore_with_workers(scalar_component_machine(16, false), 128, 1);
     assert!(
         result.complete,
         "{} states: {:?}",
@@ -502,7 +502,7 @@ fn independent_scalar_atomic_components_stay_within_a_linear_state_budget() {
 fn overlapping_scalar_components_retain_both_lane_orders() {
     let initial = scalar_component_machine(2, true);
     for result in [
-        crate::explore::explore_threads(initial.clone(), 128, 1),
+        crate::explore::explore_with_workers(initial.clone(), 128, 1),
         crate::dpor::explore_dpor(initial, 128),
     ] {
         assert!(result.complete, "{} states", result.states);
@@ -604,7 +604,7 @@ fn dead_atomic_symmetry_refuses_prior_claims_writers_loops_and_observed_returns(
 fn dead_atomic_fence_orders_complete_with_the_original_state_cap() {
     let initial = dead_return_fence_machine(|source| source);
     for verdict in [
-        crate::explore::explore_threads(initial.clone(), 2_000_000, 1),
+        crate::explore::explore_with_workers(initial.clone(), 2_000_000, 1),
         crate::dpor::explore_dpor(initial, 2_000_000),
     ] {
         assert!(verdict.complete, "{} states", verdict.states);
