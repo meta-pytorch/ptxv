@@ -7,6 +7,8 @@
 
 //! Bit-exact floating-point operations used by the interpreter.
 
+pub mod comparison;
+
 /// Canonical NaN produced by NVIDIA fp32 arithmetic.
 pub const F32_CANON_NAN: u32 = 0x7fff_ffff;
 
@@ -869,28 +871,7 @@ pub fn f32_minmax(a: u32, b: u32, min: bool, nan: bool, ftz: bool) -> u32 {
 
 /// `setp.<cmp>.f32` (SASS FSETP).
 pub fn f32_cmp(a: u32, b: u32, cmp: ptxv_ir::FCmp, ftz: bool) -> bool {
-    use ptxv_ir::FCmp::*;
-    let fl = |u: u32| if ftz { f32_ftz(u) } else { u };
-    let (x, y) = (f32::from_bits(fl(a)), f32::from_bits(fl(b)));
-    let un = x.is_nan() || y.is_nan();
-    match cmp {
-        F => false,
-        T => true,
-        Lt => x < y,
-        Eq => x == y,
-        Le => x <= y,
-        Gt => x > y,
-        Ne => !un && x != y,
-        Ge => x >= y,
-        Num => !un,
-        Nan => un,
-        Ltu => un || x < y,
-        Equ => un || x == y,
-        Leu => un || x <= y,
-        Gtu => un || x > y,
-        Neu => un || x != y,
-        Geu => un || x >= y,
-    }
+    comparison::compare(a, b, cmp, ftz)
 }
 
 /// SASS `FCHK P, a, b`: does a / b leave the range where ptxas's fast IEEE division sequence
