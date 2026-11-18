@@ -426,6 +426,10 @@ An **estimate**:
 | `error_bar` | `{kind, cdf_sup, mean_hw, std_rel_hw, model_mass, notes}` |
 | `applicable`, `applicability` | the tier's own applicability verdict and the checks behind it (Tiers 1-2; absent for 0 and 3) |
 
+An exact-zero output cell retains its probability mass in the absolute-error statistics
+and, for pairs, in both kernels' moments and their covariance. Its error is zero; an f32
+zero cell uses the smallest-subnormal spacing (2^-149) for ulp-scaled statistics.
+
 Moments: `{mean, var, std, mean_abs, p_zero, quantiles: [[p, x]], max_abs}`. The aggregate pools
 all outputs (each output element of each input equally weighted).
 

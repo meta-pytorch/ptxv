@@ -442,7 +442,12 @@ pub fn pair(r: &ChainLaw, c: &ChainLaw, round16: Option<Format>) -> Estimate {
             continue;
         };
         if key.1 == i32::MIN {
-            d_atoms.push((0.0, 0.5 * (pc + pr)));
+            let mass = 0.5 * (pc + pr);
+            d_atoms.push((0.0, mass));
+            abs_atoms.push((0.0, mass));
+            dabs.push((0.0, mass));
+            er.push((0.0, mass));
+            ec.push((0.0, mass));
             continue;
         }
         let w = 0.5 * (pc + pr);
@@ -825,4 +830,39 @@ mod zero_cell_tests {
         assert_eq!(estimate.p_differ, Some((0.0, 0.0, 0.0)));
     }
 
+    #[test]
+    fn exact_zero_pair_has_finite_zero_error_statistics() {
+        let reference = law(false, 1.0);
+        let candidate = law(false, 1.0);
+        for format in [None, Some(Format::F16), Some(Format::Bf16)] {
+            let estimate = pair(&reference, &candidate, format);
+            assert_eq!(estimate.abs.p_zero, 1.0, "{format:?}");
+            assert_eq!(estimate.abs.mean_abs, 0.0);
+            assert!(
+                estimate
+                    .abs
+                    .quantiles
+                    .iter()
+                    .all(|&(_, value)| value == 0.0)
+            );
+            assert_eq!(estimate.p_differ, Some((0.0, 0.0, 0.0)));
+        }
+    }
+
+    #[test]
+    fn pair_preserves_zero_cell_mass_in_absolute_moments() {
+        let estimate = pair(&law(false, 0.5), &law(true, 0.5), None);
+        let unit = 2f64.powi(-23);
+        assert_eq!(estimate.abs.p_zero, 0.5);
+        assert_eq!(estimate.abs.mean, 0.5 * unit);
+        assert_eq!(estimate.abs.mean_abs, 0.5 * unit);
+        assert_eq!(estimate.abs.var, 0.25 * unit * unit);
+        assert_eq!(estimate.p_differ, Some((0.5, 0.5, 0.5)));
+        let moments = estimate.pair.expect("pair estimate has pair moments");
+        assert_eq!(moments.mean_c, 0.5 * unit);
+        assert_eq!(moments.var_c, 0.25 * unit * unit);
+        assert_eq!(moments.mean_r, 0.0);
+        assert_eq!(moments.var_r, 0.0);
+        assert_eq!(moments.cov_rc, 0.0);
+    }
 }

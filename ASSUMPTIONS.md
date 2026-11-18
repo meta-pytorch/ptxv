@@ -10471,6 +10471,10 @@ independent given the exact y's position U within its ulp** (Tier 1: per U bin, 
 kernel's post-rounding error is (m - U)·ulp; Tier 2: given y, identical sub-DAGs (equal
 canonical hashes) carry the same error in both kernels and drop out of D). Identical
 programs are reported as D ≡ 0 by Tier 0 instead.
+An exact-zero output cell contributes its full probability mass at error zero to every
+reported moment, including both kernels' errors and their covariance. It is not omitted
+from absolute-error statistics. A single f32 zero cell uses the spacing of the smallest
+subnormal (2^-149), so its zero errors have finite zero-valued statistics.
 - Where: `errdist/combine.rs` `pair`; `errdist/tier2.rs` `dag_pair`; `errdist/tier0.rs`.
 - Status: **argued; validated on bf16, TF32 and f32-sum pairs** (within 5-8% of Tier 3).
   **Known to be biased for block-scaled pairs that share the K partition in another order**
