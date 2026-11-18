@@ -1,0 +1,45 @@
+{
+  "invariant": "Immutable VC base entries have strictly increasing, distinct actor keys; zero clock values are allowed.",
+  "verified_source_operations": {
+    "VC::new / Default": "clock::empty yields an empty base and zero own entry",
+    "vc_single": "clock::single yields one base entry and zero own entry",
+    "vc_get / VC::entries": "clock::get / entries refine sparse projection; overlay preserves strict ordering",
+    "vc_join": "clock::join_plan preserves strict ordering and pointwise max with explicit immutable Arc identity adapter",
+    "vc_tick": "clock::relocate, generic install_relocation and tick_own preserve ordering; increment refinement requires timestamp headroom",
+    "vc_meet": "clock::meet_clock materializes both owns and extracts the entire two-pointer intersection/minimum loop; strict ordering and pointwise minimum proved",
+    "vc_tail": "clock::tail uses proved binary location, checked suffix indexing and own-entry overlay; preserves strict actor order and threshold projection",
+    "rr_new": "clock::uncovered_clock extracts complete own materialization, strict seen-clock comparison, filtering, empty/Some decision and zero-own import; native wrapper allocates Arc and cached hash",
+    "vc_from_sorted": "clock::from_sorted preserves supplied entries and clears own; sorted-input import contract remains explicit",
+    "vc_join_many final own merge": "clock::join_sorted_updates materializes own and executes a linear, duplicate-coalescing sorted merge; strict ordering, cleared own and pointwise maximum proved for weakly sorted updates",
+    "Machine::read_release": "Actual caller supplies unchanged pending-load minimum, actor and lower threshold to vc_read_release; extracted read_release_clock performs tail, ordered low/high split, bit31-equivalent read actor mapping, max merge, completed-reader overlay and zero-own construction. Ordering and exact forwarded read projection proved.",
+    "vc_join_all": "Shared-base branch calls extracted join_shared full loop; empty branch calls source empty; divergent-base branch folds verified join_plan calls with native iteration adapter."
+  },
+  "overflow": "Original Rust u32 +1 retained: debug checks panic, release wraps. Native controls cover both; Aeneas checked arithmetic increment proof assumes headroom.",
+  "scope": "All live internal native base-creation/update sites call ordering-preserving source kernels, or copy immutable covered content. ProducerHistory derives strict ordering from these successful source call histories and composes into publication. Native Arc/clone/hash/field projections, base-iteration/control sequencing and stdlib update sorting remain explicit bridges; arbitrary external vc_from_sorted input is not admitted. No unconditional whole-explorer theorem.",
+  "native_base_construction_sites": {
+    "VC::new": "clock::empty -> VcBase::from",
+    "vc_meet": "clock::meet_clock -> VcBase::from; equal fast path clone",
+    "vc_join_all": "clock::join_shared or native fold of source vc_join -> VcBase::from",
+    "vc_join_many": "source join_sorted_updates -> native VcBase::from; standard-library input-sort and native fold adapters remain",
+    "vc_join": "source Keep/ShareRight/Replace -> native plan application",
+    "vc_from_sorted": "Source identity import; archive search finds only test callers after read_release refactor. External clients retain the documented sorted-input contract.",
+    "rr_new": "source uncovered_clock Option -> native Arc constructor",
+    "vc_single": "clock::single -> VcBase::from",
+    "vc_tick": "clock::relocate/install_relocation/tick_own -> constructor when materialized",
+    "VC::clone": "immutable Arc sharing or native UNSHARING copy cache",
+    "vc_read_release": "source read_release_clock -> native VcBase::from; scalar caller fields and pending minimum remain adapters"
+  },
+  "bulk_suffix": "append_sorted_suffix source proof coalesces its first entry, then checked extend_from_slice copies a strictly increasing tail; local benchmark restores the prior bulk-copy cost.",
+  "native_adapter_obligations": {
+    "VC::clone": "Native immutable Arc cloning/interning and entry-content equality adapter",
+    "VcBase::from": "Native Arc allocation and cached-hash constructor preserves the supplied entry vector",
+    "vc_join_all shared-base branch": "Extracted clock::join_shared full loop preserves sorted bases and pointwise maximum; native immutable Arc identity/content and one-field OwnEntry getter adapters remain",
+    "vc_join_all fallback": "Calls verified vc_join; native iterator/fold sequencing remains",
+    "vc_join_many": "Native Arc sort/dedup and base-fold sequencing call verified vc_join; own filtering and standard-library sort supply the updates projection and weak actor ordering. Final source merge is included in ProducerHistory.sorted_updates.",
+    "Machine::read_release": "No BTreeMap or arbitrary sorted import remains in the live path. Native pending-load minimum, nthreads/actor and VC-field argument projections remain caller adapters.",
+    "vc_meet clone fast path": "Native equality and clone preserve immutable entries and own; source theorem covers the production slow branch",
+    "vc_from_sorted external API": "The wrapper is used only by internal test controls after read_release closure. Arbitrary external imports retain their documented sorted-input precondition and are excluded from ProducerHistory unless repacking a covered source base."
+  },
+  "source_constructor_kernels_open": [],
+  "external_import_boundary": "Public vc_from_sorted remains available with its existing sorted-input precondition; current archive contains only test callers. Arbitrary external imports are excluded from ProducerHistory."
+}

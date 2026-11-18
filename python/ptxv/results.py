@@ -71,7 +71,10 @@ class Finding:
 
 @dataclass(repr=False)
 class Verdict:
-    """Execution verdict of one case (`ptxv check`): every schedule explored or certified.
+    """Execution verdict of one case, variant and front (`ptxv check`).
+
+    Requests returning multiple rows are rejected. Select one variant and front, or use
+    `Session.submit("check", [case], ...).result()` to inspect every row as raw JSON.
 
     classes: ["clean"] or the finding kinds ("race", "deadlock", "violation", "fault",
     "unmodeled", "nondeterministic"). certified: a complete verdict decided by the E-WELLSYNC
@@ -88,6 +91,8 @@ class Verdict:
     outputs: per output buffer counts and the first element, input buffers holding NaN / Inf,
     and `births`, the instructions that produced a non-finite value from operands without
     one. A `nonfinite-output` finding (and class) when every float input element is finite.
+    strict_memory_safety: the separate raw-PTX proof report when requested. `memory_safe`
+    requires its exact raw-source scope and safe status; legacy clean/certified is separate.
     """
 
     classes: list[str]
@@ -105,12 +110,22 @@ class Verdict:
     gb300: dict | None = None
     nonfinite: dict | None = None
     gpu_compare: list | None = None
+    strict_memory_safety: dict | None = None
+    _strict_memory_safety_requested: bool = field(default=False, repr=False)
 
     @classmethod
-    def from_json(cls, doc: dict) -> "Verdict":
+    def from_json(
+        cls, doc: dict, *, strict_memory_safety_requested: bool = False
+    ) -> "Verdict":
         rows = doc.get("rows") or []
         if not rows:
             raise ValueError("check produced no rows")
+        if len(rows) != 1:
+            raise ValueError(
+                f"check produced {len(rows)} rows; a scalar Verdict requires one row. "
+                "Choose a single variant and single front, or use "
+                'Session.submit("check", [case], ...).result() for raw JSON.'
+            )
         r = rows[0]
         v = r["verdict"]
         got = list(r.get("got") or [])
@@ -130,6 +145,10 @@ class Verdict:
             gb300=r.get("gb300"),
             nonfinite=r.get("nonfinite"),
             gpu_compare=r.get("gpu_compare"),
+            strict_memory_safety=r.get("strict_memory_safety"),
+            _strict_memory_safety_requested=(
+                strict_memory_safety_requested or "strict_memory_safety" in r
+            ),
         )
 
     @property
@@ -158,7 +177,26 @@ class Verdict:
 
     @property
     def clean(self) -> bool:
-        return self.classes == ["clean"] and self.complete
+        requested = (
+            self._strict_memory_safety_requested
+            or self.strict_memory_safety is not None
+        )
+        return (
+            self.classes == ["clean"]
+            and self.complete
+            and (not requested or self.memory_safe)
+        )
+
+    @property
+    def memory_safe(self) -> bool:
+        """The strict raw-source memory-safety proof succeeded for the fixed launch."""
+        report = self.strict_memory_safety
+        return (
+            isinstance(report, dict)
+            and report.get("scope")
+            == "raw_ptx_fixed_launch_all_payloads_legal_placements"
+            and report.get("status") == "safe"
+        )
 
     def to_pandas(self):
         """One row per finding (kind, first line of the message, trace length)."""
@@ -231,6 +269,19 @@ class Verdict:
         f = f", findings={self.findings}" if self.findings else ""
         if self.refuted_opt_in:
             f += f", assumes refuted {','.join(self.refuted_opt_in)}"
+        if (
+            self._strict_memory_safety_requested
+            or self.strict_memory_safety is not None
+        ):
+            report = self.strict_memory_safety
+            status = (
+                report.get("status", "invalid")
+                if isinstance(report, dict)
+                else "missing"
+                if report is None
+                else "invalid"
+            )
+            f += f", strict_memory_safety={status!r}, memory_safe={self.memory_safe}"
         return f"Verdict(classes={self.classes}, {how}, states={self.states}{gpu}{f})"
 
 

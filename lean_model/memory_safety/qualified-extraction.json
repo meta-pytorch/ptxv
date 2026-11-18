@@ -1,0 +1,36 @@
+{
+  "external_templates": [],
+  "generated_byte_equal": {
+    "Funs.lean": true,
+    "Types.lean": true
+  },
+  "generated_export": {
+    "files": {
+      "Funs.lean": {
+        "published_sha256": "1c3ca31515cc4a65812923fe52241ad99dcd88c31f74c331f1fd4be16c17c2a4",
+        "raw_sha256": "c07fdf242ca879e27138de6646af0e70b6bdb976e3bf00aa44092c02eddca674"
+      },
+      "Types.lean": {
+        "published_sha256": "ed6ea01faf274dda741d67593979a70d600f23d1034ae95e6a47e2dd9a85ee0a",
+        "raw_sha256": "ca85541a040d821c44838f5e2ff1099fa7d4d409a959a5383ef6faaae8b60c2a"
+      }
+    },
+    "policy": {
+      "preamble_sha256": "4aeac5a5f49fbac3e68ee0900572505b63be13601160364319950b849e852279",
+      "transformation": "prepend-license-comment",
+      "version": 1
+    }
+  },
+  "generated_files": {
+    "MemorySafety/Code/Funs.lean": "1c3ca31515cc4a65812923fe52241ad99dcd88c31f74c331f1fd4be16c17c2a4",
+    "MemorySafety/Code/Types.lean": "ed6ea01faf274dda741d67593979a70d600f23d1034ae95e6a47e2dd9a85ee0a"
+  },
+  "generated_hand_edits": false,
+  "llbc_sha256": "e5756a3618292f235bc64e6da81024816604b37f8792951a885909f20da4f0bd",
+  "receipt_sha256": "2f4b6b42fc36f73bc2dc0e5f60097d2abff97af9000b2e5100b57e9c60c5838b",
+  "source_inputs_unchanged": true,
+  "source_manifest_sha256": "2ede909d309e354de33a4fc758ce9060d32ac8045f43380b640c35785ce2f4fa",
+  "specification_sha256": "6b957d879a692ac92e3665d3f14c70149ba7f631969fd2f31b2d25419af5e274",
+  "status": "pass",
+  "version": 1
+}

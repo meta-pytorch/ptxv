@@ -36,13 +36,13 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ._jobs import argv, Job, JobSpec, PtxvError
 from ._util import cache_dir, tree_hash
-
 
 _ENV: Any = object()  # "not given": take the host from $PTXV_SLURM_HOST
 
@@ -112,6 +112,12 @@ class SlurmBackend:
     def cacheable(self) -> bool:
         return not self.dry_run
 
+    def cacheable_for(self, spec: JobSpec) -> bool:
+        # The remote executable is not pinned by the submitter's local binary hash.
+        return self.cacheable and not (
+            spec.kind == "check" and spec.args.get("strict_memory_safety")
+        )
+
     @property
     def cache_tag(self) -> str:
         """Results come from the cluster's own (x86) build: a separate cache namespace."""
@@ -130,6 +136,7 @@ class SlurmBackend:
         """The commands that submit a job (copy cases and job files, sbatch), and the remote
         paths the result is read from."""
         cmds: list[list[str]] = []
+        spec.own_strict_inputs()
         rcases = []
         for c in spec.cases:
             p = Path(c)
@@ -138,8 +145,9 @@ class SlurmBackend:
             rd = f"{self.root}/ptxv-runs/cases/{sha}"
             cmds.append(self._copy(str(d), rd))
             rcases.append(rd if p.is_dir() else f"{rd}/{p.name}")
-        rwork = f"{self.root}/ptxv-runs/py/{job_id}"
-        stage = cache_dir("slurm") / job_id
+        work_id = f"{job_id}-{uuid.uuid4().hex}" if spec._input_snapshots else job_id
+        rwork = f"{self.root}/ptxv-runs/py/{work_id}"
+        stage = cache_dir("slurm") / work_id
         shutil.rmtree(stage, ignore_errors=True)
         stage.mkdir(parents=True)
         rspec = JobSpec(spec.kind, [], dict(spec.args))
@@ -168,93 +176,110 @@ class SlurmBackend:
         paths["stdout"] = f"{self.root}/ptxv-runs/%j.out"
         return cmds, paths
 
-    def submit(self, spec: JobSpec, job: Job) -> Job:  # noqa: C901 (submit + follow thread share the job's remote paths)
+    def submit(self, spec: JobSpec, job: Job) -> Job:
+        try:
+            return self._submit(spec, job)
+        except BaseException:
+            job.release_inputs()
+            raise
+
+    def _submit(self, spec: JobSpec, job: Job) -> Job:  # noqa: C901 (submit + follow thread share the job's remote paths)
+        job.use_spec(spec)
         cmds, paths = self.plan(spec, job.id)
 
         def go() -> None:
-            if not job.set_running_or_notify_cancel():
-                return
+            spec.retain_inputs()
             try:
-                if self.dry_run:
-                    for c in cmds:
-                        job._line("dry run: " + shlex.join(c))
-                    job.set_result(
-                        {
-                            "dry_run": True,
-                            "commands": [shlex.join(c) for c in cmds],
-                            "paths": paths,
-                        }
-                    )
+                if not job.set_running_or_notify_cancel():
+                    job.release_inputs()
                     return
-                for c in cmds[:-1]:
-                    subprocess.run(c, check=True, capture_output=True)
-                r = subprocess.run(cmds[-1], check=True, capture_output=True, text=True)
-                sid = r.stdout.strip().split(";")[0]
-                job._line(f"slurm job {sid} submitted")
-                job._kill = lambda: subprocess.run(
-                    self._remote(["scancel", sid]), capture_output=True
-                )
-                state = ""
-                while True:
-                    s = subprocess.run(
-                        self._remote(["sacct", "-j", sid, "-n", "-X", "-o", "State"]),
-                        capture_output=True,
-                        text=True,
-                    ).stdout.strip()
-                    if s != state:
-                        state = s
-                        job._line(f"slurm job {sid}: {s or 'pending'}")
-                    if s.split() and s.split()[0] in (
-                        "COMPLETED",
-                        "FAILED",
-                        "CANCELLED",
-                        "TIMEOUT",
-                        "OUT_OF_MEMORY",
-                        "NODE_FAIL",
-                    ):
-                        break
-                    time.sleep(self.poll)
-                out = subprocess.run(
-                    self._remote(["cat", paths["stdout"].replace("%j", sid)]),
-                    capture_output=True,
-                    text=True,
-                ).stdout
-                doc = next(
-                    (
-                        json.loads(ln)
-                        for ln in reversed(out.splitlines())
-                        if ln.startswith("{")
-                    ),
-                    None,
-                )
-                if "doc" in paths:
-                    doc = json.loads(
-                        subprocess.run(
-                            self._remote(["cat", paths["doc"]]),
+                try:
+                    if self.dry_run:
+                        for c in cmds:
+                            job._line("dry run: " + shlex.join(c))
+                        job.set_result(
+                            {
+                                "dry_run": True,
+                                "commands": [shlex.join(c) for c in cmds],
+                                "paths": paths,
+                            }
+                        )
+                        return
+                    for c in cmds[:-1]:
+                        subprocess.run(c, check=True, capture_output=True)
+                    r = subprocess.run(
+                        cmds[-1], check=True, capture_output=True, text=True
+                    )
+                    sid = r.stdout.strip().split(";")[0]
+                    job._line(f"slurm job {sid} submitted")
+                    job._kill = lambda: subprocess.run(
+                        self._remote(["scancel", sid]), capture_output=True
+                    )
+                    state = ""
+                    while True:
+                        s = subprocess.run(
+                            self._remote(
+                                ["sacct", "-j", sid, "-n", "-X", "-o", "State"]
+                            ),
                             capture_output=True,
                             text=True,
-                        ).stdout
-                    )
-                if doc is None:
-                    raise PtxvError(
-                        f"slurm job {sid} ({state}) produced no JSON document"
-                    )
-                if "bound" in paths:
-                    b = subprocess.run(
-                        self._remote(["cat", paths["bound"]]),
+                        ).stdout.strip()
+                        if s != state:
+                            state = s
+                            job._line(f"slurm job {sid}: {s or 'pending'}")
+                        if s.split() and s.split()[0] in (
+                            "COMPLETED",
+                            "FAILED",
+                            "CANCELLED",
+                            "TIMEOUT",
+                            "OUT_OF_MEMORY",
+                            "NODE_FAIL",
+                        ):
+                            break
+                        time.sleep(self.poll)
+                    out = subprocess.run(
+                        self._remote(["cat", paths["stdout"].replace("%j", sid)]),
                         capture_output=True,
                         text=True,
+                    ).stdout
+                    doc = next(
+                        (
+                            json.loads(ln)
+                            for ln in reversed(out.splitlines())
+                            if ln.startswith("{")
+                        ),
+                        None,
                     )
-                    if b.returncode == 0 and b.stdout.startswith("{"):
-                        doc["bound"] = json.loads(b.stdout)
-                doc["slurm_job"] = sid
-                job.set_result(doc)
-            except Exception as e:  # noqa: BLE001
-                job.set_exception(e)
-            except BaseException as e:
-                # KeyboardInterrupt / SystemExit: still fail the job (waiters never hang), then propagate.
-                job.set_exception(e)
-                raise
+                    if "doc" in paths:
+                        doc = json.loads(
+                            subprocess.run(
+                                self._remote(["cat", paths["doc"]]),
+                                capture_output=True,
+                                text=True,
+                            ).stdout
+                        )
+                    if doc is None:
+                        raise PtxvError(
+                            f"slurm job {sid} ({state}) produced no JSON document"
+                        )
+                    if "bound" in paths:
+                        b = subprocess.run(
+                            self._remote(["cat", paths["bound"]]),
+                            capture_output=True,
+                            text=True,
+                        )
+                        if b.returncode == 0 and b.stdout.startswith("{"):
+                            doc["bound"] = json.loads(b.stdout)
+                    doc["slurm_job"] = sid
+                    job.set_result(doc)
+                except Exception as e:  # noqa: BLE001
+                    job.set_exception(e)
+                except BaseException as e:
+                    # KeyboardInterrupt / SystemExit: still fail the job (waiters never hang), then propagate.
+                    job.set_exception(e)
+                    raise
+            finally:
+                spec.release_inputs()
 
         threading.Thread(target=go, daemon=True).start()
         return job

@@ -46,11 +46,16 @@ use ptxv_memory_write::machine_control::Flow;
 use ptxv_memory_write::machine_registers::PredicateWrite;
 use ptxv_memory_write::machine_registers::WordWrite;
 use ptxv_memory_write::machine_warp::MaskOp;
+use ptxv_memory_write::memory_safety::AccessKind as MemoryAccessKind;
+use ptxv_memory_write::memory_safety::Event as MemoryEvent;
+use ptxv_memory_write::memory_safety::Instruction as MemoryInstruction;
 
 use crate::atomic_exec::Arithmetic;
 use crate::atomic_exec::operation;
 use crate::fp;
 use crate::machine::*;
+use crate::memory_event::ResolvedGlobalEvent;
+use crate::memory_event::resolve_global_event;
 
 pub(crate) mod atomic_components;
 
@@ -1281,6 +1286,98 @@ impl Machine {
         input: crate::wellsync::AtomicAccess,
     ) -> Vec<u8> {
         self.access_x_inner(actor, vc, pc, loc, n, write, strong, None, Some(input))
+    }
+
+    fn projected_global_event(
+        &self,
+        thread: usize,
+        instruction: &Inst,
+    ) -> Result<Option<ResolvedGlobalEvent>, String> {
+        if self.k.front != Front::Ptx
+            || self.launch.hw_order
+            || !self.launch.views.is_empty()
+            || !self.launch.mcast.is_empty()
+            || !self.launch.spaces.is_empty()
+            || self.launch.nic.is_some()
+            || self.launch.aliased.iter().any(|aliased| *aliased)
+        {
+            return Ok(None);
+        }
+        let pc = self.threads[thread].pc as usize;
+        let Ok(specialized) = crate::strict_memory_globals::specialize_instruction(
+            instruction,
+            &self.launch.g(self.threads[thread].cta as u32).cbank_relocs,
+            pc,
+        ) else {
+            return Ok(None);
+        };
+        let Ok(Some(MemoryInstruction::Access(request))) =
+            crate::strict_memory_admission::project_instruction(
+                &specialized,
+                self.k.nregs[File::V as usize],
+                pc,
+                pc + 1 == self.k.code.len(),
+            )
+        else {
+            return Ok(None);
+        };
+        check_aligned(Space::Global, request.address, request.width as usize)?;
+        let event = MemoryEvent::Access { thread, request };
+        resolve_global_event(event, &self.launch.allocs)
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "global address {:#x} (+{}) is outside every allocation",
+                    request.address, request.width
+                )
+            })
+    }
+
+    fn access_global_event(
+        &mut self,
+        vc: &VC,
+        pc: u32,
+        resolved: ResolvedGlobalEvent,
+        payload: Option<&[u8]>,
+        effect: Option<crate::memory_effect::WordEffect>,
+    ) -> Vec<u8> {
+        let MemoryEvent::Access { thread, request } = resolved.event() else {
+            panic!("resolved global event must contain a memory access");
+        };
+        let write = match request.kind {
+            MemoryAccessKind::Load => {
+                assert!(payload.is_none(), "load event cannot carry a store payload");
+                None
+            }
+            MemoryAccessKind::Store { defined } => {
+                assert!(
+                    defined,
+                    "admitted immediate store must have a defined payload"
+                );
+                assert!(
+                    self.stale.is_none(),
+                    "defined store event cannot carry stale input"
+                );
+                let payload = payload.expect("store event must carry its payload");
+                assert_eq!(
+                    payload.len() as u64,
+                    request.width,
+                    "store event payload width"
+                );
+                Some(payload)
+            }
+        };
+        self.access_x_inner(
+            thread as u32,
+            vc,
+            pc,
+            resolved.location(),
+            request.width as usize,
+            write,
+            0,
+            effect,
+            None,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -12534,7 +12631,11 @@ impl Machine {
             } => {
                 let a = self.addr(t, addr)?;
                 check_aligned(*space, a, *bytes as usize)?;
-                let loc = self.resolve(t, *space, a, *bytes as usize)?;
+                let resolved_event = self.projected_global_event(t, inst)?;
+                let loc = match resolved_event {
+                    Some(event) => event.location(),
+                    None => self.resolve(t, *space, a, *bytes as usize)?,
+                };
                 let vc = self.threads[t].vc.clone();
                 let sc = sync.map_or(0, |m| strong_code(m.scope));
                 // Sign extension of a 1- / 2-byte element to 32 bits.
@@ -12553,7 +12654,10 @@ impl Machine {
                 if defer {
                     self.stale = Some(None);
                 }
-                let mut data = self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc);
+                let mut data = match resolved_event {
+                    Some(event) => self.access_global_event(&vc, pc, event, None, None),
+                    None => self.access_x(t as u32, &vc, pc, loc, *bytes as usize, None, sc),
+                };
                 // Some(Some(_)) now: the `wr`s below leave the registers unwritten.
                 if self.stale == Some(None) {
                     self.stale = None;
@@ -12705,7 +12809,11 @@ impl Machine {
                 // ASSUME(S-MULTIMEM): a store to a multicast address (multimem.st; SASS STG)
                 // stores to every bound location, each a store with the instruction's
                 // semantics, all at once.
-                let locs = self.mem_locs(t, *space, a, *bytes as usize, pc)?;
+                let resolved_event = self.projected_global_event(t, inst)?;
+                let locs = match resolved_event {
+                    Some(event) => vec![event.location()],
+                    None => self.mem_locs(t, *space, a, *bytes as usize, pc)?,
+                };
                 let mc = locs.len() != 1 || self.mc_object(a).is_some();
                 let data: Vec<u8> = if let Some(payload) = ptxv_ir::payload::from_operation(
                     self.k.front,
@@ -12836,17 +12944,22 @@ impl Machine {
                         None
                     };
                     central_commits.push(effect.is_some());
-                    self.access_x_inner(
-                        t as u32,
-                        &vc,
-                        pc,
-                        loc,
-                        *bytes as usize,
-                        Some(&data),
-                        sc,
-                        effect,
-                        None,
-                    );
+                    if let Some(event) = resolved_event {
+                        assert_eq!(event.location(), loc, "store event physical location");
+                        self.access_global_event(&vc, pc, event, Some(&data), effect);
+                    } else {
+                        self.access_x_inner(
+                            t as u32,
+                            &vc,
+                            pc,
+                            loc,
+                            *bytes as usize,
+                            Some(&data),
+                            sc,
+                            effect,
+                            None,
+                        );
+                    }
                     // ASSUME(E-HW-L1): the SM's own copy stays current; ASSUME(S-VA-ALIAS): not
                     // after a multimem store, which reaches memory through the multicast
                     // address while the L1 keeps lines by virtual address (probes/va_alias).
@@ -19594,5 +19707,68 @@ mod masked_load_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod memory_event_execution_tests {
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn actual_global_symbol_load_and_store_consume_the_projected_event() {
+        let kernel = Arc::new(
+            ptxv_ptx::parse_kernel(
+                ".version 8.8\n.target sm_103a\n.address_size 64\n.visible .global .align 8 .u64 event_x = 9;\n.visible .entry event_k() { .reg .b64 %r<1>; ld.global.u64 %r0,[event_x]; st.global.u64 [event_x],7; ret; }",
+                Some("event_k"),
+            )
+            .unwrap(),
+        );
+        let case = ptxv_case::Case {
+            dir: PathBuf::new(),
+            m: serde_json::from_value(json!({
+                "name":"memory-event-global", "description":"native global event coupling",
+                "entry":"event_k", "grid":[1,1,1], "block":[1,1,1],
+                "outputs":[], "buffers":[], "params":[], "variants":[]
+            }))
+            .unwrap(),
+        };
+        let launch = Arc::new(crate::build_launch(&case, &kernel).unwrap());
+        let mut machine = Machine::new(kernel.clone(), launch);
+        let load = machine
+            .projected_global_event(0, &kernel.code[0])
+            .unwrap()
+            .unwrap();
+        let store = machine
+            .projected_global_event(0, &kernel.code[1])
+            .unwrap()
+            .unwrap();
+        assert_eq!(load.location(), store.location());
+        assert!(
+            matches!(load.event(), MemoryEvent::Access { thread: 0, request }
+            if request.width == 8 && request.kind == MemoryAccessKind::Load)
+        );
+        assert!(
+            matches!(store.event(), MemoryEvent::Access { thread: 0, request }
+            if request.width == 8 && request.kind == MemoryAccessKind::Store { defined: true })
+        );
+        assert!(matches!(
+            machine.exec_thread(0, &kernel.code[0], 0),
+            Ok(Flow::Next)
+        ));
+        assert_eq!(machine.threads[0].regs[0], 9);
+        assert!(matches!(
+            machine.exec_thread(0, &kernel.code[1], 1),
+            Ok(Flow::Next)
+        ));
+        let Loc::Global { alloc, off } = store.location() else {
+            panic!("global event resolved outside global memory");
+        };
+        let payload =
+            std::array::from_fn(|index| *machine.gmem[alloc].bytes.get(off as usize + index));
+        assert_eq!(u64::from_le_bytes(payload), 7);
     }
 }

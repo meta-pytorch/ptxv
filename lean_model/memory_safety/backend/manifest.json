@@ -1,0 +1,24 @@
+{
+  "original_binary_sha256": "b7756f5cebbcaec2ad98f28a91e3d5b9252d5e9e0d45be54179b03da83b3fb35",
+  "patched_binary_sha256": "b0b7ff4ddd34204a7bd73fa723a74c634ac96c95597c625f846248df2a0c3601",
+  "source_patch_sha256": "f1eb5d6d4345da99f5b8027fae7ce7939cb4268a1fc0e32c72bc8d9a5aa4e12d",
+  "original_sources": {
+    "extract/ExtractBuiltin.ml": "dc9cb7f38e6fdeeb6a456344f33c5a9f97213a2208bf3cb25a04be1ee5488bba",
+    "Translate.ml": "9668e7181f536da01bc7a2bf0dcc9d5d418b75e23f99106fefce19b3de389b37"
+  },
+  "patched_sources": {
+    "extract/ExtractBuiltin.ml": "14c06c62ea4b9c8541c4f0cd1e335fb957f9e05a73d1c34469558717e94c9f2f",
+    "Translate.ml": "7bd85a1e140d517d391d94923764b244da9f2c35e2c2765be5f77e9fb37ea694"
+  },
+  "primitive_lean_sha256": "1dbe5a75a87d1084b3fe86154cae2eec47c9c7952978d8091f58f3cde430dac6",
+  "primitive_models": {
+    "alloc::sync::Arc<T>": "Id T; no Arc functions selected; accepted launch.nic = none required",
+    "alloc::string::String::new": "MemorySafety.Primitives.stringNew := \"\"",
+    "alloc::string::String::as_bytes": "MemorySafety.Primitives.stringBytes; exact String.toUTF8 bytes mapped to Aeneas U8; rejects length above usize::MAX"
+  },
+  "formatting": {
+    "margin": 1000,
+    "max_indent": 990
+  },
+  "generated_hand_edits": false
+}

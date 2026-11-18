@@ -8,6 +8,7 @@ beside ptxv's Rust workspace.
 | --- | --- |
 | [Blackwell/](Blackwell/) | GB300, SM103 |
 | [Shared/](Shared/) | Reusable arithmetic and common instruction models |
+| [memory_write/](memory_write/) | Memory-write effects and atomic execution, production replay and Aeneas proofs (Lean 4.35) |
 
 `Blackwell/` holds the GB300 models and replay programs. `Shared/` supplies
 arithmetic, tables, and common instruction semantics used by those models.

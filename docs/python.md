@@ -178,7 +178,7 @@ write_only=())` is a context manager. The calling thread runs the region normall
 
 | object | from | fields |
 |---|---|---|
-| `Verdict` | `check` | `classes`, `certified`, `complete`, `states`, `findings`, `assumptions`, `notes`, `sim_vs_gpu`, `gpu_compare`, `gpu_state`, `sim_equals_gpu`, `clean`, `json` |
+| `Verdict` | `check` | `classes`, `certified`, `complete`, `states`, `findings`, `assumptions`, `notes`, `sim_vs_gpu`, `gpu_compare`, `gpu_state`, `sim_equals_gpu`, `clean`, `strict_memory_safety`, `memory_safe`, `json` |
 | `Equivalence` | `compare` | `level`, `proven`, `headline`, `blockers`, `relies_on`, `witness`, `gpu`, `per_output_bound`, `bound`, `reference`, `candidate`, `markdown`, `json` |
 | `Bound` | `--emit-bound` | `__call__(**inputs)` (numpy or torch, batched), `check(ref, cand, inputs)`, `distribution(dists, n)`, `evaluable`, `used_inputs`, `max_u()`, `to_pandas()`, `json` |
 | `ErrDist` | `errdist`, `Bound.distribution` | `quantile(q)`, `quantiles`, `mean`, `std`, `max`, `cdf(t)`, `tail(t)` (with a Clopper-Pearson bound), `per_output()`, `sample(n)`, `to_numpy()`, `to_pandas()`, `json` |
@@ -190,8 +190,43 @@ output is bitwise equal, else the first of `mismatch`, `within_ulp`, `permuted_e
 `not_compared` present; None when nothing was compared. `sim_equals_gpu` is True only for
 `bitwise` (within one ulp is False).
 
+`Verdict` represents one case, variant and front. `check` rejects results with multiple
+rows: select a single `variant` and `front`, or inspect all rows through `Session.submit`:
+
+```python
+with ptxv.Session() as s:
+    doc = s.submit("check", [case], variant="all", front="ptx").result()
+    rows = doc["rows"]
+```
+
 `Bound` evaluates the `sum`, `round` and `softmax` forms (docs/json.md). For `norm` and
 attention outputs it returns NaN: their evaluation data is not exported yet.
+
+Request the separate raw-PTX memory-safety proof with
+`v = ptxv.check(case, strict_memory_safety=True)`. This defaults to `front="ptx"`;
+an explicit front is preserved. `v.strict_memory_safety` contains the report and
+`v.memory_safe` is true only for a successful proof in the raw-source scope. Unsupported
+semantics or search limits are inconclusive. A present non-safe strict report also makes
+`v.clean` false; a requested but missing report also fails closed. Ordinary checks keep
+the SASS default.
+
+Use `v = ptxv.check(case, strict=True)` to enable all strict checks: memory safety
+and `nonfinite="strict"`. The shortcut uses the same input snapshots, executable
+binding, cache identity, and daemon contract as the expanded options. Explicit
+front selection is preserved; `strict=True` is supported only for check jobs.
+
+Python strict checks copy their case inputs and selected local executable before cache
+lookup and queueing; later edits apply to the next check. The cache key hashes the
+executable copy that actually runs. Strict local results, including daemon-local jobs,
+expose its digest as `ptxv_binary_sha256`. Referenced case inputs must be regular files
+inside the case directory, outside `out/`. External paths and symlinks are refused.
+These checks require Python 3.11 or later and an updated daemon when using the daemon
+backend.
+
+Strict daemon requests always consult the server. Its local jobs retain caching and
+running-job sharing against the owned executable hash. Strict Slurm jobs bypass result
+caches and running-job reuse because the remote executable is not pinned by a local
+binary hash. This applies to direct Slurm sessions and requests through a daemon.
 
 ## Sessions and backends
 
@@ -224,8 +259,9 @@ attention outputs it returns NaN: their evaluation data is not exported yet.
   - Enabling it for real needs ssh access to the login node, and the source and build under
     ROOT (docs/multinode.md). Only the dry run is tested.
 - **Cache key:** sha256 of the job kind and arguments, the content hash of every case
-  directory (cubins, case.toml, input bytes) and the ptxv binary's hash. Slurm results are
-  kept in their own namespace (the cluster's build).
+  directory (cubins, case.toml, input bytes) and the selected local ptxv binary's hash.
+  Ordinary Slurm results use a separate host/root namespace; that namespace does not
+  fingerprint the remote executable. Strict Slurm checks therefore bypass this cache.
 
 ## Error distributions (adapter)
 

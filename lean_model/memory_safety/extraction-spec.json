@@ -1,0 +1,128 @@
+{
+  "aeneas_options": [
+    "-split-files",
+    "-filter-trait-methods",
+    "-abort-on-error",
+    "-no-progress-bar"
+  ],
+  "charon_options": [
+    "--preset=aeneas",
+    "--extract-opaque-bodies",
+    "--error-on-warnings",
+    "--abort-on-error"
+  ],
+  "generated_export": {
+    "preamble_sha256": "4aeac5a5f49fbac3e68ee0900572505b63be13601160364319950b849e852279",
+    "transformation": "prepend-license-comment",
+    "version": 1
+  },
+  "generated_hand_edits": false,
+  "include": [
+    "core::option",
+    "core::result",
+    "core::ops::control_flow::ControlFlow",
+    "core::cmp::impls::{core::cmp::PartialEq<bool, bool>}::ne",
+    "core::tuple"
+  ],
+  "namespace": "PtxvMemorySafety",
+  "opaque": [
+    "core",
+    "std",
+    "alloc"
+  ],
+  "primitive_backend": "backend/manifest.json",
+  "roots": [
+    "ptxv_sim::strict_memory_admission::project_instruction",
+    "ptxv_sim::strict_memory_admission::constant_address",
+    "ptxv_sim::strict_memory_admission::project_code",
+    "ptxv_sim::strict_memory_admission::project",
+    "ptxv_sim::strict_memory_admission::validate_launch",
+    "ptxv_sim::strict_memory_admission::verify_certificate",
+    "ptxv_sim::memory_event::resolve_global_event",
+    "ptxv_sim::memory_event::ResolvedGlobalEvent::event",
+    "ptxv_sim::memory_event::ResolvedGlobalEvent::location",
+    "ptxv_sim::strict_memory_status::status_for_certificate",
+    "ptxv_sim::strict_memory_status::Status::is_safe",
+    "ptxv_sim::strict_memory_globals::global_address",
+    "ptxv_sim::strict_memory_globals::address_value",
+    "ptxv_sim::strict_memory_globals::resolve_address",
+    "ptxv_sim::strict_memory_globals::specialize_instruction",
+    "ptxv_sim::strict_memory_globals::specialize_code",
+    "ptxv_memory_write::memory_safety::verify",
+    "ptxv_memory_write::memory_safety::successors",
+    "ptxv_memory_write::memory_safety::access_valid",
+    "ptxv_memory_write::memory_safety::initial",
+    "ptxv_memory_write::memory_safety::layout_valid",
+    "ptxv_memory_write::memory_safety::thread_moves",
+    "ptxv_memory_write::memory_safety::moves",
+    "ptxv_memory_write::memory_safety::update_memory",
+    "ptxv_memory_write::memory_safety::apply_move",
+    "ptxv_sim::strict_memory_launch::dimensions_product",
+    "ptxv_sim::strict_memory_launch::aliases_present",
+    "ptxv_sim::strict_memory_launch::validate_outputs",
+    "ptxv_sim::strict_memory_launch::project_allocation",
+    "ptxv_sim::strict_memory_launch::project_allocations",
+    "ptxv_sim::strict_memory_launch::replicate_code",
+    "ptxv_sim::strict_memory::check",
+    "ptxv_sim::strict_memory::Report::is_safe",
+    "ptxv_sim::strict_memory::Report::status_name",
+    "ptxv_memory_write::checked_execution::initial",
+    "ptxv_memory_write::checked_execution::monitor_program",
+    "ptxv_memory_write::checked_execution::good",
+    "ptxv_memory_write::checked_execution::step",
+    "ptxv_memory_write::checked_execution::successors",
+    "ptxv_memory_write::checked_execution::state_present",
+    "ptxv_memory_write::checked_execution::verify",
+    "ptxv_memory_write::checked_execution::check",
+    "ptxv_memory_write::checked_execution::Status::is_safe",
+    "ptxv_memory_write::execution_core::execute",
+    "ptxv_memory_write::execution_core::state_equal",
+    "ptxv_memory_write::execution_core::snapshot_state",
+    "ptxv_sim::machine_memory_safety::ExecutionMachine::strict",
+    "ptxv_sim::machine_memory_safety::ExecutionMachine::state",
+    "ptxv_sim::machine_memory_safety::ExecutionMachine::program",
+    "ptxv_sim::machine_memory_safety::ExecutionMachine::fault",
+    "ptxv_sim::machine_memory_safety::ExecutionMachine::step_owned",
+    "ptxv_sim::machine_memory_safety::ExecutionMachine::outputs",
+    "ptxv_sim::machine_memory_safety::ExecutionMachine::enabled",
+    "ptxv_sim::machine_memory_safety::ExecutionMachine::step",
+    "ptxv_sim::strict_memory_frontend_launch::build_program",
+    "ptxv_sim::strict_memory_source::check",
+    "ptxv_sim::strict_memory_source::Report::is_safe",
+    "ptxv_sim::strict_memory_source::Report::status_name",
+    "ptxv_memory_write::input_independent_execution::verify",
+    "ptxv_memory_write::value_flow_dependencies::state_equal",
+    "ptxv_memory_write::value_flow_dependencies::snapshot_state",
+    "ptxv_sim::strict_memory_frontend_parse::parse_address_offset",
+    "ptxv_sim::strict_memory_frontend_parse::parse_address_tail",
+    "ptxv_sim::strict_memory_frontend_launch::initial_object"
+  ],
+  "rust_toolchain": {
+    "cargo": {
+      "sha256": "da77c8b33849312255ccde3179198ada4c8deb370488d050286146b1d1b27e14",
+      "version": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+    },
+    "rustc": {
+      "sha256": "859254978c0a0402c32f949f6de0d99aee73be8d15f45aac00ae1448aac51e74",
+      "version": "rustc 1.98.1 (48a229cea 2026-09-01)"
+    }
+  },
+  "tools": {
+    "aeneas": {
+      "sha256": "b0b7ff4ddd34204a7bd73fa723a74c634ac96c95597c625f846248df2a0c3601"
+    },
+    "charon": {
+      "sha256": "3205de8c43f328810c4d53e8fb273312de1b2463abc6e5b0b8455a9532a9c161"
+    },
+    "charon_driver": {
+      "sha256": "c18f862debb936f3936ad7d2dee6671160f21834efe967d5e88915188a1059cd"
+    },
+    "lake": {
+      "sha256": "8ba83c98f76562d03b8dbc33f1057151ba6cbb121679dde76b2260ccc90495e1"
+    },
+    "lean": {
+      "sha256": "bf8d54e4714cc4b03d3f6bb34c83b7202b87e49c8bfcbff6895c085bb90ceb38"
+    }
+  },
+  "version": 1
+}

@@ -1,0 +1,9 @@
+[package]
+name = "ptxv-memory-write"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+path = "../../crates/memory-write/src/lib.rs"

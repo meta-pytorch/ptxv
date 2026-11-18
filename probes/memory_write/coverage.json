@@ -1,0 +1,1665 @@
+{
+  "schema_version": 1,
+  "scope": "Independent bounded source inventory for centralized ptxv value/history write effects; this manifest is not a production refinement proof.",
+  "source_root": ".",
+  "revisions": {
+    "main": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+    "fixed_stack": "ca78f5b5f317921c640eccb0761864590c3b419d",
+    "fixed_stack_bookmark": "ptxv-bugfixes-20261109"
+  },
+  "source_files": [
+    {
+      "path": "crates/sim/src/exec.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "3e00f30a6560c3df3a017746d8a63c27ac5957ff96b52ab67d63d8a898deb0a3",
+        "lines": 13841
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "e088aea11d4a500ca739fa0f474c877c26f917401fb40b2ebace0b84e8359e3d",
+        "lines": 14325
+      }
+    },
+    {
+      "path": "crates/sim/src/num.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "93715336131b9c8aefbe8d5c54f7cae2a6456ae05dad2a2b87cfd06d77edd4aa",
+        "lines": 4713
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "7338f1e2e24666a5ba1c8d2643f14d9ff3066f29dc8fd53f79df50b874974293",
+        "lines": 6010
+      }
+    },
+    {
+      "path": "crates/sim/src/halfin.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "e38a8df0587a54551e4821251ba003dda4622b7cd77a90aee4399f9fe040bbc6",
+        "lines": 1079
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "fbeb30f84ad48374d3c9d20e4edaa3e9ef1583d42e3076c6451647b5767df903",
+        "lines": 1181
+      }
+    },
+    {
+      "path": "crates/sim/src/machine.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "6055d18cb92c68602feb89443b5f961a16c13992d69771b569600addec38d94d",
+        "lines": 2771
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "f74dfd62cb67516942da1737decce8ab73871566b570d0d4fc1a2bcde9a1765c",
+        "lines": 2784
+      }
+    },
+    {
+      "path": "crates/sim/src/fills.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "da70c564e86087521d0797cda985184f7ee6e88908a9ccffc4975da55d847707",
+        "lines": 224
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "da70c564e86087521d0797cda985184f7ee6e88908a9ccffc4975da55d847707",
+        "lines": 224
+      }
+    },
+    {
+      "path": "crates/sim/src/nic.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "b3a55ea2033af248fabe3ecd5691a91a189e3ea1dbcd7673720c686fc31605a1",
+        "lines": 890
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "b3a55ea2033af248fabe3ecd5691a91a189e3ea1dbcd7673720c686fc31605a1",
+        "lines": 890
+      }
+    },
+    {
+      "path": "crates/sim/src/wellsync.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "a9b93c87b2114c4006094bd3594356cabd860ebbd6bcabc9e42d0be978755fd5",
+        "lines": 4901
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "a9b93c87b2114c4006094bd3594356cabd860ebbd6bcabc9e42d0be978755fd5",
+        "lines": 4901
+      }
+    },
+    {
+      "path": "crates/sim/src/spin.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "eadb7942b25cc8759c96530c5aafd09036960c7bd8f27695de62ef28fe4ccc51",
+        "lines": 1330
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "484ca2546a7637089c9bae865f6eaecccce353ba6b42837f7f835013f62843b1",
+        "lines": 1436
+      }
+    },
+    {
+      "path": "crates/sim/src/multimem.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "97391478f832d409be06c845841c73c8653a1da297a60cac6bb23c346a013506",
+        "lines": 492
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "97391478f832d409be06c845841c73c8653a1da297a60cac6bb23c346a013506",
+        "lines": 492
+      }
+    },
+    {
+      "path": "crates/sim/src/im2col.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": false,
+        "sha256": null,
+        "lines": 0
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "e8980d5e72d4b5e6b28126430e626b728de260dafea45abaed0b33b9ca1b2fba",
+        "lines": 187
+      }
+    },
+    {
+      "path": "crates/sim/src/tmap.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": true,
+        "sha256": "7d6d58fe055465cac26b819084861a737f0304b8785258ea0b0bc8a896836437",
+        "lines": 618
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "65dd063c34ef3a2d824193b0c70f0adfa51f83a17bd242569ac37c4e97c2903a",
+        "lines": 692
+      }
+    },
+    {
+      "path": "crates/sim/src/coverage.rs",
+      "main": {
+        "revision": "ebb21ab76ee0a4abb007cda304465e13bd0559a3",
+        "exists": false,
+        "sha256": null,
+        "lines": 0
+      },
+      "fixed_stack": {
+        "revision": "ca78f5b5f317921c640eccb0761864590c3b419d",
+        "sha256": "c62f981b2eea2dfcef41fdf7bbc6fbfb84b269fa528738deacdad831a4178f55",
+        "lines": 1860
+      }
+    }
+  ],
+  "normalized_address_spaces": [
+    {
+      "name": "shared",
+      "space": 0,
+      "object": "CTA",
+      "unit": "byte"
+    },
+    {
+      "name": "global",
+      "space": 1,
+      "object": "allocation",
+      "unit": "byte"
+    },
+    {
+      "name": "param",
+      "space": 2,
+      "object": "grid",
+      "unit": "byte",
+      "writable": false
+    },
+    {
+      "name": "tmem",
+      "space": 3,
+      "object": "CTA",
+      "unit": "byte",
+      "formula": "4*(column*128+lane)+byte",
+      "production_numeric_and_taint_unit": "word index column*128+lane"
+    },
+    {
+      "name": "local",
+      "space": 4,
+      "object": "thread",
+      "unit": "byte"
+    }
+  ],
+  "state_planes": {
+    "concrete": "Global/shared Mem bytes plus byte Sh; local sparse (aligned u32 address,u64 value+undefined mask); TMEM u32 words+Sh+init.",
+    "numeric": "NumState.mem word-start node map; NumState.orig separate shared 16-bit original-input origins.",
+    "half": "HalfState.mem byte-origin map, f16_nodes encoding-kind set, and gwritten global-byte set.",
+    "taint": "Per-byte global/shared/local maps with all_global and clean_global complements; TMEM uses per-word keys.",
+    "fallback": "NumState.written blocks initial f32 global word fallback; HalfState.gwritten separately blocks per-byte half fallback.",
+    "definedness": "Global/shared Sh.undef (shared uninitialized unless reserved/prior write); local per-bit undefined mask; TMEM init0/1/2."
+  },
+  "families": [
+    {
+      "id": "generic_global_shared_write",
+      "operations": [
+        "Machine::access",
+        "Machine::access_x"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "access",
+          "lines": {
+            "main": [
+              827
+            ],
+            "fixed_stack": [
+              835
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "access_x",
+          "lines": {
+            "main": [
+              840
+            ],
+            "fixed_stack": [
+              848
+            ]
+          }
+        }
+      ],
+      "timing": "At the concrete access, before caller-specific replacement metadata.",
+      "destinations": [
+        "global allocation bytes",
+        "shared CTA bytes"
+      ],
+      "payload": "Caller-provided bytes and wundef byte mask; Param writes report violation and do not mutate memory.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Fixed access_x adds HalfState::invalidate_memory, NumState::note_write_span, and dependency-aware symbolic equal-write checking. It still does not itself remove ns.mem numeric histories. Main lacks the half invalidation and intersecting global written-word marking.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "ordinary_scalar_vector_guarded_store",
+      "operations": [
+        "Op::St"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_thread_inner",
+          "lines": {
+            "main": [
+              5888
+            ],
+            "fixed_stack": [
+              6029
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_store_origins",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              2369
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_st",
+          "lines": {
+            "main": [
+              2249
+            ],
+            "fixed_stack": [
+              2412
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_gst_pre",
+          "lines": {
+            "main": [
+              2371
+            ],
+            "fixed_stack": [
+              2594
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_gst_post",
+          "lines": {
+            "main": [
+              2428
+            ],
+            "fixed_stack": [
+              2651
+            ]
+          }
+        }
+      ],
+      "timing": "Capture source and guard dependencies before concrete writes; replace metadata after each access. Guarded symbolic selection hooks surround instruction execution.",
+      "destinations": [
+        "global",
+        "shared",
+        "shared::cluster",
+        "multicast replicas"
+      ],
+      "payload": "Scalar bytes, SASS consecutive 32-bit registers, PTX vector elements including both 32-bit lanes of every 64-bit element.",
+      "normalized_effects": {
+        "numeric_words": "Full words receive their own source register history. Partial or unaligned stores invalidate all intersecting words and may install an opaque leaf of the post-store merged word. Guarded stores use sound Select or opaque histories.",
+        "half_origins": "Copy exact source byte origins only for an unconditional data-independent path; dependent guards invalidate direct-origin claims.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Fixed num_st accepts concrete data and StoreOrigins captured before access, tracks per-word dependencies and guard dependence, and handles intersecting partial words; main accepts only byte count and can retain stale partial-word histories or miss vector/guard dependencies.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "store_256",
+      "operations": [
+        "Op::St256"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_thread_inner",
+          "lines": {
+            "main": [
+              5888
+            ],
+            "fixed_stack": [
+              6029
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_store_origins",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              2369
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_st",
+          "lines": {
+            "main": [
+              2249
+            ],
+            "fixed_stack": [
+              2412
+            ]
+          }
+        }
+      ],
+      "timing": "One concrete 32-byte write; two independently captured 16-byte metadata payloads.",
+      "destinations": [
+        "global"
+      ],
+      "payload": "Four registers from lo bank followed by four from hi bank.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Fixed code captures StoreOrigins separately for both banks before access and passes matching concrete data into num_st; main uses the older num_st interface.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "matrix_store",
+      "operations": [
+        "Op::StMatrix"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_inner_body",
+          "lines": {
+            "main": [
+              3570
+            ],
+            "fixed_stack": [
+              3634
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_st",
+          "lines": {
+            "main": [
+              2249
+            ],
+            "fixed_stack": [
+              2412
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/halfin.rs",
+          "symbol": "half_stsm_half",
+          "lines": {
+            "main": [
+              367
+            ],
+            "fixed_stack": [
+              371
+            ]
+          }
+        }
+      ],
+      "timing": "Per-lane mapped shared writes; freeze register metadata before overwriting any aliased source.",
+      "destinations": [
+        "shared"
+      ],
+      "payload": "Non-transposed 4-byte words, transposed selected 2-byte halves with exact matrix lane permutation.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Fixed call sites use concrete bytes and captured StoreOrigins; transposed half origin reconstruction remains explicit.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "local_spill_store",
+      "operations": [
+        "Op::StLocal"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_thread_inner",
+          "lines": {
+            "main": [
+              5888
+            ],
+            "fixed_stack": [
+              6029
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_local_st",
+          "lines": {
+            "main": [
+              2518
+            ],
+            "fixed_stack": [
+              2741
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/halfin.rs",
+          "symbol": "half_local_st",
+          "lines": {
+            "main": [
+              376
+            ],
+            "fixed_stack": [
+              380
+            ]
+          }
+        }
+      ],
+      "timing": "Synchronous private thread-local write; no global/shared race access.",
+      "destinations": [
+        "local thread sparse words"
+      ],
+      "payload": "1/2-byte masked merge, or each 4-byte word of a wide/vector value. Storage u64 low32=value, high32=per-bit undefined mask.",
+      "normalized_effects": {
+        "numeric_words": "Full spill copies source word history. Partial merge must preserve unaffected bytes and conservatively rebuild intersecting word history.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Each resulting byte includes retained old-byte dependence plus written-byte source/guard dependence.",
+        "written": "No global written markers. Sparse local presence and undefined masks distinguish never-written data.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "No family-specific algorithm change in the audited stack; generic access changes apply where used.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.applyChecked",
+        "preservation_theorem": "MemoryWrite.applyChecked_preserves_representation"
+      }
+    },
+    {
+      "id": "atomic_read_modify_write",
+      "operations": [
+        "Op::Atom",
+        "AtomOp::{Or,And,Add,Exch,Xor,MinU,MaxU,MinS,MaxS,Inc,Dec,Cas,CasSpin,FAddFtz,FAdd64,AddBf16,AddBf16x2}"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_thread_inner",
+          "lines": {
+            "main": [
+              5888
+            ],
+            "fixed_stack": [
+              6029
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_atom",
+          "lines": {
+            "main": [
+              2201
+            ],
+            "fixed_stack": [
+              2316
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_atom_bf16",
+          "lines": {
+            "main": [
+              3283
+            ],
+            "fixed_stack": [
+              3540
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_fmax_atom",
+          "lines": {
+            "main": [
+              2745
+            ],
+            "fixed_stack": [
+              3002
+            ]
+          }
+        }
+      ],
+      "timing": "Read old bytes and ALL old metadata before the write. Failed ordinary Cas performs no concrete write; CasSpin uses its separate modeled semantics.",
+      "destinations": [
+        "global",
+        "shared",
+        "multimemory replicas"
+      ],
+      "payload": "Width-masked integer or floating RMW; compare and replacement operands both matter for CAS. Old result returned separately.",
+      "normalized_effects": {
+        "numeric_words": "FAddFtz extends AtomAdd using old destination history plus operand history; recognized max diamond installs Max; other RMWs conservatively forget every intersecting word, including high words of 64-bit operations.",
+        "half_origins": "BF16/BF16x2 may install rounded N-byte histories computed from pre-write old origins. Other atomics clear written origins.",
+        "taint": "Result depends on old destination plus all data/compare/replacement/guard/address operands; old-return dependency is distinct.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Fixed generic access invalidates old half origins before num_atom_bf16 currently reads them, reducing BF16 coverage unless old metadata is snapshotted. Both versions call num_atom after a failed ordinary Cas despite skipping concrete write; a faithful adapter must distinguish read-only failure. Generic fixed access marks both intersecting global words of 64-bit writes.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.compareExchange / Transfers.exchange",
+        "preservation_theorem": "MemoryWrite.compareExchange_preserves_representation / Transfers.exchange_preserves_representation"
+      }
+    },
+    {
+      "id": "cp_async",
+      "operations": [
+        "Op::CpAsync",
+        "Op::CpAsyncCommit",
+        "Op::CpAsyncWait",
+        "Op::BulkWait {cp:true}",
+        "Op::Exit pending-copy drain"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "cp_async_complete",
+          "lines": {
+            "main": [
+              5033
+            ],
+            "fixed_stack": [
+              5116
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_thread_inner",
+          "lines": {
+            "main": [
+              5888
+            ],
+            "fixed_stack": [
+              6029
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_read_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3741
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_copy_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3820
+            ]
+          }
+        }
+      ],
+      "timing": "Capture bytes and provenance at issue; commit/wait/exit completion uses that frozen issue-time payload even if source changed.",
+      "destinations": [
+        "shared"
+      ],
+      "payload": "Source global bytes followed by explicit zero-fill where source size is smaller; issue snapshot travels in CpPending.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Copy frozen issue origins and assign Zero for fill bytes.",
+        "taint": "Restore frozen per-byte issue dependencies; never reread live source taint at completion.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Main CpPending stores data only, and num_cp_async/half_copy consult completion-time source metadata. Fixed CpPending adds ReadSnapshot and all completion paths use num_copy_snapshot, including forced exit completion.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "Transfers.captureCpAsyncSized / completeCaptured",
+        "preservation_theorem": "Transfers.completeCaptured_preserves_representation"
+      }
+    },
+    {
+      "id": "cp_async_mbarrier_completion",
+      "operations": [
+        "Op::CpAsyncMbarArrive",
+        "AsyncKind::CpArrive"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_cp_arrive",
+          "lines": {
+            "main": [
+              13015
+            ],
+            "fixed_stack": [
+              13467
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_copy_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3820
+            ]
+          }
+        }
+      ],
+      "timing": "Complete all saved pending writes, then perform mbarrier arrival/transaction accounting.",
+      "destinations": [
+        "shared"
+      ],
+      "payload": "Each CpPending issue payload.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Fixed completion restores each saved ReadSnapshot; main uses live source metadata through num_cp_async.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "Transfers.completeCaptured",
+        "preservation_theorem": "Transfers.completeCaptured_preserves_representation"
+      }
+    },
+    {
+      "id": "tma_load_and_shared_bulk_copy",
+      "operations": [
+        "Op::TmaLoad",
+        "AsyncKind::Tma"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_tma",
+          "lines": {
+            "main": [
+              13060
+            ],
+            "fixed_stack": [
+              13517
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_read_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3741
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_copy_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3820
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_tma_elem",
+          "lines": {
+            "main": [
+              3566
+            ],
+            "fixed_stack": [
+              3911
+            ]
+          }
+        }
+      ],
+      "timing": "At async completion, read every source element and freeze ALL source metadata before ANY destination write; then commit mapped destination image.",
+      "destinations": [
+        "shared CTA",
+        "shared multicast CTAs"
+      ],
+      "payload": "Tensor-map tiled/im2col/swizzled global or shared source elements, explicit out-of-bounds fill, destination mapping and multicast.",
+      "normalized_effects": {
+        "numeric_words": "Copy full f32 histories when valid; invalidate intersecting destination words for half/partial elements. num_tma_elem additionally records appropriate original 16-bit global input fallback.",
+        "half_origins": "Preserve shared-source and global-source frozen byte origins, including overlap-safe self copies; Zero for zero-fill.",
+        "taint": "Per-byte source dependency follows mapped element, not one aggregate read flag.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Main reconstructs half provenance after writing and discards shared-source provenance; generic image writes do not copy per-element numeric histories/taint. Fixed code snapshots every element before writing and applies num_copy_snapshot, with num_tma_elem restricted so it does not erase valid full-word histories.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "Transfers.tmaLoad / bulkCopy",
+        "preservation_theorem": "Transfers.completeDeferred_preserves_representation"
+      }
+    },
+    {
+      "id": "tma_store",
+      "operations": [
+        "Op::TmaStore {red:false}",
+        "AsyncKind::TmaStore"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_tma_store",
+          "lines": {
+            "main": [
+              12794
+            ],
+            "fixed_stack": [
+              13226
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_read_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3741
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_copy_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3820
+            ]
+          }
+        }
+      ],
+      "timing": "Read shared source and freeze element metadata at async completion before its global destination write.",
+      "destinations": [
+        "global"
+      ],
+      "payload": "Tensor-map element mapping; only in-bounds output elements written.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Main num_copy follows numeric history but does not consistently copy half/taint; fixed complete_tma_store snapshots source bytes and uses num_copy_snapshot per element.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "Transfers.tmaStore",
+        "preservation_theorem": "Transfers.completeDeferred_preserves_representation"
+      }
+    },
+    {
+      "id": "bulk_atomic_reduction",
+      "operations": [
+        "Op::TmaStore {red:true}",
+        "bulk_red"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_tma_store",
+          "lines": {
+            "main": [
+              12794
+            ],
+            "fixed_stack": [
+              13226
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "bulk_red",
+          "lines": {
+            "main": [
+              12923
+            ],
+            "fixed_stack": [
+              13371
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_bulk_add",
+          "lines": {
+            "main": [
+              3436
+            ],
+            "fixed_stack": [
+              3692
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_forget",
+          "lines": {
+            "main": [
+              3465
+            ],
+            "fixed_stack": [
+              3733
+            ]
+          }
+        }
+      ],
+      "timing": "Read old global destination and source shared element before strong RMW commit.",
+      "destinations": [
+        "global"
+      ],
+      "payload": "32-bit f32 reduction, and modeled 16-bit/untracked reduction forms.",
+      "normalized_effects": {
+        "numeric_words": "f32 addition extends old global/source shared AtomAdd histories; unsupported reductions invalidate all intersecting words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Union old destination and source dependency, using old-read dependency captured before subsequent reads.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Fixed f32 reduction supplies explicit old_input_derived to num_bulk_add so later shared reads cannot overwrite the old-value dependency classification. Generic fixed invalidation also handles global half/written markers.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "clc_response",
+      "operations": [
+        "Op::ClcTryCancel",
+        "AsyncKind::Clc"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_clc",
+          "lines": {
+            "main": [
+              2215
+            ],
+            "fixed_stack": [
+              2252
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_read_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3741
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_copy_snapshot",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              3820
+            ]
+          }
+        }
+      ],
+      "timing": "Scheduler chooses cancellation outcome, writes 16-byte response to all recipient CTAs, then completes 16 transaction bytes.",
+      "destinations": [
+        "shared issuer",
+        "shared additional CTAs"
+      ],
+      "payload": "Response constant bytes encoding success/victim/result; scheduler choice is an explicit model input.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Fixed code builds an explicit constant ReadSnapshot and applies num_copy_snapshot to each response destination; main writes bytes without that centralized numeric replacement.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write (clcResponse)",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "async_remote_store",
+      "operations": [
+        "Op::StAsync",
+        "AsyncKind::Remote"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_thread_inner",
+          "lines": {
+            "main": [
+              5888
+            ],
+            "fixed_stack": [
+              6029
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_remote",
+          "lines": {
+            "main": [
+              11149
+            ],
+            "fixed_stack": [
+              11398
+            ]
+          }
+        }
+      ],
+      "timing": "Same-CTA immediate write or remote issue stores frozen words until delivery; remote store data and complete_tx occur together.",
+      "destinations": [
+        "shared::cluster"
+      ],
+      "payload": "Consecutive 4-byte words assembled from source vector/registers at issue.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "Both versions have no caller-specific numeric replacement hook here. Fixed generic access clears half origins and marks appropriate writes; numeric stale-history risk remains without centralized invalidation. Remote records contain words, not source ReadSnapshot.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write (remoteStore)",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "tmem_allocation_result_store",
+      "operations": [
+        "Op::TmemAlloc"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_thread_inner",
+          "lines": {
+            "main": [
+              5888
+            ],
+            "fixed_stack": [
+              6029
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "tmem_reset",
+          "lines": {
+            "main": [
+              2337
+            ],
+            "fixed_stack": [
+              2383
+            ]
+          }
+        }
+      ],
+      "timing": "Write allocated column address into shared memory synchronously, then reset allocated TMEM columns.",
+      "destinations": [
+        "shared result word",
+        "TMEM allocation state"
+      ],
+      "payload": "4-byte allocated column index, independent of input data.",
+      "normalized_effects": {
+        "numeric_words": "Shared result must forget previous numeric node or install a constant node.",
+        "half_origins": "Clear previous shared byte origins; exact zero bytes may be tagged Zero.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "No family-specific algorithm change in the audited stack; generic access changes apply where used.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write (allocationResult)",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "tmem_register_store",
+      "operations": [
+        "Op::TmemSt"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "tmem_access",
+          "lines": {
+            "main": [
+              2417
+            ],
+            "fixed_stack": [
+              2463
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "exec_thread_inner",
+          "lines": {
+            "main": [
+              5888
+            ],
+            "fixed_stack": [
+              6029
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_tmem_st",
+          "lines": {
+            "main": [
+              2550
+            ],
+            "fixed_stack": [
+              2773
+            ]
+          }
+        }
+      ],
+      "timing": "Each lane/column writes one TMEM word; source undefinedness may poison init after concrete write.",
+      "destinations": [
+        "TMEM CTA lane/column"
+      ],
+      "payload": "32-bit register word and byte provenance.",
+      "normalized_effects": {
+        "numeric_words": "TMEM numeric key is word index column*128+lane; copy source node or remove.",
+        "half_origins": "TMEM half key is byte index 4*(column*128+lane)+b; copy 4 source origins.",
+        "taint": "TMEM taint is stored at word index, not normalized byte index. Adapter must expand/contract explicitly.",
+        "written": "No global fallback markers. init=1 means written only when old init !=2.",
+        "definedness": "init=0 allocated undefined,1 allocated written,2 unallocated. Undefined source changes allocated destination init to0; writes to init2 do not legalize allocation.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "No family-specific algorithm change in the audited stack; generic access changes apply where used.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write (tmemStore)",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "tcgen05_shared_to_tmem_copy",
+      "operations": [
+        "AsyncKind::Cp",
+        "tcgen05.cp"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_tc_cp",
+          "lines": {
+            "main": [
+              11384
+            ],
+            "fixed_stack": [
+              11637
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "tmem_block",
+          "lines": {
+            "main": [
+              2497
+            ],
+            "fixed_stack": [
+              2543
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_tmem_forget",
+          "lines": {
+            "main": [
+              3426
+            ],
+            "fixed_stack": [
+              3683
+            ]
+          }
+        }
+      ],
+      "timing": "Async completion reads all 32 source rows before a block TMEM write; paired CTA copy executes on both peers.",
+      "destinations": [
+        "TMEM current CTA",
+        "TMEM paired CTA"
+      ],
+      "payload": "Shared swizzled 32x16-byte tile replicated across 128 TMEM lanes.",
+      "normalized_effects": {
+        "numeric_words": "Forget every destination numeric word; operation currently preserves byte origins rather than f32 numeric nodes.",
+        "half_origins": "Copy corresponding four source byte origins to each replicated TMEM destination.",
+        "taint": "Block writer records taint by TMEM word coordinates; exact copy adapter must use mapped per-word source dependency.",
+        "written": "TMEM init transition only; do not touch global markers.",
+        "definedness": "tmem_block changes allocated words to init1 and leaves init2 unallocated.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "No family-specific algorithm change in the audited stack; generic access changes apply where used.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "Transfers.prepareScatter / completeCaptured (tmemCopy)",
+        "preservation_theorem": "Transfers.completeCaptured_preserves_representation"
+      }
+    },
+    {
+      "id": "tcgen05_mma_results",
+      "operations": [
+        "Op::Mma",
+        "AsyncKind::Mma"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_mma",
+          "lines": {
+            "main": [
+              11635
+            ],
+            "fixed_stack": [
+              11896
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "complete_mma_lp",
+          "lines": {
+            "main": [
+              12123
+            ],
+            "fixed_stack": [
+              12414
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "mma_d_write",
+          "lines": {
+            "main": [
+              11578
+            ],
+            "fixed_stack": [
+              11839
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "tmem_block",
+          "lines": {
+            "main": [
+              2497
+            ],
+            "fixed_stack": [
+              2543
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "mma_d_poison",
+          "lines": {
+            "main": [
+              11603
+            ],
+            "fixed_stack": [
+              11864
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_mma",
+          "lines": {
+            "main": [
+              2583
+            ],
+            "fixed_stack": [
+              2806
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_tmem_rescale",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              2844
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/num.rs",
+          "symbol": "num_tmem_forget",
+          "lines": {
+            "main": [
+              3426
+            ],
+            "fixed_stack": [
+              3683
+            ]
+          }
+        }
+      ],
+      "timing": "Snapshot accumulators and operands before writing all result tiles; peer destination follows layout. Accumulator scaling is a pre-computation history transition.",
+      "destinations": [
+        "TMEM result tiles for one/two CTAs"
+      ],
+      "payload": "Row-major computed words mapped through MMA D layout; f16/low-precision unsupported histories conservatively forgotten.",
+      "normalized_effects": {
+        "numeric_words": "Supported MMA installs computed node per TMEM word, including accumulation and exact operand provenance; untracked forms remove nodes; rescale replaces with sound scaled leaf.",
+        "half_origins": "MMA f32 writes clear half origins; supported half-result encoding requires explicit origin reconstruction.",
+        "taint": "Dependence includes operands and enabled accumulator; enable=false removes old-accumulator dependence.",
+        "written": "TMEM init only.",
+        "definedness": "Undefined accumulator/A/scales poison all allocated D cells to init0; unallocated cells remain2.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "No family-specific algorithm change in the audited stack; generic access changes apply where used.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write (mma)",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "tmem_state_only_lifecycle",
+      "operations": [
+        "Op::TmemAlloc",
+        "Op::TmemAllocRaw",
+        "Op::TmemDealloc",
+        "Op::TmemFreeRaw",
+        "mma_d_poison"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "tmem_reset",
+          "lines": {
+            "main": [
+              2337
+            ],
+            "fixed_stack": [
+              2383
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "tmem_free",
+          "lines": {
+            "main": [
+              2341
+            ],
+            "fixed_stack": [
+              2387
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "tmem_mark",
+          "lines": {
+            "main": [
+              2346
+            ],
+            "fixed_stack": [
+              2392
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "mma_d_poison",
+          "lines": {
+            "main": [
+              11603
+            ],
+            "fixed_stack": [
+              11864
+            ]
+          }
+        }
+      ],
+      "timing": "Allocation/free and poison update state without assigning meaningful new value bits.",
+      "destinations": [
+        "TMEM columns or result tiles"
+      ],
+      "payload": "Reset init0; free init2; poison init0 except already-unallocated cells. Allocation bitmap and permit/relinquishment tracked separately.",
+      "normalized_effects": {
+        "numeric_words": "Reset/free/poison must prevent old histories from reappearing after reallocation or a definedness change; current production tmem_mark does not clear ns.mem.",
+        "half_origins": "Invalidate stale byte provenance across all affected words; current production tmem_mark/poison do not explicitly clear it.",
+        "taint": "State transition must not manufacture a clean defined constant from stale word bits.",
+        "written": "Allocation bitmap and init are distinct from global written markers.",
+        "definedness": "Exact three-state transition; tmem_mark also stamps TMEM_MARK race epoch and clears readers.",
+        "race_shadow": "Allocation/free count as writes of every affected word; preserve TMEM_MARK lifecycle race semantics."
+      },
+      "main_to_fixed_stack": "No lifecycle metadata repair in the audited bug-fix stack; this is an explicit coverage obligation, not a claim that the stack already satisfies the normalized invariant.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "allocateTmem / freeTmemSpan / poisonChecked",
+        "preservation_theorem": "allocateTmem_preserves_representation / freeTmemSpan_preserves_representation / poisonChecked_preserves_representation"
+      }
+    },
+    {
+      "id": "nic_rdma_atomic_cqe",
+      "operations": [
+        "OP_RDMA_WRITE",
+        "OP_ATOMIC_FA",
+        "OP_ATOMIC_CS",
+        "NIC CQE"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/nic.rs",
+          "symbol": "complete_nic",
+          "lines": {
+            "main": [
+              474
+            ],
+            "fixed_stack": [
+              474
+            ]
+          }
+        }
+      ],
+      "timing": "NIC async completion reads WQE/source; writes remote chunks, atomic result and local fetched-old sink, then optional CQE.",
+      "destinations": [
+        "global remote destination",
+        "global local fetched-old sink",
+        "global 64-byte CQE"
+      ],
+      "payload": "RDMA copied bytes; aligned 64-bit add/CAS; CQE fields and owner parity. Chunking models 8/4-byte strong writes and 1-byte edges.",
+      "normalized_effects": {
+        "numeric_words": "Invalidate every intersecting aligned 4-byte numeric history; install a replacement only when all 4 result bytes have a sound frozen history. Preserve disjoint words.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "No numeric copy/atomic hook exists for NIC in either version. Fixed access_x clears origins and marks written spans; ns.mem still requires invalidation or explicit snapshots. CAS currently writes old bits even when compare fails, according to this NIC model.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write (nicWrite/nicAtomic/nicCompletion)",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    },
+    {
+      "id": "initialization_and_undefined_fills",
+      "operations": [
+        "Machine::new",
+        "Machine::with_cluster_shape",
+        "fills::apply_fill"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/machine.rs",
+          "symbol": "new",
+          "lines": {
+            "main": [
+              115,
+              362,
+              806,
+              883,
+              1017,
+              1210,
+              1849,
+              1915,
+              1960,
+              2091,
+              2324
+            ],
+            "fixed_stack": [
+              115,
+              362,
+              806,
+              883,
+              1017,
+              1211,
+              1861,
+              1927,
+              1972,
+              2103,
+              2336
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/machine.rs",
+          "symbol": "with_cluster_shape",
+          "lines": {
+            "main": [
+              2607
+            ],
+            "fixed_stack": [
+              2620
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/fills.rs",
+          "symbol": "apply_fill",
+          "lines": {
+            "main": [
+              68
+            ],
+            "fixed_stack": [
+              68
+            ]
+          }
+        }
+      ],
+      "timing": "Before first execution step; fill reruns create alternate initial concrete representatives of undefined state.",
+      "destinations": [
+        "shared reserved prefix",
+        "unwritten shared bytes",
+        "unwritten/unallocated TMEM words"
+      ],
+      "payload": "Driver shared metadata prefix and alternate fill bits.",
+      "normalized_effects": {
+        "numeric_words": "Initialization establishes initial interpretation; undefined-fill changes must not be represented as real defined writes.",
+        "half_origins": "Do not create input provenance merely because fill bits match an input byte.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Fill does not stamp shared write epochs or set TMEM init1.",
+        "definedness": "Fill changes representative bits while preserving undefined/unallocated status.",
+        "race_shadow": "Preserve access_x race checking, write epoch/read clearing, aliases, release/acquire and access-footprint hooks outside the value/history kernel."
+      },
+      "main_to_fixed_stack": "No family-specific algorithm change in the audited stack; generic access changes apply where used.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "Storage.ofPages / initializeSpan / Transfers.zeroPayload",
+        "preservation_theorem": "Storage.ofPages_getCell / initializeSpan_preserves_representation / Transfers.zeroPayload_sound"
+      }
+    },
+    {
+      "id": "counterfactual_analysis_mutations",
+      "operations": [
+        "Machine::value_insensitive_step",
+        "wellsync::set_mem_bytes",
+        "coverage launch-init mutation"
+      ],
+      "source_refs": [
+        {
+          "path": "crates/sim/src/exec.rs",
+          "symbol": "vip_try",
+          "lines": {
+            "main": [
+              3030
+            ],
+            "fixed_stack": [
+              3076
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/wellsync.rs",
+          "symbol": "set_mem_bytes",
+          "lines": {
+            "main": [
+              1932
+            ],
+            "fixed_stack": [
+              1932
+            ]
+          }
+        },
+        {
+          "path": "crates/sim/src/coverage.rs",
+          "symbol": "apply",
+          "lines": {
+            "main": [],
+            "fixed_stack": [
+              1848
+            ]
+          }
+        }
+      ],
+      "timing": "Cloned/counterfactual analysis machines or launch setup, not ordinary execution writes.",
+      "destinations": [
+        "cloned global/shared bytes",
+        "launch allocation initial bytes"
+      ],
+      "payload": "Analysis-selected byte substitutions.",
+      "normalized_effects": {
+        "numeric_words": "Must be bounded separately from production instruction theorem; value-insensitivity clone explicitly disables numerics.",
+        "half_origins": "Set or clear exactly written byte origins; origin N denotes rounded BF16/F16 encoded bytes, not the unrounded node value.",
+        "taint": "Assign each written byte the dependency of that byte including data, guard, address and prior memory where the result uses it; preserve other bytes.",
+        "written": "Global f32 fallback is blocked for every intersecting aligned word; global half fallback is blocked for every actually written byte, even if no history survives.",
+        "definedness": "Assign payload definedness on exactly written bytes; preserve disjoint state. An unknown numeric history does not imply undefined data.",
+        "race_shadow": "Direct byte mutation deliberately bypasses normal access checks for an analysis hypothesis."
+      },
+      "main_to_fixed_stack": "These remain direct writes in both versions. Include their source hashes for drift detection, while treating them as separate initialization/analysis transitions.",
+      "production_refinement_status": "Lean effect implemented and proved; production dispatch/arithmetic equivalence is not claimed by this inventory",
+      "lean_implementation": {
+        "entry_point": "MemoryWrite.write",
+        "preservation_theorem": "MemoryWrite.write_preserves_representation"
+      }
+    }
+  ],
+  "known_integration_obligations": [
+    "Arithmetic producers and input-dependent control/address analysis must establish their payload and stability contracts; this module verifies centralized memory effects.",
+    "The freshly extracted Rust kernel has a source-refinement proof. Existing distributed Machine dispatch is checked through the recorded production replay cases, not a universal Rust-to-Lean refinement theorem.",
+    "Generic fixed-stack access still has distributed numeric-history updates. The Lean central module invalidates every intersecting history; replay exposed the reachable wide-atomic hole, fixed by the wide-atomic numeric-history invalidation change.",
+    "Race/synchronization/alias hooks and abstract mbarrier transitions remain outside byte/history preservation.",
+    "Production numeric history starts are aligned; the standalone kernel conservatively supports arbitrary starts. A separate malformed-prestate replay records that boundary."
+  ],
+  "production_span_fix": {
+    "revision": "39df7372e3e16306b71e6daf5be5136e42e18967",
+    "reason": "Successful wide atomics must invalidate every overlapping numeric word; failed CAS retains numeric-only single-start effects."
+  }
+}

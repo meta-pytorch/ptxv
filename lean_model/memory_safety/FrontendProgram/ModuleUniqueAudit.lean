@@ -1,0 +1,67 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
+import FrontendProgram.ModuleUnique
+
+#print axioms PtxFrontendProgram.number_at_unique
+#print axioms PtxFrontendProgram.source_token_model_injective
+#print axioms PtxFrontendProgram.source_tokens_lexed_unique
+#print axioms PtxFrontendProgram.code_syntax_label_identifiers
+#print axioms PtxFrontendProgram.module_scope_identifiers
+#print axioms PtxFrontendProgram.spelling_first
+#print axioms PtxFrontendProgram.identifier_false_first
+#print axioms PtxFrontendProgram.opcode_names_first
+#print axioms PtxFrontendProgram.opcode_at_first
+#print axioms PtxFrontendProgram.operand_syntax_extent
+#print axioms PtxFrontendProgram.address_syntax_extent
+#print axioms PtxFrontendProgram.instruction_extent_opcode
+#print axioms PtxFrontendProgram.two_operands_extent
+#print axioms PtxFrontendProgram.address_operand_extent
+#print axioms PtxFrontendProgram.instruction_body_extent
+#print axioms PtxFrontendProgram.token_at_first_byte
+#print axioms PtxFrontendProgram.token_selected_first
+#print axioms PtxFrontendProgram.opcode_at_not_text
+#print axioms PtxFrontendProgram.identifier_at_not_text
+#print axioms PtxFrontendProgram.register_at_not_text
+#print axioms PtxFrontendProgram.module_label_first
+#print axioms PtxFrontendProgram.label_reference_not_text
+#print axioms PtxFrontendProgram.guarded_body_extent
+#print axioms PtxFrontendProgram.instruction_syntax_extent
+#print axioms PtxFrontendProgram.token_at_bytes_distinct
+#print axioms PtxFrontendProgram.instruction_start_not_text
+#print axioms PtxFrontendProgram.address_syntax_open
+#print axioms PtxFrontendProgram.instruction_head_not_label
+#print axioms PtxFrontendProgram.code_inventory_unique
+#print axioms PtxFrontendProgram.code_syntax_unique
+#print axioms PtxFrontendProgram.scope_fields_unique
+#print axioms PtxFrontendProgram.program_fields_unique
+#print axioms PtxFrontendProgram.module_meaning_unique
+#print axioms PtxFrontendProgram.parsed_module_unique
+#print axioms PtxFrontendProgram.initializer_syntax_unique
+#print axioms PtxFrontendProgram.global_element_type_unique
+#print axioms PtxFrontendProgram.global_syntax_unique
+#print axioms PtxFrontendProgram.entry_syntax_unique
+#print axioms PtxFrontendProgram.globals_before_entry_unique
+#print axioms PtxFrontendProgram.register_type_meaning_unique
+#print axioms PtxFrontendProgram.declaration_syntax_shape_unique
+#print axioms PtxFrontendProgram.instruction_body_starts_opcode
+#print axioms PtxFrontendProgram.instruction_syntax_not_reg
+#print axioms PtxFrontendProgram.code_syntax_not_reg
+#print axioms PtxFrontendProgram.declaration_syntax_starts_reg
+#print axioms PtxFrontendProgram.declarations_syntax_shapes_unique
+#print axioms PtxFrontendProgram.declaration_shapes_bank_size
+#print axioms PtxFrontendProgram.declaration_shapes_take
+#print axioms PtxFrontendProgram.declaration_shapes_selected
+#print axioms PtxFrontendProgram.declaration_shape_first_unique
+#print axioms PtxFrontendProgram.declaration_layout_shapes_unique
+#print axioms PtxFrontendProgram.declarations_then_code_unique
+#print axioms PtxFrontendProgram.register_reference_full_unique
+#print axioms PtxFrontendProgram.module_register_reference_full_unique
+#print axioms PtxFrontendProgram.module_register_at_full_unique
+#print axioms PtxFrontendProgram.instruction_body_opcode
+#print axioms PtxFrontendProgram.module_instruction_body_unique
+#print axioms PtxFrontendProgram.module_instruction_syntax_unique

@@ -1,0 +1,50 @@
+{
+  "packages": {
+    "Cli": {
+      "files": 8,
+      "sha256": "47bb6ed7caf54f584f65422ac552f3f4cba027cf6c8ab7988dd39b389b8c22c1"
+    },
+    "LeanSearchClient": {
+      "files": 31,
+      "sha256": "587ebff678de4a66b0c91f65faf26c54b77aca2642033ac5ded2d75a2cbebd7c"
+    },
+    "Qq": {
+      "files": 101,
+      "sha256": "bdd82347985031a6605cc4deff0751b24366b9b3eea67b617b305b8eb9833265"
+    },
+    "aeneas": {
+      "files": 1635,
+      "sha256": "d48b401eb91a1c710047b5e39350c3f839d0bb3582ccc480c60b778f0e264727"
+    },
+    "aesop": {
+      "files": 913,
+      "sha256": "9de92ec6b50bb588b5a08fb15acd16bc2131c5f02a997847a9c9470870f3c292"
+    },
+    "batteries": {
+      "files": 1249,
+      "sha256": "6594328c4150e9dea4b6e2b85e93d6362ab11a7f5b4dffc1ed21bc1dfe4ebee6"
+    },
+    "floatlib": {
+      "files": 3601,
+      "sha256": "090168603de03fb59a20ef5de2fdf7dbd4e53a8981835550ce6f6402a589a7d7"
+    },
+    "importGraph": {
+      "files": 264,
+      "sha256": "522523e646e2423e86abe181347f4c78848457248462310ba8676fe53d988add"
+    },
+    "mathlib": {
+      "files": 52437,
+      "sha256": "5414ce83207992ab4c8b61bf70fb8343cab742d32e8837f50bdb71048d5a8b09"
+    },
+    "plausible": {
+      "files": 96,
+      "sha256": "281e9a1e53b460339eebfb1e80ab578ce3e2939fa801b2d4302b2ff72a201247"
+    },
+    "proofwidgets": {
+      "files": 113,
+      "sha256": "1c47e155a3d11b4c033af7cb7ec0075f81eba2ddabe696cfc172188b19a8c681"
+    }
+  },
+  "selection": "lean-package-sources-and-compiled-environments-v1",
+  "version": 1
+}

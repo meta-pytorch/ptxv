@@ -48,6 +48,8 @@ use serde::Serialize;
 
 use crate::num::NumState;
 
+pub type ExecutionMachine<L = Machine> = crate::machine_memory_safety::ExecutionMachine<L>;
+
 pub const PARAM_BASE: u64 = 0x7e00_0000_0000;
 pub const GLOBAL_BASE: u64 = 0x7000_0000_0000;
 

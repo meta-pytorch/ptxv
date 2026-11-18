@@ -43,6 +43,7 @@ from urllib.parse import urlparse
 
 from . import _binary
 from ._jobs import Job, JobSpec, LocalBackend, result_from_cache, store_cache
+from ._strict_inputs import STRICT_MEMORY_CONTRACT
 from ._util import cache_dir, job_key, tree_hash
 
 VERSION = 1
@@ -116,25 +117,41 @@ class Daemon:
         tmp.rename(dst)
 
     def submit(self, body: dict) -> tuple[str, bool]:
-        kind, shas, args = body["kind"], body["cases"], body.get("args", {})
+        kind, shas = body["kind"], body["cases"]
+        args = dict(body.get("args", {}))
+        backend = args.pop("backend", "local")
+        if backend not in ("local", "slurm"):
+            raise ValueError(f"unknown daemon backend {backend!r}")
+        args.pop("_daemon_backend", None)
         cases = [str(self.case_path(s)) for s in shas]
         for c in cases:
             if not Path(c).exists():
                 raise FileNotFoundError(f"case {Path(c).name} not uploaded")
-        backend = args.pop("backend", "local")
-        key = job_key(
-            kind,
-            {k: v for k, v in args.items() if k != "timeout"},
-            shas,
-            self.ptxv_hash,
-        )
         spec = JobSpec(kind, cases, args)
+        spec.own_strict_inputs()
+        if spec._input_snapshots:
+            for case, expected in zip(spec.cases, shas):
+                if tree_hash(case) != expected:
+                    raise ValueError(
+                        "strict memory case bytes differ from their uploaded content hash"
+                    )
+        strict = kind == "check" and bool(spec.args.get("strict_memory_safety"))
+        binary_hash = self.ptxv_hash
+        if strict and backend == "local":
+            self.local.prepare_spec(spec)
+            binary_hash = self.local.ptxv_hash_for(spec)
+        key_args = {k: v for k, v in spec.args.items() if k != "timeout"}
+        if backend == "slurm":
+            key_args["_daemon_backend"] = getattr(self.slurm, "cache_tag", "slurm")
+        cacheable = not (strict and backend == "slurm")
+        key = job_key(kind, key_args, shas, binary_hash) if cacheable else None
         job = Job(spec, key)
-        res = self.root / "results" / f"{key}.json"
+        res = self.root / "results" / f"{key}.json" if key else None
         with self.lock:
-            if job.id in self.jobs and not self.jobs[job.id].done():
+            if key and job.id in self.jobs and not self.jobs[job.id].done():
+                job.release_inputs()
                 return job.id, False  # the same job is running: share it
-            r = result_from_cache(res) if res.exists() else None
+            r = result_from_cache(res) if res is not None and res.exists() else None
             if r is not None:
                 job.cached = True
                 job.set_running_or_notify_cancel()
@@ -142,16 +159,21 @@ class Daemon:
                 self.jobs[job.id] = job
                 return job.id, True
             self.jobs[job.id] = job
-        if backend == "slurm":
-            if self.slurm is None:
-                raise ValueError("this daemon has no Slurm backend (--slurm-host)")
-            self.slurm.submit(spec, job)
-        else:
-            self.local.submit(spec, job)
+        try:
+            if backend == "slurm":
+                if self.slurm is None:
+                    raise ValueError("this daemon has no Slurm backend (--slurm-host)")
+                self.slurm.submit(spec, job)
+            else:
+                self.local.submit(spec, job)
+        except BaseException as error:
+            job.set_exception(error)
+            raise
 
         def save(f: Job) -> None:
             if (
-                not f.cancelled()
+                res is not None
+                and not f.cancelled()
                 and f.exception() is None
                 and not f.result().get("dry_run")
             ):
@@ -220,6 +242,7 @@ def make_handler(d: Daemon):  # noqa: C901 (HTTP route table closed over the dae
                         {
                             "version": VERSION,
                             "ptxv_hash": d.ptxv_hash,
+                            "strict_memory_safety_contract": STRICT_MEMORY_CONTRACT,
                             "workers": d.local.workers,
                             "mem_cap": d.local.mem_cap,
                             "running": d.local.pids(),
@@ -271,8 +294,15 @@ def make_handler(d: Daemon):  # noqa: C901 (HTTP route table closed over the dae
             p = [x for x in self.path.split("/") if x]
             try:
                 if p == ["v1", "jobs"]:
-                    jid, cached = d.submit(json.loads(self._body()))
-                    self._json(200, {"id": jid, "cached": cached})
+                    body = json.loads(self._body())
+                    jid, cached = d.submit(body)
+                    reply = {"id": jid, "cached": cached}
+                    args = body.get("args", {})
+                    if body.get("kind") == "check" and (
+                        args.get("strict") or args.get("strict_memory_safety")
+                    ):
+                        reply["strict_memory_safety_contract"] = STRICT_MEMORY_CONTRACT
+                    self._json(200, reply)
                 else:
                     self._json(404, {"error": "not found"})
             except Exception as e:  # noqa: BLE001
@@ -335,9 +365,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument(
         "--threads", type=int, help="PTXV_THREADS per job (default: cores / workers)"
     )
-    ap.add_argument(
-        "--slurm-host", help="ssh host (login node) for the Slurm backend"
-    )
+    ap.add_argument("--slurm-host", help="ssh host (login node) for the Slurm backend")
     ap.add_argument(
         "--slurm-root",
         help="shared directory on the cluster (default: $PTXV_SLURM_ROOT); "
@@ -415,6 +443,10 @@ class DaemonBackend:
     def ptxv_hash(self) -> str:
         return self.info()["ptxv_hash"]
 
+    def cacheable_for(self, spec: JobSpec) -> bool:
+        # The server binds its current executable before using its own local cache.
+        return not (spec.kind == "check" and spec.args.get("strict_memory_safety"))
+
     def upload(self, case: str) -> str:
         sha = tree_hash(case)
         if self._head(sha) != 200:
@@ -430,42 +462,71 @@ class DaemonBackend:
             return e.code
 
     def submit(self, spec: JobSpec, job: Job) -> Job:
+        try:
+            return self._submit(spec, job)
+        except BaseException:
+            job.release_inputs()
+            raise
+
+    def _submit(self, spec: JobSpec, job: Job) -> Job:
+        spec.own_strict_inputs()
+        job.use_spec(spec)
+        if (
+            spec._input_snapshots
+            and self.info().get("strict_memory_safety_contract", 0)
+            < STRICT_MEMORY_CONTRACT
+        ):
+            raise ValueError(
+                f"strict memory checks require an upgraded daemon with execution snapshot contract {STRICT_MEMORY_CONTRACT}"
+            )
         shas = [self.upload(c) for c in spec.cases]
         r = self._req(
             "POST",
             "/v1/jobs",
             json.dumps({"kind": spec.kind, "cases": shas, "args": spec.args}).encode(),
         )
+        if (
+            spec._input_snapshots
+            and r.get("strict_memory_safety_contract") != STRICT_MEMORY_CONTRACT
+        ):
+            raise ValueError(
+                f"daemon did not confirm strict execution snapshot contract {STRICT_MEMORY_CONTRACT}"
+            )
         jid = r["id"]
         job.id = jid
         job._kill = lambda: self._req("DELETE", f"/v1/jobs/{jid}")
 
         def follow() -> None:
-            if not job.set_running_or_notify_cancel():
-                return
+            spec.retain_inputs()
             try:
-                req = urllib.request.Request(f"{self.base}/v1/jobs/{jid}/events")
-                with urllib.request.urlopen(req, timeout=None) as f:
-                    for line in f:
-                        ev = json.loads(line)
-                        if "progress" in ev:
-                            job._line(ev["progress"])
-                st = self._req("GET", f"/v1/jobs/{jid}")
-                if st["state"] == "done":
-                    job.cached = st.get("cached", False)
-                    job.set_result(st["result"])
-                else:
-                    job.set_exception(
-                        RuntimeError(
-                            f"ptxvd job {jid}: {st['state']}: {st.get('error', '')}"
+                if not job.set_running_or_notify_cancel():
+                    job.release_inputs()
+                    return
+                try:
+                    req = urllib.request.Request(f"{self.base}/v1/jobs/{jid}/events")
+                    with urllib.request.urlopen(req, timeout=None) as f:
+                        for line in f:
+                            ev = json.loads(line)
+                            if "progress" in ev:
+                                job._line(ev["progress"])
+                    st = self._req("GET", f"/v1/jobs/{jid}")
+                    if st["state"] == "done":
+                        job.cached = st.get("cached", False)
+                        job.set_result(st["result"])
+                    else:
+                        job.set_exception(
+                            RuntimeError(
+                                f"ptxvd job {jid}: {st['state']}: {st.get('error', '')}"
+                            )
                         )
-                    )
-            except Exception as e:  # noqa: BLE001
-                job.set_exception(e)
-            except BaseException as e:
-                # KeyboardInterrupt / SystemExit: still fail the job (waiters never hang), then propagate.
-                job.set_exception(e)
-                raise
+                except Exception as e:  # noqa: BLE001
+                    job.set_exception(e)
+                except BaseException as e:
+                    # KeyboardInterrupt / SystemExit: still fail the job (waiters never hang), then propagate.
+                    job.set_exception(e)
+                    raise
+            finally:
+                spec.release_inputs()
 
         threading.Thread(target=follow, daemon=True).start()
         return job

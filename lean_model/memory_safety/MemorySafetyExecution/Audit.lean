@@ -1,0 +1,32 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
+import MemorySafetyExecution.AccessSafety
+import MemorySafetyExecution.SourceSoundness
+import MemorySafetyExecution.SourceUniversal
+import MemorySafetyExecution.Native.InstructionAccess
+
+#print axioms PtxFrontendProgram.source_parse_source
+#print axioms PtxFrontendProgram.source_build_construction
+#print axioms MemorySafetyExecution.Native.source_execute_instruction_access_complete
+#print axioms MemorySafetyExecution.Native.source_advance_native_inputs
+#print axioms MemorySafetyExecution.Native.source_advance_native_placements
+#print axioms MemorySafetyExecution.Native.source_input_verify_all_instances
+#print axioms MemorySafetyExecution.Source.source_check_is_safe_full_memory_safety
+
+#print axioms MemorySafetyExecution.Native.Independent.source_execute_independent
+#print axioms MemorySafetyExecution.Native.Independent.source_input_verify_all_independent_instances
+
+#print axioms MemorySafetyExecution.Source.source_check_is_safe_instruction_spans
+
+#print axioms MemorySafetyExecution.Source.source_report_status_name_safe_iff
+#print axioms MemorySafetyExecution.Source.source_check_reports_safe_full_memory_safety
+
+#print axioms PtxFrontendProgram.module_meaning_unique
+#print axioms PtxFrontendProgram.construction_memory_instance
+#print axioms MemorySafetyExecution.Source.source_check_reports_safe_every_source_program
+#print axioms MemorySafetyExecution.Source.source_check_reports_safe_every_source_execution

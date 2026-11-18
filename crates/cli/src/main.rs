@@ -155,6 +155,15 @@ enum Cmd {
         /// explore when it does not hold, printing why. With --slices: per cluster.
         #[arg(long)]
         certify: bool,
+        /// Enable all strict checks: memory-safety certification and strict NaN / Inf
+        /// output checking. Unsupported semantics and search limits remain inconclusive.
+        #[arg(long, conflicts_with_all = ["coverage_only", "residency", "tmem_cotenant"])]
+        strict: bool,
+        /// Require a memory-safety proof for supported raw PTX and its fixed launch, across
+        /// all payload bytes, legal allocation placements and actor schedules. Unsupported
+        /// semantics and search limits are inconclusive. Reported separately from clean.
+        #[arg(long, conflicts_with_all = ["coverage_only", "residency", "tmem_cotenant"])]
+        strict_memory_safety: bool,
         /// With --certify: representative CTAs (E-CTA-REP): certify a few CTAs and replay the
         /// position-dependent values of the others; the launch is checked as before when the
         /// reduction refuses (also PTXV_REP=1).
@@ -1279,6 +1288,17 @@ fn load_with(
     dir: &Path,
     delays: &[String],
 ) -> Result<(Kernel, PathBuf)> {
+    let (kernel, cubin, _) = load_with_source(case, variant, front, dir, delays)?;
+    Ok((kernel, cubin))
+}
+
+fn load_with_source(
+    case: &Case,
+    variant: &str,
+    front: &str,
+    dir: &Path,
+    delays: &[String],
+) -> Result<(Kernel, PathBuf, Option<String>)> {
     if let Some(cubin) = &case.m.cubin {
         // Binary-only case: the cubin as captured (plus any control-bit patch).
         if front != "sass" {
@@ -1338,7 +1358,7 @@ fn load_with(
         } else {
             Kernel::concat(ks)
         };
-        return Ok((k, c));
+        return Ok((k, c, None));
     }
     let (ptx, cubin) = match ptx_cubin(case, variant, dir, delays) {
         Ok(x) => x,
@@ -1394,7 +1414,7 @@ fn load_with(
     if let Some(n) = rebuild_note(case, variant) {
         k.static_image.get_or_insert(n);
     }
-    Ok((k, cubin))
+    Ok((k, cubin, Some(ptx)))
 }
 
 fn machine(case: &Case, k: Kernel) -> Result<Machine> {
@@ -1708,6 +1728,8 @@ struct CheckRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     ptx_rebuild: Option<PtxRebuild>,
     verdict: Verdict,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict_memory_safety: Option<ptxv_sim::strict_memory_source::Report>,
     /// The second level (ptxv_sim::twolevel): the hardware-model check that classified the
     /// verdict's race / stale findings (each finding's `gb300`). None: not needed or disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1742,6 +1764,7 @@ struct CheckRow {
     exhaustive_concolic: Option<ptxv_sim::cert::Report>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_verdict(
     variant: &str,
     front: &str,
@@ -1750,11 +1773,12 @@ fn print_verdict(
     refuted: &[String],
     gb: Option<&ptxv_sim::twolevel::Gb300Check>,
     image: Option<&str>,
+    strict_memory: Option<&ptxv_sim::strict_memory_source::Report>,
 ) {
     let got = v.classes();
-    let pass = v.meets(expect);
+    let pass = v.meets(expect) && strict_memory.is_none_or(|report| report.is_safe());
     println!(
-        "{} {variant:<6} {front:<4} {:<26} states={:<7} terminal={:<5} outputs={} {}{:.2}s{}",
+        "{} {variant:<6} {front:<4} {:<26} states={:<7} terminal={:<5} outputs={} {}{:.2}s{}{}",
         if pass { "PASS" } else { "FAIL" },
         format!("[{}]", got.join(",")),
         v.states,
@@ -1764,7 +1788,10 @@ fn print_verdict(
         v.seconds,
         image
             .map(|n| format!("  NOT A GB300 VERDICT: {n}"))
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        strict_memory
+            .map(|report| format!(" strict-memory={}", report.status_name()))
+            .unwrap_or_default(),
     );
     println!("    assumes: {}", v.assumptions.join(" "));
     for a in &v.assumptions {
@@ -1939,6 +1966,7 @@ fn cmd_coresidency(
                         &[],
                         None,
                         None,
+                        None,
                     );
                 }
             }
@@ -1959,6 +1987,7 @@ fn cmd_check(
     groups: &Option<String>,
     gb300_off: Option<&'static str>,
     nonfinite: Option<bool>,
+    strict_memory_safety: bool,
 ) -> Result<Vec<CheckRow>> {
     let (profile_name, profile) = checked_hw_profile()?;
     let gb300 = gb300_off.is_none();
@@ -1985,9 +2014,84 @@ fn cmd_check(
         let mut level2: Option<(Verdict, Vec<HwUsed>, f64, Option<f64>)> = None;
         for f in fronts(case, front)? {
             let expect = case.variant(&v)?.expect_for(f);
-            let (k, _) = load(case, &v, f, &dir)?;
+            let (k, _, source) = load_with_source(case, &v, f, &dir, &[])?;
             let vcase = case.for_variant(&v)?;
             let case = &vcase;
+            let strict_memory = strict_memory_safety.then(|| match (f, source.as_deref()) {
+                ("ptx", Some(source)) => ptxv_sim::strict_memory_source::check(
+                    source.as_bytes(),
+                    case.m.entry.as_bytes(),
+                    &case.m,
+                    max_states,
+                    ptxv_sim::strict_memory_source::native_candidate,
+                ),
+                _ => ptxv_sim::strict_memory_source::Report::unsupported_front(max_states),
+            });
+            if let Some(report) = &strict_memory {
+                println!(
+                    "    strict memory safety: {}",
+                    serde_json::to_string(report)?
+                );
+            }
+            if strict_memory
+                .as_ref()
+                .is_some_and(|report| !report.is_safe())
+            {
+                let verdict = Verdict {
+                    states: 0,
+                    transitions: 0,
+                    complete: false,
+                    terminal_states: 0,
+                    distinct_outputs: 0,
+                    findings: vec![],
+                    assumptions: vec![],
+                    notes: vec![
+                        "Legacy exploration was not run because strict memory safety did not establish safety."
+                            .into(),
+                    ],
+                    seconds: 0.0,
+                    outputs: vec![],
+                };
+                print_verdict(
+                    &v,
+                    f,
+                    &verdict,
+                    &expect,
+                    &[],
+                    None,
+                    k.static_image.as_deref(),
+                    strict_memory.as_ref(),
+                );
+                rows.push(CheckRow {
+                    variant: v.clone(),
+                    front: f.into(),
+                    expect_report: vec![],
+                    gpu_compare: vec![],
+                    got: verdict.classes(),
+                    pass: false,
+                    expect,
+                    refuted_opt_in: vec![],
+                    executed_image: k.static_image.is_none(),
+                    image_note: k.static_image.clone(),
+                    ptx_rebuild: PTX_REBUILD
+                        .lock()
+                        .unwrap()
+                        .get(&rebuild_key(case, v.as_str()))
+                        .cloned(),
+                    verdict,
+                    strict_memory_safety: strict_memory,
+                    gb300: None,
+                    two_level: None,
+                    two_level_skipped: None,
+                    nonfinite: None,
+                    input_coverage: None,
+                    mutated_inputs: vec![],
+                    mutation_refusals: vec![],
+                    mutation_budget: None,
+                    exhaustive_concolic: None,
+                });
+                continue;
+            }
             let m = machine(case, k.clone())?;
             let refuted = m.launch.refuted_opt_in.clone();
             if COVERAGE_ONLY.get().copied().unwrap_or(false) {
@@ -2036,6 +2140,7 @@ fn cmd_check(
                         seconds: cov.seconds,
                         outputs: vec![],
                     },
+                    strict_memory_safety: strict_memory,
                     gb300: None,
                     two_level: None,
                     two_level_skipped: None,
@@ -2407,6 +2512,7 @@ fn cmd_check(
                 &refuted,
                 gbc.as_ref(),
                 k.static_image.as_deref(),
+                strict_memory.as_ref(),
             );
             // The two-level verdict: anything undefined under the strict model -> the SASS
             // front under the hardware profile. Both levels are reported. --no-gb300 /
@@ -2992,7 +3098,8 @@ fn cmd_check(
                 front: f.into(),
                 expect_report,
                 gpu_compare,
-                pass: verdict.meets(&expect),
+                pass: verdict.meets(&expect)
+                    && strict_memory.as_ref().is_none_or(|report| report.is_safe()),
                 expect,
                 got,
                 refuted_opt_in: refuted,
@@ -3004,6 +3111,7 @@ fn cmd_check(
                     .get(&rebuild_key(case, v.as_str()))
                     .cloned(),
                 verdict,
+                strict_memory_safety: strict_memory,
                 gb300: gbc,
                 two_level,
                 two_level_skipped,
@@ -3886,6 +3994,7 @@ fn cmd_suite(case: &Case, runs: usize, out: &Option<PathBuf>) -> Result<()> {
         &None,
         gb300_off(false),
         None,
+        false,
     )?;
     println!("\n-- numerics (good variant) --");
     let (nums, expected) = cmd_num(case, "good", out)?;
@@ -4149,6 +4258,8 @@ fn run() -> Result<()> {
             out,
             slices,
             certify,
+            strict,
+            strict_memory_safety,
             rep,
             groups,
             json,
@@ -4171,6 +4282,8 @@ fn run() -> Result<()> {
             mutate_budget_states,
             time_budget: _,
         } => {
+            let strict_memory_safety = strict || strict_memory_safety;
+            let nonfinite_strict = strict || nonfinite_strict;
             // One wall-clock budget for the whole check, set before anything runs (one past
             // what an Instant holds is none).
             if let Some(s) = budget {
@@ -4243,6 +4356,7 @@ fn run() -> Result<()> {
                 &groups,
                 gb300_off(no_gb300),
                 (nonfinite || nonfinite_strict).then_some(nonfinite_strict),
+                strict_memory_safety,
             )?;
             let pass = rows.iter().all(|r| r.pass);
             if let Some(j) = j {
@@ -4540,7 +4654,7 @@ fn run() -> Result<()> {
         } => {
             let c = Case::load(&case)?;
             keep_run_dirs(); // calib.json and the measured operands are the result
-            // A byte-operand probe (probes/mma_f8) calibrates the narrow kinds.
+                             // A byte-operand probe (probes/mma_f8) calibrates the narrow kinds.
             if c.buffer("A")?.dtype == "u8" {
                 calib_lp::run(&c, &out, only.as_deref())?
             } else {

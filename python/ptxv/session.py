@@ -95,6 +95,9 @@ class Session:
         return _binary.binary_hash(_binary.find())
 
     def key(self, spec: JobSpec) -> str:
+        prepare = getattr(self.backend, "prepare_spec", None)
+        if callable(prepare):
+            prepare(spec)
         hashes = [
             tree_hash(c) if Path(c).is_dir() else tree_hash(Path(c).parent)
             for c in spec.cases
@@ -103,33 +106,47 @@ class Session:
         tag = getattr(self.backend, "cache_tag", "")
         if tag:
             args["_backend"] = tag
-        return job_key(spec.kind, args, hashes, self.ptxv_hash())
+        hash_for = getattr(self.backend, "ptxv_hash_for", None)
+        binary_hash = hash_for(spec) if callable(hash_for) else self.ptxv_hash()
+        return job_key(spec.kind, args, hashes, binary_hash)
 
     def submit(self, kind: str, cases: Iterable[CaseLike], **args: Any) -> Job:
         """Start a job; returns a `Job` (a `concurrent.futures.Future` of the JSON result)."""
         spec = JobSpec(kind, [str(case_dir(c)) for c in cases], args)
-        cacheable = self.cache and getattr(self.backend, "cacheable", True)
-        key = self.key(spec) if cacheable else None
-        job = Job(spec, key)
-        path = cache_dir("results") / f"{key}.json" if key else None
-        if path is not None and path.exists():
-            r = result_from_cache(path)
-            if r is not None:
-                job.cached = True
-                job.set_running_or_notify_cancel()
-                job.set_result(r)
-                return job
-        self.backend.submit(spec, job)
-        if path is not None:
+        spec.retain_inputs()
+        try:
+            prepare = getattr(self.backend, "prepare_spec", None)
+            if callable(prepare):
+                prepare(spec)
+            cacheable_for = getattr(self.backend, "cacheable_for", None)
+            cacheable = (
+                self.cache
+                and getattr(self.backend, "cacheable", True)
+                and (cacheable_for(spec) if callable(cacheable_for) else True)
+            )
+            key = self.key(spec) if cacheable else None
+            job = Job(spec, key)
+            path = cache_dir("results") / f"{key}.json" if key else None
+            if path is not None and path.exists():
+                r = result_from_cache(path)
+                if r is not None:
+                    job.cached = True
+                    job.set_running_or_notify_cancel()
+                    job.set_result(r)
+                    return job
+            self.backend.submit(spec, job)
+            if path is not None:
 
-            def save(f: Job) -> None:
-                if not f.cancelled() and f.exception() is None:
-                    r = f.result()
-                    if not r.get("dry_run"):
-                        store_cache(path, r)
+                def save(f: Job) -> None:
+                    if not f.cancelled() and f.exception() is None:
+                        r = f.result()
+                        if not r.get("dry_run"):
+                            store_cache(path, r)
 
-            job.add_done_callback(save)
-        return job
+                job.add_done_callback(save)
+            return job
+        finally:
+            spec.release_inputs()
 
     # -- typed front ends -------------------------------------------------------------
     def check(self, case: CaseLike, *, wait: bool = True, **args: Any):
@@ -137,9 +154,12 @@ class Session:
         from .results import Verdict
 
         job = self.submit("check", [case], **args)
-        return (
-            Verdict.from_json(job.result()) if wait else _mapped(job, Verdict.from_json)
-        )
+        requested = bool(args.get("strict") or args.get("strict_memory_safety"))
+
+        def convert(doc: dict) -> Verdict:
+            return Verdict.from_json(doc, strict_memory_safety_requested=requested)
+
+        return convert(job.result()) if wait else _mapped(job, convert)
 
     def compare(self, ref: CaseLike, cand: CaseLike, *, wait: bool = True, **args: Any):
         """Equivalence of two cases (`ptxv compare`): an `Equivalence`, or a Job."""
@@ -163,6 +183,9 @@ class Session:
 
 class _Mapped(Job):
     """A Job whose result is converted (JSON -> result object) when it completes."""
+
+    def __init__(self, spec: JobSpec, key: str | None = None) -> None:
+        super().__init__(spec, key, _own_inputs=False)
 
 
 def _mapped(job: Job, fn) -> Job:

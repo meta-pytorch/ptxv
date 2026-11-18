@@ -1,0 +1,149 @@
+/-
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the BSD-style license found in the
+LICENSE file in the root directory of this source tree.
+-/
+
+import MemoryWrite.MachineRegistersDefinedness
+import MemoryWrite.MachineRegistersVirtualMap
+import MemoryWrite.MachineRegistersFill
+import MemoryWrite.MachineRegistersPoison
+import MemoryWrite.MachineRegisters
+import MemoryWrite.MachineRegistersWords
+import MemoryWrite.MachineRegistersCoupling
+import MemoryWrite.MachineRegistersUniform
+import MemoryWrite.MachineRegistersVirtual
+import MemoryWrite.MachineControl
+import MemoryWrite.MachineWarp
+import MemoryWrite.Module
+import MemoryWrite.Adapter
+import MemoryWrite.Producers
+import MemoryWrite.Consumers
+import MemoryWrite.WellFormed
+import MemoryWrite.AsyncSafety
+import MemoryWrite.Footprint
+import MemoryWrite.Commutation
+import MemoryWrite.RustRefinement
+import MemoryWrite.RustCapture
+import MemoryWrite.RustEngine
+import MemoryWrite.RustCopies
+import MemoryWrite.RustNumeric
+import MemoryWrite.RustAtomic
+import MemoryWrite.AtomicInteger
+import MemoryWrite.AtomicGlobalObserver
+import MemoryWrite.AtomicRequestLog
+import MemoryWrite.AtomicExecution
+import MemoryWrite.AtomicRefinement
+import MemoryWrite.AtomicCompareExchange
+import MemoryWrite.AtomicBytes
+import MemoryWrite.AtomicComponentTrace
+import MemoryWrite.AtomicComponentPlan
+import MemoryWrite.RustAtomicComponentTrace
+import MemoryWrite.RustAtomicComponentPlan
+import MemoryWrite.AtomicComponentOrder
+import MemoryWrite.AtomicHistorySafety
+import MemoryWrite.AsyncHistorySafety
+import MemoryWrite.CheckedControlSafety
+import MemoryWrite.WriteConsumerSafety
+import MemoryWrite.MarkerConsumerSafety
+
+import MemoryWrite.SymbolicStateRefinement
+import MemoryWrite.ExecutionReductionRefinement
+import MemoryWrite.StoreWordRefinement
+
+import MemoryWrite.BarrierReductionRefinement
+
+import MemoryWrite.DefinednessRefinement
+
+import MemoryWrite.AnalysisCache
+import MemoryWrite.AnalysisCacheRefinement
+import MemoryWrite.AnalysisCacheFootprint
+import MemoryWrite.AnalysisCacheReplay
+import MemoryWrite.AnalysisCacheMayWrite
+
+import MemoryWrite.BarrierTransition
+import MemoryWrite.BarrierPublication
+import MemoryWrite.BarrierTransitionRefinement
+import MemoryWrite.BarrierStaging
+import MemoryWrite.BarrierClockMove
+import MemoryWrite.BarrierPhaseKey
+import MemoryWrite.BarrierPolling
+
+import MemoryWrite.MetadataPlanRefinement
+
+import MemoryWrite.RustClockPublication
+
+import MemoryWrite.RustBarrierWaitPolicy
+
+import MemoryWrite.AnalysisCacheSoundness
+
+import MemoryWrite.RegisterIndexPath
+
+import MemoryWrite.MayWriteAnalysisTotal
+import MemoryWrite.MayWriteQueryTotal
+
+import MemoryWrite.BarrierReachPaths
+
+import MemoryWrite.RegisterIndexRowTotal
+
+import MemoryWrite.RegisterGraphPublication
+
+import MemoryWrite.RawSourceRows
+
+import MemoryWrite.GraphSource
+
+import MemoryWrite.RustFootprint
+import MemoryWrite.AtomicConfluence
+import MemoryWrite.RustAtomicConfluence
+import MemoryWrite.RustAtomicPacked
+import MemoryWrite.AtomicLaneCoverage
+import MemoryWrite.RustAtomicScalar
+import MemoryWrite.RustAtomicScalarFloat
+
+import MemoryWrite.ArrivalWalkDependencies
+
+import MemoryWrite.SparseClock
+import MemoryWrite.RustSparseClock
+import MemoryWrite.RustClockMerge
+import MemoryWrite.RustClockJoin
+import MemoryWrite.BarrierWaitPolicy
+import MemoryWrite.ClockTick
+import MemoryWrite.RustClockTick
+import MemoryWrite.ClockBulk
+import MemoryWrite.RustClockBulk
+import MemoryWrite.ClockMeet
+import MemoryWrite.RustClockMeet
+import MemoryWrite.ClockFilter
+import MemoryWrite.RustClockFilter
+import MemoryWrite.RustClockProducerHistory
+import MemoryWrite.RustClockProducerPublication
+import MemoryWrite.RustClockUpdates
+import MemoryWrite.RustClockReadRelease
+import MemoryWrite.RustAtomicLaneScan
+import MemoryWrite.RustAtomicReturningCoverage
+import MemoryWrite.RustAtomicLocalCoverage
+import MemoryWrite.RustAtomicRedCoverage
+import MemoryWrite.BarrierUnitArrival
+import MemoryWrite.BarrierBatchBudget
+import MemoryWrite.BarrierBatchWitness
+import MemoryWrite.ConvergenceBarrierFootprint
+import MemoryWrite.EffectsNamespaces
+import MemoryWrite.EffectsConstructors
+import MemoryWrite.EffectsComposition
+import MemoryWrite.EffectsFold
+import MemoryWrite.EffectsInvalidation
+import MemoryWrite.EffectsSticky
+
+import MemoryWrite.MachineRecorderModel
+import MemoryWrite.MachineRecorderRefinement
+import MemoryWrite.MachineRecorderFinish
+import MemoryWrite.MachineRecorderObservation
+import MemoryWrite.MachineFootprint
+import MemoryWrite.MachineFootprintMerge
+import MemoryWrite.MachineFootprintContexts
+import MemoryWrite.MachineActionModel
+import MemoryWrite.MachineActionBasic
+import MemoryWrite.MachineActionFinish
+import MemoryWrite.MachineActionMutations
+import MemoryWrite.MachineActionContracts

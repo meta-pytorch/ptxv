@@ -63,6 +63,18 @@ errdist answers with an analytic central-limit model (Tier 2) when its applicabi
 
 *errdist on two Triton softmax kernels over 64 f32 logits: `exp(x) / sum` and the max-subtracted `exp(x − max) / sum`. Each stem is the probability of an output error of k ulps (256 outputs per input). Near 0 both stay within a few ulps. Near 50 the naive kernel loses tens of ulps: Triton computes exp(x) as 2^(x·log2 e), and the f32 rounding of an exp2 argument near 72 is magnified in the result.*
 
+## Checked memory-safety subset
+
+```sh
+ptxv check fixtures/c_strict_memory_scalar --front ptx --variant good --strict --max-states 100000 --json
+```
+
+`--strict` enables all strict checks: memory-safety certification and `--nonfinite-strict` (NaN / Inf outputs are findings even when inputs are non-finite). Use `--strict-memory-safety` to request only the memory-safety check. The [runnable scalar example](fixtures/c_strict_memory_scalar/README.md) also includes same-value conflicting stores, an out-of-bounds access and a search-cap example.
+
+The separate `strict_memory_safety` result proves memory safety for supported raw PTX and its fixed launch, for all initial payload bytes, legal nonaliasing allocation placements and actor schedules. The supported scalar integer subset includes global loads/stores, register arithmetic, predicates, branches and thread identifiers. Raw source uses printable ASCII (32–126) or whitespace (9–13), including comments. Declared predicate stems use `%p` followed by zero or more ASCII decimal digits. Input-dependent guards or addresses, synchronization and other unsupported semantics are refused. `safe` requires independently checked certificate closure and covers bounds, alignment, initialization, lifetime, conflicting accesses and initialized terminal outputs. Search limits and refusals produce `inconclusive`; an ordinary `clean` verdict does not imply this result. See [the proof project](lean_model/memory_safety/README.md) for the theorem, admission scope and trust boundary.
+
+The Lean theorem starts from raw PTX bytes and a typed manifest, proving parser, launch-construction and native execution correspondence through Aeneas extraction and refinement. File loading, manifest deserialization, compiler transformations, hardware and external actors remain outside the theorem; extraction and Lean’s kernel remain trusted. Unsupported PTX and SASS are inconclusive. See [the JSON contract](docs/json.md) for result fields.
+
 ## Build
 
 ```

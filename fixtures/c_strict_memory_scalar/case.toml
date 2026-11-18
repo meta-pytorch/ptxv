@@ -1,0 +1,36 @@
+name = "c_strict_memory_scalar"
+description = "Strict scalar memory safety: disjoint stores, same-value conflict and out-of-bounds access."
+ptx = "kernel.ptx"
+entry = "strict_memory_scalar"
+grid = [1, 1, 1]
+block = [2, 1, 1]
+outputs = ["out"]
+params = []
+
+[[buffers]]
+name = "out"
+symbol = "out"
+dtype = "u32"
+shape = [2]
+init = "zeros"
+
+[[variants]]
+id = "good"
+summary = "Each thread writes one distinct output word."
+expect = ["clean"]
+
+[[variants]]
+id = "same_value_conflict"
+summary = "Both threads write 7 to the same word; equal values do not remove the conflict."
+marker = "@stride"
+find = "mul.wide.u32 %rd0, %r0, 4;"
+replace = "mul.wide.u32 %rd0, %r0, 0;"
+expect = ["clean"]
+
+[[variants]]
+id = "out_of_bounds"
+summary = "Thread 1 writes at byte offset 8, past the two-word output."
+marker = "@stride"
+find = "mul.wide.u32 %rd0, %r0, 4;"
+replace = "mul.wide.u32 %rd0, %r0, 8;"
+expect = ["fault"]

@@ -48,8 +48,10 @@ pub mod l1;
 pub mod l1_cores;
 pub mod lowp;
 pub mod machine;
+pub mod machine_memory_safety;
 pub mod membudget;
 mod memory_effect;
+mod memory_event;
 pub mod mma_lp;
 pub mod model;
 pub mod mufu;
@@ -74,6 +76,11 @@ pub mod smid;
 pub mod softmax;
 pub mod solve;
 pub mod spin;
+pub mod strict_memory;
+pub mod strict_memory_admission;
+pub mod strict_memory_globals;
+mod strict_memory_launch;
+pub mod strict_memory_status;
 pub mod symb;
 pub mod tenant;
 pub mod tmap;
@@ -671,9 +678,9 @@ pub fn build_launch(case: &Case, k: &Kernel) -> Result<Launch> {
 /// ASSUME(E-LAUNCH-ORDER): the case's `launch_order`. Recorded or declared: true, once a
 /// launch without `after` is checked to be on the stream of the previous launch on its GPU,
 /// where both name a stream (a capture names the predecessor at every stream switch).
-/// Unknown: false, and the grids of the case lose their predecessors (`after = -1`, no
-/// `waits`): every grid may run at the same time as every other, the strict reading of a list
-/// whose order nobody recorded (default, `PTXV_UNRECORDED_ORDER=concurrent`). With
+/// Unknown: false, and the grids of a multi-grid case lose their predecessors (`after = -1`,
+/// no `waits`): every grid may run at the same time as every other, the strict reading of a
+/// list whose order nobody recorded (default, `PTXV_UNRECORDED_ORDER=concurrent`). With
 /// `PTXV_UNRECORDED_ORDER=ordered`, an unknown order keeps E-PDL's order (each grid after the
 /// previous one on its GPU) and only drops the launch-order exclusions.
 fn launch_order(
@@ -704,7 +711,9 @@ fn launch_order(
     match std::env::var("PTXV_UNRECORDED_ORDER").as_deref() {
         Ok("ordered") => {}
         Err(_) | Ok("concurrent") => {
-            if !recorded {
+            // One grid has no predecessor to drop: it keeps the default (`after` None), the
+            // launch shape strict admission accepts (`strict_memory_admission`).
+            if !recorded && grids.len() > 1 {
                 for g in grids.iter_mut() {
                     g.after = Some(None);
                     g.waits.clear();
@@ -994,3 +1003,11 @@ mod dpor_uniform_tests;
 
 #[cfg(test)]
 mod bsync_footprint_tests;
+
+pub mod strict_memory_frontend;
+
+pub mod strict_memory_frontend_parse;
+
+pub mod strict_memory_frontend_launch;
+
+pub mod strict_memory_source;

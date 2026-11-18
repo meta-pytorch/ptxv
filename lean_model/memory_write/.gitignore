@@ -1,0 +1,5 @@
+.aeneas-path
+.lake/
+lake-manifest.json
+*.olean
+*.ilean

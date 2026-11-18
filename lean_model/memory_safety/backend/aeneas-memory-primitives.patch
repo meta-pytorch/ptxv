@@ -1,0 +1,40 @@
+--- a/src/extract/ExtractBuiltin.ml
++++ b/src/extract/ExtractBuiltin.ml
+@@ -170,7 +170,7 @@
+                   ]);
+          };
+        ])
+-  @ mk_lean_only lean_builtin_types
++  @ mk_lean_only (mk_type "alloc::sync::Arc" "Id" :: lean_builtin_types)
+ 
+ let mk_builtin_types_map () =
+   NameMatcherMap.of_list
+@@ -877,6 +877,8 @@
+                    (false, "rotate_right");
+                  ])
+              all_int_names)
++      @ mk_lean_only [ ExtractBuiltinCore.mk_fun "alloc::string::{alloc::string::String}::new" "MemorySafety.Primitives.stringNew" ~can_fail:false ~lift:false ]
++      @ mk_lean_only [ ExtractBuiltinCore.mk_fun "alloc::string::{alloc::string::String}::as_bytes" "MemorySafety.Primitives.stringBytes" ~can_fail:true ~lift:false ]
+       @ lean_builtin_funs)
+ 
+ let builtin_funs : unit -> (pattern * Pure.builtin_fun_info) list =
+--- a/src/Translate.ml
++++ b/src/Translate.ml
+@@ -1364,6 +1364,7 @@
+         if !Config.use_lean_modules then "public import" else "import"
+       in
+       Printf.fprintf out "%s Aeneas\n" import_kw;
++      Printf.fprintf out "%s MemorySafety.Primitives\n" import_kw;
+       (* Add the custom imports *)
+       List.iter
+         (fun m -> Printf.fprintf out "%s %s\n" import_kw m)
+@@ -1425,7 +1426,8 @@
+       Printf.fprintf out "val _ = new_theory \"%s\"\n\n" fi.module_name);
+   (* From now onwards, we use the formatter *)
+   (* Set the margin *)
+-  Format.pp_set_margin fmt 80;
++  Format.pp_set_margin fmt 1000;
++  Format.pp_set_max_indent fmt 990;
+ 
+   (* Create a vertical box *)
+   Format.pp_open_vbox fmt 0;
