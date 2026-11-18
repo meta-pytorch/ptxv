@@ -15,6 +15,9 @@
 //! * Each instruction keeps its source line and text so that every report points at the
 //!   input the user gave us (a PTX line or a SASS address).
 
+pub mod control_flow;
+pub mod register_owner;
+
 use serde::Deserialize;
 use serde::Serialize;
 

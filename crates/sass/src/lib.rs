@@ -840,7 +840,10 @@ impl<'a> Lw<'a> {
             }
             _ => return Err(self.err(format!("bad predicate {s}"))),
         };
-        Ok(Pred { reg, neg })
+        Ok(ptxv_ir::register_owner::normalize_predicate(
+            Front::Sass,
+            Pred { reg, neg },
+        ))
     }
 
     fn pdst(&self, s: &str) -> Result<Reg> {
@@ -6067,26 +6070,18 @@ fn depbar_kinds(lines: &[SassLine], code: &[Inst]) -> Vec<Option<[u8; 8]>> {
         .map(|(i, _)| i + 1)
         .collect();
     let succ = |pc: usize| -> Vec<usize> {
-        let i = &code[pc];
-        let next = if pc + 1 < code.len() {
-            vec![pc + 1]
-        } else {
-            vec![]
-        };
-        match &i.op {
-            Op::Bra {
-                target,
-                tid0_falls: false,
-                div: None,
-                ..
-            } if i.guard.is_always() => vec![*target],
-            Op::Bra { target, .. } => [vec![*target], next].concat(),
-            Op::Exit | Op::Trap { .. } if i.guard.is_always() => vec![],
-            Op::Call { target } => [vec![*target], next].concat(),
-            Op::Ret { .. } => ret_sites.clone(),
-            Op::Brx { targets, .. } => targets.clone(),
-            _ => next,
-        }
+        let instruction = &code[pc];
+        ptxv_ir::control_flow::successors(
+            &instruction.op,
+            instruction.guard,
+            ptxv_ir::control_flow::Context {
+                pc,
+                count: code.len(),
+                cut: 0,
+                fold: None,
+                returns: Some(&ret_sites),
+            },
+        )
     };
     let mut input: Vec<Option<[u8; 8]>> = vec![None; lines.len()];
     if lines.is_empty() {

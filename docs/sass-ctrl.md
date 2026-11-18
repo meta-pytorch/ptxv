@@ -46,6 +46,16 @@ This is the Volta–Hopper layout, and Blackwell keeps it. Evidence from the run
 
 `DEPBAR.LE SBk, n` waits until at most n operations are outstanding on SBk.
 
+### Predicate and control-flow handling
+
+The SASS front-end normalizes `P7` (`PT`) and `UP7` (`UPT`) to constant predicates,
+preserving negation. PTX `%p7` remains an ordinary predicate register.
+
+Dependency-barrier classification uses the shared IR control-flow successor helper.
+A guarded return or indirect branch retains its fallthrough edge, and a branch
+with a secondary predicate retains both possible edges. This keeps operations on
+those paths visible when classifying the work a dependency barrier may wait for.
+
 ## The check (`crates/sass/src/scoreboard.rs`)
 
 A forward dataflow fixpoint over the whole CFG: every path, including the guardrail-trap
