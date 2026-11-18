@@ -140,16 +140,7 @@ impl Machine {
         for (w, pc, members) in self.splits() {
             if self.split_enabled(&members, pc) {
                 if let Some(mut choices) = self.atomic_component_choices(w, pc, &members) {
-                    if self.atomic_scalar_supported(pc)
-                        && self.num.is_none()
-                        && !self.wlog.is_on()
-                        && self.perm.is_none()
-                        && self.gown.is_none()
-                        && self.ring.is_none()
-                        && self.prov.is_none()
-                        && self.l1.is_none()
-                        && self.fill.is_none()
-                    {
+                    if self.atomic_scalar_supported(pc) && self.plain_search() {
                         if let Some((kernel, classes)) = &self.dead_atomic_lanes {
                             if Arc::ptr_eq(kernel, &self.k) {
                                 let mask = choices.iter().fold(0, |mask, (thread, _)| {
@@ -2126,6 +2117,9 @@ pub struct BarCfg {
     /// Peeks run as failed tests (`peekskip_set`): peek pc -> (pcs where its window ends,
     /// the blocking waits it skips). Filled in by the explorer only.
     pub peekskip: BTreeMap<u32, (BTreeSet<u32>, BTreeSet<u32>)>,
+    /// PTX (empty otherwise): per pc, the memory a thread there may still access
+    /// (`access_table`; `Machine::lane_order_observable`).
+    access: Vec<u8>,
 }
 
 impl PartialEq for BarCfg {
@@ -2141,6 +2135,7 @@ impl PartialEq for BarCfg {
             && self.peekskip == other.peekskip
             && self.regid == other.regid
             && self.cut == other.cut
+            && self.access == other.access
     }
 }
 
@@ -2159,6 +2154,7 @@ impl BarCfg {
         let builder =
             crate::bar_program::ProgramBuilder::new(Arc::new(self.kernel().clone()), fold, rets);
         let arv_repeat = builder.repeated_arrivals();
+        let access = access_table(self.kernel(), builder.successors());
         Self {
             program: crate::bar_program::BarProgram::new(
                 builder,
@@ -2171,6 +2167,7 @@ impl BarCfg {
             ),
             peekwait: BTreeSet::new(),
             peekskip: BTreeMap::new(),
+            access,
         }
     }
 
@@ -2180,6 +2177,154 @@ impl BarCfg {
 
     fn cache_key(&self, pc: u32, bit: u32) -> cache::CacheKey {
         self.program.cache_key(pc, bit)
+    }
+
+    /// PTX (empty otherwise): per pc, the memory a thread there may still access
+    /// (`access_table`).
+    pub(crate) fn access(&self) -> &[u8] {
+        &self.access
+    }
+}
+
+/// Cause 2 (`Machine::lane_order_observable`): global memory, in `BarCfg::access`.
+pub(crate) const ACCESS_GLOBAL: u8 = 1;
+/// Cause 2: shared memory (`.shared::cta` or `.shared::cluster`), in `BarCfg::access`.
+pub(crate) const ACCESS_SHARED: u8 = 2;
+
+/// The memory an access of `space` may touch: a generic address may be global or shared, and
+/// parameter memory holds no atomic word.
+pub(crate) fn space_access(space: ptxv_ir::Space) -> u8 {
+    use ptxv_ir::Space;
+    match space {
+        Space::Global => ACCESS_GLOBAL,
+        Space::Shared | Space::SharedCluster => ACCESS_SHARED,
+        Space::Generic => ACCESS_GLOBAL | ACCESS_SHARED,
+        Space::Param => 0,
+    }
+}
+
+/// The global or shared memory one execution of `op` may access, under any guard, weak
+/// accesses included. Memory-free: register-only arithmetic and conversions, warp
+/// collectives, branches, calls and returns (their targets are followed), barriers and
+/// fences. Local, parameter and constant memory hold no other thread's atomic word. Every
+/// other instruction counts as both: bulk, tensor and asynchronous copies, mbarrier, tcgen05
+/// and cluster launch control operations, matrix loads and stores, 256-bit accesses, an
+/// indirect call, and a trap (it aborts the grid and its outputs are read then, with the
+/// lanes of an atomic in flight that have not run yet leaving their words as they are).
+fn access_class(op: &ptxv_ir::Op) -> u8 {
+    use ptxv_ir::Op;
+    match op {
+        Op::Ld { space, .. } | Op::St { space, .. } | Op::Atom { space, .. } => {
+            space_access(*space)
+        }
+        Op::LdReduce { .. } => ACCESS_GLOBAL,
+        Op::LdLocal { .. } | Op::StLocal { .. } | Op::LdConst { .. } => 0,
+        op if reg_only(op) => 0,
+        Op::R2Ur { .. }
+        | Op::VoteAny { .. }
+        | Op::MatchAny { .. }
+        | Op::Redux { .. }
+        | Op::Qspc { .. }
+        | Op::VoteAll { .. }
+        | Op::Elect { .. }
+        | Op::Fadd { .. }
+        | Op::Ffma { .. }
+        | Op::FmulScale { .. }
+        | Op::Fmnmx { .. }
+        | Op::Fsetp { .. }
+        | Op::Hsetp2Bf16 { .. }
+        | Op::MovMatrix { .. }
+        | Op::Hset2 { .. }
+        | Op::Fset { .. }
+        | Op::Fsel { .. }
+        | Op::Fchk { .. }
+        | Op::R2p { .. }
+        | Op::F2fpBf16 { .. }
+        | Op::Ffma2 { .. }
+        | Op::Hfma2 { .. }
+        | Op::Hfma2Bf16 { .. }
+        | Op::FfmaBf16 { .. }
+        | Op::Hmnmx2Bf16 { .. }
+        | Op::Qmul4 { .. }
+        | Op::Hmnmx2F16 { .. }
+        | Op::Vhmnmx { .. }
+        | Op::CvtPack { .. }
+        | Op::CvtRsX4 { .. }
+        | Op::CvtUnpack { .. }
+        | Op::CvtS2f6x2 { .. }
+        | Op::CvtF32Bf16 { .. }
+        | Op::Cvta { .. }
+        | Op::Bra { .. }
+        | Op::Brx { .. }
+        | Op::Exit
+        | Op::Call { .. }
+        | Op::Ret { .. }
+        | Op::WarpSync { .. }
+        | Op::EndCollective { .. }
+        | Op::Bssy { .. }
+        | Op::Bsync { .. }
+        | Op::Break { .. }
+        | Op::BMov { .. }
+        | Op::BarSync { .. }
+        | Op::BarResult { .. }
+        | Op::ClcQuery { .. }
+        | Op::Mapa { .. }
+        | Op::Shfl { .. }
+        | Op::I2F { .. }
+        | Op::F2I { .. }
+        | Op::Mufu { .. }
+        | Op::GridDepWait
+        | Op::GridDepLaunch
+        | Op::ClusterArrive { .. }
+        | Op::ClusterWait
+        | Op::Fence { .. }
+        | Op::Converge
+        | Op::Uniform { .. }
+        | Op::Dp2a { .. }
+        | Op::Dfma { .. }
+        | Op::Rsqrt64Approx { .. }
+        | Op::DivSqrt64 { .. }
+        | Op::DsetpMinMax { .. }
+        | Op::Dsetp { .. }
+        | Op::FCvt { .. }
+        | Op::F2F { .. }
+        | Op::CvtF32F16 { .. }
+        | Op::F2fF16 { .. }
+        | Op::CvtTf32 { .. }
+        | Op::F2fpF16 { .. }
+        | Op::DivFull { .. }
+        | Op::Hmma { .. } => 0,
+        _ => ACCESS_GLOBAL | ACCESS_SHARED,
+    }
+}
+
+/// Cause 2, PTX (empty otherwise): per pc, the global or shared memory a thread there may
+/// still access (`access_class` of every instruction it may reach, itself included, along
+/// `succ`, the control-flow graph of `BarCfg`, which follows calls, returns, `brx` targets and
+/// both sides of every branch that launch constants do not decide).
+fn access_table(k: &ptxv_ir::Kernel, succ: &[Vec<usize>]) -> Vec<u8> {
+    if k.front != ptxv_ir::Front::Ptx || succ.len() != k.code.len() {
+        return Vec::new();
+    }
+    let mut table: Vec<u8> = k.code.iter().map(|i| access_class(&i.op)).collect();
+    loop {
+        let mut changed = false;
+        for pc in (0..table.len()).rev() {
+            let mut reach = table[pc];
+            for &next in &succ[pc] {
+                reach |= table
+                    .get(next)
+                    .copied()
+                    .unwrap_or(ACCESS_GLOBAL | ACCESS_SHARED);
+            }
+            if reach != table[pc] {
+                table[pc] = reach;
+                changed = true;
+            }
+        }
+        if !changed {
+            return table;
+        }
     }
 }
 
@@ -2486,6 +2631,7 @@ pub(crate) fn bar_cfg(m: &Machine) -> BarCfg {
         }
     }
     let cut = if any_reg { 0 } else { cut & !not_cut };
+    let access = access_table(&m.k, builder.successors());
     BarCfg {
         program: crate::bar_program::BarProgram::new(builder, crate::bar_program::Flags {
             arv_repeat,
@@ -2497,6 +2643,7 @@ pub(crate) fn bar_cfg(m: &Machine) -> BarCfg {
         }),
         peekwait: BTreeSet::new(),
         peekskip: BTreeMap::new(),
+        access,
     }
 }
 
@@ -13070,6 +13217,7 @@ repeat:
             ),
             peekwait: c.peekwait.clone(),
             peekskip: c.peekskip.clone(),
+            access: c.access.clone(),
         });
         let cfgs = [
             (&bw1, 160usize, 2u32, true, true),

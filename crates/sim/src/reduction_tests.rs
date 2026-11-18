@@ -528,7 +528,10 @@ fn dead_return_fence_machine(edit: impl FnOnce(String) -> String) -> Machine {
 
 #[test]
 fn dead_atomic_clone_classes_keep_the_distinct_acquire_histories() {
-    let initial = dead_return_fence_machine(|source| source);
+    let mut initial = dead_return_fence_machine(|source| source);
+    // The clone classes pick among AtomicComponent actions: take them although the lanes'
+    // orders suffice here (no other thread reaches sem; `Machine::lane_orders_suffice`).
+    initial.atomic_components_always = true;
     let classes = initial.dead_atomic_lanes.as_ref().unwrap().1;
     assert_ne!(classes[0], classes[1]);
     assert_ne!(classes[1], classes[2]);

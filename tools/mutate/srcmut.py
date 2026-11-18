@@ -9736,6 +9736,143 @@ MUTANTS += [
     ),
 ]
 
+# Cause 2, one mechanism per instruction (exec/atomic_components.rs `lane_orders_suffice`).
+LANE_ORDER_ROWS = "lane_order_components"
+LANE_ORDER_OUTSIDERS = (
+    "ptxv-sim",
+    LANE_ORDER_ROWS,
+    "outsiders_that_end_the_grid_or_land_copies_keep_the_components",
+)
+LANE_ORDER_ISSUE = (
+    "ptxv-sim",
+    LANE_ORDER_ROWS,
+    "issue_faults_and_undefined_operands_keep_the_components",
+)
+LANE_ORDER_REVIEW = ("ptxv-sim", LANE_ORDER_ROWS, "review_rows_match_the_components_on_every_path")
+MUTANTS += [
+    # Every scalar atomic takes components again: the 32-lane exchange exceeds its budget and
+    # the unobserved rows see components.
+    SrcMutant(
+        "lane-order-components-always",
+        "crates/sim/src/exec/atomic_components.rs",
+        "        if matches!(layout, Layout::ScalarWord(_))\n            && !self.atomic_components_always\n",
+        "        if false\n            && !self.atomic_components_always\n",
+        [],
+        tests=[
+            ("ptxv-sim", LANE_ORDER_ROWS, "unobserved_warp_exchange_stays_within_budget"),
+            ("ptxv-sim", LANE_ORDER_ROWS, "unobserved_scalar_atomics_take_lane_orders_exactly"),
+        ],
+    ),
+    # The lane orders replace the components although a thread outside the members may access
+    # the word between the lanes (MISS 169's partial count, MISS 176's one-lane release, and
+    # every observer kind of the review's rows).
+    SrcMutant(
+        "lane-order-observer-ignored",
+        "crates/sim/src/exec/atomic_components.rs",
+        "            !members.contains(&t)\n                && (!thread.cp_pending.is_empty()\n",
+        "            !members.contains(&t)\n                && false\n                && (!thread.cp_pending.is_empty()\n",
+        [],
+        tests=[
+            ("ptxv-sim", LANE_ORDER_ROWS, "observed_atomics_keep_their_components"),
+            ("ptxv-sim", LANE_ORDER_ROWS, "outside_observers_keep_the_components"),
+            ("ptxv-sim", LANE_ORDER_ROWS, "observers_in_other_ctas_and_grids_keep_the_components"),
+        ],
+    ),
+    # A trap counts as memory-free: an outsider standing at it when the members issue can end
+    # the grid between the lanes.
+    SrcMutant(
+        "lane-order-trap-memory-free",
+        "crates/sim/src/explore.rs",
+        "        | Op::Call { .. }\n        | Op::Ret { .. }\n        | Op::WarpSync { .. }\n",
+        "        | Op::Call { .. }\n        | Op::Ret { .. }\n        | Op::Trap { .. }\n        | Op::WarpSync { .. }\n",
+        [],
+        tests=[LANE_ORDER_OUTSIDERS, LANE_ORDER_REVIEW],
+    ),
+    # An outsider's unwaited cp.async is ignored: it lands at the outsider's exit, between the
+    # lanes (E-CPASYNC-EXIT).
+    SrcMutant(
+        "lane-order-copy-at-exit-ignored",
+        "crates/sim/src/exec/atomic_components.rs",
+        "                && (!thread.cp_pending.is_empty()\n",
+        "                && ((!thread.cp_pending.is_empty() && false)\n",
+        [],
+        tests=[LANE_ORDER_OUTSIDERS],
+    ),
+    # A pending asynchronous operation is ignored: a copy landing through an mbarrier arrive
+    # after its issuer's exit falls between the lanes.
+    SrcMutant(
+        "lane-order-pending-ignored",
+        "crates/sim/src/exec/atomic_components.rs",
+        "            || !self.pending.is_empty()\n            || self.nic.is_some()\n",
+        "            || (!self.pending.is_empty() && false)\n            || self.nic.is_some()\n",
+        [],
+        tests=[LANE_ORDER_OUTSIDERS],
+    ),
+    # A misaligned lane is ignored: the lane orders run the lanes before it, where the
+    # components' issue faults before any lane runs.
+    SrcMutant(
+        "lane-order-misaligned-ignored",
+        "crates/sim/src/exec/atomic_components.rs",
+        "            if check_aligned(*space, address, *bytes as usize).is_err() {\n",
+        "            if check_aligned(*space, address, *bytes as usize).is_err() && false {\n",
+        [],
+        tests=[LANE_ORDER_ISSUE, LANE_ORDER_REVIEW],
+    ),
+    # A lane whose address names no memory is ignored: the lane-order step stops at its fault,
+    # where the other lanes' components still run.
+    SrcMutant(
+        "lane-order-unmapped-ignored",
+        "crates/sim/src/exec/atomic_components.rs",
+        "                .mem_locs(t, *space, address, *bytes as usize, pc)\n                .is_err()\n",
+        "                .mem_locs(t, *space, address, *bytes as usize, pc)\n                .is_err()\n                && false\n",
+        [],
+        tests=[LANE_ORDER_ISSUE, LANE_ORDER_REVIEW],
+    ),
+    # An undefined operand is ignored: the lane orders lose the undefinedness the components
+    # carry into the word and the returned values (S-INIT).
+    SrcMutant(
+        "lane-order-undefined-operand-ignored",
+        "crates/sim/src/exec/atomic_components.rs",
+        "                if self.reg_umask(t, *operand) != 0 {\n",
+        "                if self.reg_umask(t, *operand) != 0 && false {\n",
+        [],
+        tests=[LANE_ORDER_ISSUE, LANE_ORDER_REVIEW],
+    ),
+    # Bounded lane orders (MISS 74: lane order and its reverse) replace complete components at
+    # five to eight lanes.
+    SrcMutant(
+        "lane-order-bounded-orders-taken",
+        "crates/sim/src/exec/atomic_components.rs",
+        "            .is_none_or(|o| o.truncated.is_none() || active.len() > LANE_ORDER_COMPONENTS_MAX)\n",
+        "            .is_none_or(|o| o.truncated.is_none() || active.len() > LANE_ORDER_COMPONENTS_MAX || true)\n",
+        [],
+        tests=[
+            ("ptxv-sim", LANE_ORDER_ROWS, "bounded_lane_orders_up_to_eight_lanes_keep_the_components"),
+            LANE_ORDER_REVIEW,
+        ],
+    ),
+    # The lane orders replace the components in a search mode that gives them a meaning of
+    # their own (the certificate log).
+    SrcMutant(
+        "lane-order-plain-gate",
+        "crates/sim/src/exec/atomic_components.rs",
+        "        self.k.front == Front::Ptx\n            && self.plain_search()\n            && !self.lane_order_observable(members, pc)\n",
+        "        self.k.front == Front::Ptx\n            && !self.lane_order_observable(members, pc)\n",
+        [],
+        tests=[("ptxv-sim", LANE_ORDER_ROWS, "non_plain_searches_keep_the_components")],
+    ),
+    # Whole-lane orders for vector and packed atomics too, whose lanes interleave element by
+    # element.
+    SrcMutant(
+        "lane-order-vector-collapse",
+        "crates/sim/src/exec/atomic_components.rs",
+        "        if matches!(layout, Layout::ScalarWord(_))\n            && !self.atomic_components_always\n",
+        "        if matches!(layout, Layout::ScalarWord(_) | Layout::FloatWords(_) | Layout::PackedBf16)\n            && !self.atomic_components_always\n",
+        [],
+        tests=[("ptxv-sim", LANE_ORDER_ROWS, "vector_and_packed_atomics_keep_their_components")],
+    ),
+]
+
 def expect_for(case: Path, variant: str, front: str) -> list[str]:
     c = tomllib.loads((case / "case.toml").read_text())
     for v in c.get("variants", []):

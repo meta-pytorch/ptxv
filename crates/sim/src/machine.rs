@@ -2523,6 +2523,11 @@ pub struct Machine {
     /// (default lane order; `PTXV_ATOM_LANES=rev`). PTX leaves the order open; this shows
     /// what depends on it. ASSUME(E-LOCKSTEP)
     pub atom_lanes_rev: bool,
+    /// Not hashed: a search option. Every converged ScalarWord atomic takes AtomicComponent
+    /// actions, also where its lanes' orders suffice (`Machine::lane_orders_suffice`;
+    /// `PTXV_ATOMIC_COMPONENTS=always`): the reference that the lane-order tests compare
+    /// with, and what tests of the component machinery itself run.
+    pub atomic_components_always: bool,
     /// Last strong write per location (space 0 smem / 1 gmem, id, byte offset), S-SCOPE.
     pub syncs: Syncs,
     /// ASSUME(S-FENCE-SC): the SC fences and strong global writes the forced Fence-SC edges
@@ -3651,6 +3656,8 @@ impl Machine {
             triggered: vec![0; (launch_ctas as usize).div_ceil(64)],
             done_vcs: vec![None; n_grids],
             atom_lanes_rev: std::env::var("PTXV_ATOM_LANES").is_ok_and(|v| v == "rev"),
+            atomic_components_always: std::env::var("PTXV_ATOMIC_COMPONENTS")
+                .is_ok_and(|v| v == "always"),
             syncs: Default::default(),
             sc: has_sc.then(Default::default),
             polls: Arc::new(Default::default()),

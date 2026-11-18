@@ -1020,7 +1020,6 @@ fn gb300_profile_keeps_the_lowest_lane_of_one_store() {
 /// that commutes has one outcome. SASS (MISS 75): the lanes of one STS take the same orders,
 /// plain ones too (nondeterministic; SAME and RED clean; EXCH: ATOMS.EXCH is not lifted).
 #[test]
-#[ignore = "OPEN-7 (upstream merge): EXCH/ptx exceeds 2M states with int7 lane orders on top of theirs' AtomicComponent actions (int7: 162 states); one mechanism per shape pending; owner gC"]
 fn e_lane_order_any_lane_remains() {
     for v in [
         "good", "RELAXED", "PLAIN", "V100", "PLAIN100", "PAIR", "SAME", "RED",
@@ -1271,7 +1270,6 @@ fn gb300_profile_keeps_the_last_phase_of_one_store() {
 /// The certificate refuses them (C-TICKET cannot force an order inside one instruction: it
 /// certified THREE clean).
 #[test]
-#[ignore = "OPEN-7 (upstream merge): good/ptx exceeds 2M states with int7 lane orders on top of theirs' AtomicComponent actions (int7: 10 states); one mechanism per shape pending; owner gC"]
 fn e_lane_order_tickets_take_any_order() {
     for v in ["good", "THREE", "CAS3", "FADD3", "VEC2", "VECX"] {
         both("e_lane_order_ticket", v);
@@ -1297,13 +1295,30 @@ fn e_lane_order_tickets_take_any_order() {
             lv.notes
         );
         // The lane-order refusal itself: with PTXV_CERT_CROSSCHECK set, a random walk can
-        // refute a certificate that ignored the lane orders, which also leaves no verdict.
+        // refute a certificate that ignored the lane orders, which also leaves no verdict. The
+        // certificate's run keeps the AtomicComponent actions of a scalar-word atomic (good,
+        // THREE, EXCHLIVE; `Machine::lane_orders_suffice` holds in a plain search only), so
+        // there C-ORDER refuses two of its lanes' accesses instead of the step.
         let c = ptxv_sim::wellsync::certify(m);
         assert!(c.verdict.is_none(), "{v}: certified");
+        let two_lanes = |r: &str| {
+            let quoted: Vec<&str> = r.split('`').skip(1).step_by(2).collect();
+            let at: Vec<&str> = r
+                .split(" at ")
+                .skip(1)
+                .map(|x| x.split(' ').next().unwrap_or(""))
+                .collect();
+            r.starts_with("C-ORDER: strong accesses")
+                && quoted.len() == 2
+                && quoted[0] == quoted[1]
+                && quoted[0].contains("atom.")
+                && at.len() == 2
+                && at[0] == at[1]
+        };
         assert!(
             c.reasons
                 .iter()
-                .any(|r| r.contains("C-ORDER: several lanes")),
+                .any(|r| r.contains("C-ORDER: several lanes") || two_lanes(r)),
             "{v}: {:?}",
             c.reasons
         );

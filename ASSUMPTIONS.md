@@ -1689,6 +1689,68 @@ intermediate lane's value (MISS 176) is never observed. Open.
     atomic none of whose lanes publishes still commutes (RELAXED_NOREAD: lane order only).
     tests/fixtures.rs `e_lo_sync_synchronizing_lanes_take_any_order`; source mutants
     `lane-order-sync-commute`, `lane-order-fence`.
+  - One mechanism per instruction (2026-11-13, cause 2 of the upstream merge's slowdown):
+    upstream's AtomicComponent actions run each lane of a scalar-word atomic (an `atom` with a
+    result register, 4 bytes, a supported operation) as its own step, so a converged warp-wide
+    atomic became up to 32 steps whose return values keep the states apart
+    (fixtures/e_lane_order EXCH and e_lane_order_ticket good past 2M states, int7: 162 and 10).
+    Where no other actor can access the atomic's memory class (global, or shared) before its
+    last lane retires, and the lane orders reach exactly what the components reach, the
+    instruction takes the lane orders above instead (`exec/atomic_components.rs`
+    `lane_orders_suffice`; PTX, and only in a plain search: the certificate log, ticket / ring
+    forcing, coverage, numerics, fills and the hardware L1 keep the components). An actor
+    counts (`lane_order_observable`) when it is a live thread whose control flow from its pc
+    (an unlaunched one's: its grid's entry) may reach any access of that class
+    (`BarCfg::access`: weak accesses, a trap, and every instruction not known to be
+    memory-free, count), a live thread with an unwaited cp.async, which its exit lands
+    (E-CPASYNC-EXIT), a pending asynchronous operation (a copy landing through an mbarrier
+    arrive after its issuer has left), or a NIC. A trap counts although it touches no memory:
+    it ends the grid, whose outputs are then read with the lanes that have run (lane 0 adding
+    1 and lane 1 adding -1 leave x = 0 unless a trap falls between them). Both mechanisms hold
+    every member at the pc until the last lane retires; a lane's step touches only its words,
+    its registers and its clock, so it commutes with every step of an actor that does not
+    count, and every interleaving of the lanes' steps with the others' reaches what an order
+    of the lanes run as one step reaches. The lane orders are exact (`lane_orders_exact`)
+    where every active lane's address computes, is aligned and names memory (a fault stops the
+    lane-order step at its lane, while the components' issue faults before any lane runs, and
+    a faulting component leaves the other lanes theirs), every active lane's operand is
+    defined (the components carry an undefined operand into the word and the returned values,
+    S-INIT), and the lane orders are not bounded; up to eight active lanes whose orders are
+    bounded (MISS 74: lane order and its reverse beyond four lanes whose order matters) keep
+    the components, complete (eight lanes taking tickets: 40,320 outputs), and beyond eight
+    the bounded orders stand with their note, where the components pass the state cap. A CTA
+    of the cluster that exits between the lanes of a shared::cluster atomic on its memory
+    needs no rule: the lanes after its exit fault, and the word is gone with the CTA. The
+    choice is made per instance at issue (a pending continuation keeps its components).
+    Observed instances, and the vector and packed layouts (FloatWords, PackedBf16: their
+    lanes' elements may interleave, which whole-lane orders do not cover), keep the
+    components. A member's own later strong access of the word is E-WARP-ORDER's pair under
+    both mechanisms.
+    - Evidence: model. tests/lane_order_components.rs compares the unreduced search with lane
+      orders and both explorers with the unreduced component reference
+      (`Machine::atomic_components_always`): unobserved single-warp rows (dead and live add,
+      exch, f32 add, inc, max, a shared word, four lanes, a five-lane dead exchange) reach it
+      with no component anywhere, DPOR asserted to run itself (the add rows as written go to
+      DPOR's stateful explorer, also pinned); MISS 169's partial count (trap), MISS 176's
+      one-lane release (race) and the per-instance choice (both mechanisms in one search)
+      reach it; observer rows of every kind (a weak read stored or trapping, a strong read, a
+      diverged lane of the members' warp, a read past a named barrier the members never use, a
+      cp.async writer, a trap with no access, an SC fence over shared memory beside a global
+      atomic, a weak store before the atomic, a %ctaid branch, a DSMEM read, a grid in an
+      unknown order, a PDL grid) and outsiders that touch no memory after a release the
+      members wait for (a trap, an unwaited cp.async, a copy landing through an mbarrier
+      arrive) keep components, reach it, and give each explorer what it gives with components
+      everywhere; a misaligned lane, a lane whose address names no memory (result read or
+      dead), an undefined operand, five lanes taking tickets, and an f32 pair and a bf16x2
+      word keep components and reach it; the lane-cut controls (no read, a read past a
+      barrier, a commuting red) reach it. The review's shapes give the same completeness,
+      outputs and findings with lane orders and with components on the stateful explorer, DPOR
+      and the launch check (eight lanes: complete, 40,320 outputs; ten: both incomplete).
+      Source mutants `lane-order-components-always`, `lane-order-observer-ignored`,
+      `lane-order-trap-memory-free`, `lane-order-copy-at-exit-ignored`,
+      `lane-order-pending-ignored`, `lane-order-misaligned-ignored`,
+      `lane-order-unmapped-ignored`, `lane-order-undefined-operand-ignored`,
+      `lane-order-bounded-orders-taken`, `lane-order-plain-gate`, `lane-order-vector-collapse`.
   - MISS 140 (2026-11-12): a lane of the same warp at the same instruction reads no
     synchronization off the lane order. A lane does not synchronize with the release of what a
     lane of its warp wrote at the same instruction without its knowledge, nor with patterns

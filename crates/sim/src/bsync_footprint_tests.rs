@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use ptxv_ir::Addr;
+use ptxv_ir::BarForm;
 use ptxv_ir::Cmp;
 use ptxv_ir::File;
 use ptxv_ir::Front;
@@ -33,7 +34,9 @@ fn inst(op: Op) -> Inst {
         text: String::new(),
     }
 }
-fn base(bssy: bool, upguard: bool) -> Machine {
+/// The two BSYNCs are built with `form`: `.RECONVERGENT` waits for the lanes BSSY recorded;
+/// a plain BSYNC is no reconvergence point (E-BSYNC, MISS 81).
+fn base(bssy: bool, upguard: bool, form: BarForm) -> Machine {
     let case = ptxv_case::Case {
         dir: std::path::PathBuf::new(),
         m: serde_json::from_value(serde_json::json!({
@@ -111,14 +114,8 @@ fn base(bssy: bool, upguard: bool) -> Machine {
             div: None,
         }),
         inst(Op::Bssy { b: 0 }),
-        inst(Op::Bsync {
-            b: 0,
-            form: Default::default(),
-        }),
-        inst(Op::Bsync {
-            b: 1,
-            form: Default::default(),
-        }),
+        inst(Op::Bsync { b: 0, form }),
+        inst(Op::Bsync { b: 1, form }),
         inst(writer),
         inst(if bssy { Op::Bssy { b: 0 } } else { Op::Nop }),
         inst(Op::Ld {
@@ -188,8 +185,8 @@ fn step_mode(m: &mut Machine, pc: u32, sync_only: bool) -> Footprint {
 fn step(m: &mut Machine, pc: u32) -> Footprint {
     step_mode(m, pc, false)
 }
-fn run(bssy: bool, upguard: bool, sync_only: bool) {
-    let mut m = base(bssy, upguard);
+fn run(bssy: bool, upguard: bool, sync_only: bool, form: BarForm) {
+    let mut m = base(bssy, upguard, form);
     m.sfoot = Some(Arc::new(crate::machine::SFoot::new(&[])));
     let mut l = m.clone();
     let fa = step_mode(&mut l, 4, sync_only);
@@ -211,7 +208,13 @@ fn run(bssy: bool, upguard: bool, sync_only: bool) {
         .1
         .iter()
         .any(|x| x.0 == 19));
-    if bssy && !upguard {
+    if bssy && !upguard && form == BarForm::Plain {
+        // ASSUME(E-BSYNC): thread 0 leaves a plain BSYNC whether or not thread 1's BSSY B0 ran
+        // first (GB300: it is no reconvergence point), so both orders reach one state.
+        assert!(same);
+        // Conservative: the footprints still conflict; a precision gain may drop this.
+        assert!(conflict, "mask19 keeps the BSSY dependency");
+    } else if bssy && !upguard {
         assert!(!same);
         assert!(conflict, "mask19 must retain BSSY dependency");
     } else if upguard {
@@ -222,23 +225,29 @@ fn run(bssy: bool, upguard: bool, sync_only: bool) {
     }
 }
 #[test]
-#[ignore = "OPEN-6 (upstream merge): the two BSSY/BSYNC orders reach one state under int7's E-BSYNC plain-BSYNC model; owner gC"]
 fn convergence_mask_mutation_conflicts_with_a_peer_bsync() {
     for sync_only in [false, true] {
-        run(true, false, sync_only);
+        run(true, false, sync_only, BarForm::Reconvergent);
+    }
+}
+
+#[test]
+fn plain_bsync_leaves_in_both_orders_of_a_peer_bssy() {
+    for sync_only in [false, true] {
+        run(true, false, sync_only, BarForm::Plain);
     }
 }
 
 #[test]
 fn independent_uniform_write_stays_independent_of_unconditional_bsync() {
     for sync_only in [false, true] {
-        run(false, false, sync_only);
+        run(false, false, sync_only, BarForm::Reconvergent);
     }
 }
 
 #[test]
 fn uniform_bsync_guard_keeps_the_shared_register_dependency() {
     for sync_only in [false, true] {
-        run(true, true, sync_only);
+        run(true, true, sync_only, BarForm::Reconvergent);
     }
 }
